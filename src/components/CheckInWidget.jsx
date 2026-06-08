@@ -2,11 +2,11 @@ import { useState, useEffect, useRef } from 'react'
 import { supabase, dateFmt } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 
-const SL = { backlog:'Backlog', todo:'To Do', in_progress:'In Progress', qa:'QA Testing', ready_for_demo:'Ready for Demo', closed:'Closed' }
-const SC = { backlog:'#64748b', todo:'#3b82f6', in_progress:'#f59e0b', qa:'#8b5cf6', ready_for_demo:'#10b981', closed:'#94a3b8' }
-const STATUSES = ['backlog','todo','in_progress','qa','ready_for_demo','closed']
+const SL = { backlog:'Backlog', todo:'To Do', in_progress:'In Progress', delayed:'Delayed', qa:'QA Testing', ready_for_demo:'Ready for Demo', closed:'Closed' }
+const SC = { backlog:'#64748b', todo:'#3b82f6', in_progress:'#f59e0b', delayed:'#e11d48', qa:'#8b5cf6', ready_for_demo:'#10b981', closed:'#94a3b8' }
+const STATUSES = ['backlog','todo','in_progress','delayed','qa','ready_for_demo','closed']
 
-export default function CheckInWidget() {
+export default function CheckInWidget({ variant = 'widget' }) {
   const { profile } = useAuth()
   const [open, setOpen]        = useState(false)
   const [phase, setPhase]      = useState('idle')   // idle | form | active | checkout
@@ -84,7 +84,8 @@ export default function CheckInWidget() {
     const { data: linked } = await supabase.from('checkin_tasks')
       .select('*,task:project_tasks(id,task_id,task_name,status,estimated_hours)')
       .eq('checkin_log_id', activeLog.id)
-    setCoTasks((linked||[]).map(l => ({...l, new_status: l.task?.status || 'in_progress'})))
+    // Default: any task not yet completed (closed) is marked Delayed at checkout
+    setCoTasks((linked||[]).map(l => ({...l, new_status: l.task?.status === 'closed' ? 'closed' : 'delayed'})))
     setPhase('checkout')
   }
 
@@ -134,19 +135,8 @@ export default function CheckInWidget() {
     borderRadius:8, color:'#fff', fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:'inherit',
   }
 
-  return (
-    <div style={{position:'relative'}}>
-      <button style={widgetStyle} onClick={() => setOpen(o => !o)}>
-        <span style={{width:7,height:7,borderRadius:'50%',background:isActive?'#10b981':'rgba(255,255,255,0.4)',
-          boxShadow:isActive?'0 0 6px #10b981':undefined, animation:isActive?'pulse 2s infinite':undefined}}/>
-        {isActive ? (elapsed||'00:00:00') : '▶ Check In'}
-        <span style={{opacity:.6,fontSize:9}}>▾</span>
-      </button>
-
-      {open && <>
-        <div style={{position:'fixed',inset:0,zIndex:9998}} onClick={()=>setOpen(false)}/>
-        <div style={popupStyle}>
-
+  const phaseContent = (
+    <>
           {/* IDLE: check-in form */}
           {phase === 'idle' && (
             <div style={{padding:16}}>
@@ -280,6 +270,39 @@ export default function CheckInWidget() {
               </div>
             </div>
           )}
+    </>
+  )
+
+  // Dashboard card variant — always-visible inline panel
+  if (variant === 'card') {
+    return (
+      <div style={{background:'var(--surface)',borderRadius:16,border:'1.5px solid var(--border)',
+        boxShadow:'0 1px 4px rgba(0,0,0,.04)',overflow:'hidden',maxWidth:460}}>
+        <div style={{padding:'11px 16px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',gap:8}}>
+          <span style={{width:8,height:8,borderRadius:'50%',background:isActive?'#10b981':'#cbd5e1',
+            boxShadow:isActive?'0 0 6px #10b981':undefined,animation:isActive?'pulse 2s infinite':undefined}}/>
+          <span style={{fontWeight:700,fontSize:14}}>⏱ Time Tracking</span>
+          {isActive && <span style={{marginLeft:'auto',fontFamily:'var(--font-mono)',fontWeight:800,fontSize:14,color:'var(--c1)'}}>{elapsed||'00:00:00'}</span>}
+        </div>
+        {phaseContent}
+      </div>
+    )
+  }
+
+  // Topbar widget variant — compact button + popup
+  return (
+    <div style={{position:'relative'}}>
+      <button style={widgetStyle} onClick={() => setOpen(o => !o)}>
+        <span style={{width:7,height:7,borderRadius:'50%',background:isActive?'#10b981':'rgba(255,255,255,0.4)',
+          boxShadow:isActive?'0 0 6px #10b981':undefined, animation:isActive?'pulse 2s infinite':undefined}}/>
+        {isActive ? (elapsed||'00:00:00') : '▶ Check In'}
+        <span style={{opacity:.6,fontSize:9}}>▾</span>
+      </button>
+
+      {open && <>
+        <div style={{position:'fixed',inset:0,zIndex:9998}} onClick={()=>setOpen(false)}/>
+        <div style={popupStyle}>
+          {phaseContent}
         </div>
       </>}
     </div>

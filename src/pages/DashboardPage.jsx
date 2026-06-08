@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { supabase, rupee, dateFmt } from '../lib/supabase'
 import { Loader } from '../components/ui'
+import CheckInWidget from '../components/CheckInWidget'
 import { Link } from 'react-router-dom'
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
@@ -218,6 +219,7 @@ export default function DashboardPage() {
   if (isEmp) return (
     <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
       <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today} />
+      <CheckInWidget variant="card" />
       <div className="stats-grid">
         <KPI label="My Expenses" value={d.myExpenses} color="#6366f1" icon={<Receipt size={18}/>} href="/expenses"/>
         <KPI label="Total Claimed" value={rupee(d.myExpAmt)} color="#ec4899" icon={<DollarSign size={18}/>}/>
@@ -245,6 +247,7 @@ export default function DashboardPage() {
   if (role==='hr') return (
     <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
       <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today}/>
+      <CheckInWidget variant="card" />
       <SectionHeader title="👥 People & HR Overview"/>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(160px,1fr))', gap:12 }}>
         <KPI label="Total Employees" value={d.totalEmployees} color="#6366f1" icon={<Users size={18}/>} href="/users"/>
@@ -285,6 +288,7 @@ export default function DashboardPage() {
   if (role==='manager') return (
     <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
       <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today}/>
+      <CheckInWidget variant="card" />
       <SectionHeader title="📋 Operations Overview" action={<PeriodFilter value={period} onChange={setPeriod}/>}/>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(155px,1fr))', gap:12 }}>
         <KPI label="Pending Approvals" value={d.pendingExp+d.pendingTrv+d.pendingPR} color="#f59e0b" icon={<AlertCircle size={18}/>} href="/approvals"/>
@@ -348,6 +352,7 @@ export default function DashboardPage() {
   if (role==='finance') return (
     <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
       <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today}/>
+      <CheckInWidget variant="card" />
       <SectionHeader title="💰 Financial Overview" action={<PeriodFilter value={period} onChange={setPeriod}/>}/>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(155px,1fr))', gap:12 }}>
         <KPI label="Total Invoice Value" value={rupee(d.invTotal)} color="#059669" icon={<FileText size={18}/>} href="/invoices"/>
@@ -423,6 +428,7 @@ export default function DashboardPage() {
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:24 }}>
       <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today}/>
+      <CheckInWidget variant="card" />
 
       {/* Employee KPIs */}
       <div>

@@ -17,6 +17,7 @@ const TAB_DEFS = [
   { key: 'resources',   label: 'Resource Tracking', emoji: '⏱' },
   { key: 'vendors',     label: 'Vendors',           emoji: '🏪' },
   { key: 'projects',    label: 'Projects',          emoji: '📁' },
+  { key: 'tasks',       label: 'Task Management',   emoji: '📋' },
   { key: 'budget',      label: 'Budget',            emoji: '💰' },
   { key: 'assets',      label: 'Assets',            emoji: '📦' },
   { key: 'procurement', label: 'Procurement',       emoji: '🛒' },

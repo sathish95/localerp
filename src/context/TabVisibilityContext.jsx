@@ -7,12 +7,12 @@ import { useAuth } from './AuthContext'
 const SETTING_KEY = 'tab_visibility_config'
 
 export const DEFAULT_TABS = {
-  admin:    { timesheet:true, content:true,  leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:true, vendors:true, projects:true, budget:true, assets:true, procurement:true, invoices:true, fundflow:true, pos:true, grn:true, users:true, reports:true, settings:true },
-  ceo:      { leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:true, vendors:true, projects:true, budget:true, assets:true, procurement:true, invoices:true, fundflow:true, pos:true, grn:true, users:true, reports:true, settings:true },
-  manager:  { leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:true, vendors:true, projects:true, budget:true, assets:true, procurement:true, invoices:true, fundflow:false, pos:true, grn:true, users:true, reports:true, settings:false },
-  finance:  { leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:false, vendors:true, projects:true, budget:true, assets:true, procurement:false, invoices:true, fundflow:true, pos:true, grn:true, users:true, reports:true, settings:false },
-  hr:       { leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:true, vendors:false, projects:true, budget:true, assets:true, procurement:false, invoices:false, fundflow:false, pos:false, grn:false, users:true, reports:true, settings:false },
-  employee: { leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:false, vendors:false, projects:true, budget:false, assets:true, procurement:false, invoices:false, fundflow:false, pos:false, grn:false, users:false, reports:true, settings:false },
+  admin:    { timesheet:true, content:true,  leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:true, vendors:true, projects:true, tasks:true, budget:true, assets:true, procurement:true, invoices:true, fundflow:true, pos:true, grn:true, users:true, reports:true, settings:true },
+  ceo:      { leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:true, vendors:true, projects:true, tasks:true, budget:true, assets:true, procurement:true, invoices:true, fundflow:true, pos:true, grn:true, users:true, reports:true, settings:true },
+  manager:  { leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:true, vendors:true, projects:true, tasks:true, budget:true, assets:true, procurement:true, invoices:true, fundflow:false, pos:true, grn:true, users:true, reports:true, settings:false },
+  finance:  { leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:false, vendors:true, projects:true, tasks:true, budget:true, assets:true, procurement:false, invoices:true, fundflow:true, pos:true, grn:true, users:true, reports:true, settings:false },
+  hr:       { leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:true, vendors:false, projects:true, tasks:true, budget:true, assets:true, procurement:false, invoices:false, fundflow:false, pos:false, grn:false, users:true, reports:true, settings:false },
+  employee: { leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:false, vendors:false, projects:true, tasks:true, budget:false, assets:true, procurement:false, invoices:false, fundflow:false, pos:false, grn:false, users:false, reports:true, settings:false },
 }
 
 const Ctx = createContext(null)

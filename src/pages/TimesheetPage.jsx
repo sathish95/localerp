@@ -25,7 +25,7 @@ export default function TimesheetPage() {
 
   // Add entry form
   const [form, setForm] = useState({
-    user_id: profile?.id || '', date: today(), project_id: '', hours: '', comment: ''
+    user_id: profile?.id || '', start_date: today(), end_date: today(), project_id: '', hours: '', comment: ''
   })
 
   useEffect(() => { loadAll() }, [selUser, selMonth, selYear])
@@ -58,21 +58,45 @@ export default function TimesheetPage() {
     setLoading(false)
   }
 
+  // Build the check-out timestamp for a given day from the hours worked
+  function checkoutTs(date, hours) {
+    if (!hours) return null
+    const h = String(9 + Math.floor(parseFloat(hours))).padStart(2,'0')
+    const m = String(Math.round((parseFloat(hours)%1)*60)).padStart(2,'0')
+    return `${date}T${h}:${m}:00`
+  }
+
+  // Inclusive list of YYYY-MM-DD dates from start to end
+  function dateRange(start, end) {
+    const out = []
+    const cur = new Date(`${start}T00:00:00`)
+    const last = new Date(`${end}T00:00:00`)
+    while (cur <= last) { out.push(cur.toISOString().split('T')[0]); cur.setDate(cur.getDate()+1) }
+    return out
+  }
+
   async function submitEntry(e) {
-    e.preventDefault(); setSub(true)
+    e.preventDefault()
+    const uid = isMgr ? form.user_id : profile?.id
+    if (isMgr && !uid) { alert('Please select an employee.'); return }
+    if (!form.start_date || !form.end_date) { alert('Start date and end date are required.'); return }
+    if (form.end_date < form.start_date) { alert('End date cannot be before start date.'); return }
+    const dates = dateRange(form.start_date, form.end_date)
+    if (dates.length > 92) { alert('Date range is too large (max ~3 months per entry).'); return }
+    setSub(true)
     try {
-      const uid = isMgr ? form.user_id : profile?.id
-      const { error } = await supabase.from('time_logs').insert({
+      const rows = dates.map(d => ({
         employee_id:  uid,
         project_id:   form.project_id || null,
-        work_date:    form.date,
-        check_in:     `${form.date}T09:00:00`,
-        check_out:    form.hours ? `${form.date}T${String(9+Math.floor(parseFloat(form.hours))).padStart(2,'0')}:${String(Math.round((parseFloat(form.hours)%1)*60)).padStart(2,'0')}:00` : null,
+        work_date:    d,
+        check_in:     `${d}T09:00:00`,
+        check_out:    checkoutTs(d, form.hours),
         hours_worked: parseFloat(form.hours) || null,
         comment:      form.comment || null,
-      })
+      }))
+      const { error } = await supabase.from('time_logs').insert(rows)
       if (error) throw error
-      setShowAdd(false); setForm({ user_id:profile?.id||'', date:today(), project_id:'', hours:'', comment:'' }); loadAll()
+      setShowAdd(false); setForm({ user_id:profile?.id||'', start_date:today(), end_date:today(), project_id:'', hours:'', comment:'' }); loadAll()
     } catch(e) { alert(e.message) }
     finally { setSub(false) }
   }
@@ -251,13 +275,23 @@ export default function TimesheetPage() {
         )}
         <div className="form-row">
           <div className="form-group">
-            <label className="form-label">Date *</label>
-            <input className="form-input" type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} required/>
+            <label className="form-label">Start Date *</label>
+            <input className="form-input" type="date" value={form.start_date} max={form.end_date||undefined}
+              onChange={e=>setForm(f=>({...f,start_date:e.target.value,end_date:f.end_date&&f.end_date<e.target.value?e.target.value:f.end_date}))} required/>
           </div>
           <div className="form-group">
-            <label className="form-label">Hours Worked *</label>
-            <input className="form-input" type="number" step="0.5" min="0.5" max="16" value={form.hours} onChange={e=>setForm(f=>({...f,hours:e.target.value}))} placeholder="e.g. 8" required/>
+            <label className="form-label">End Date *</label>
+            <input className="form-input" type="date" value={form.end_date} min={form.start_date||undefined}
+              onChange={e=>setForm(f=>({...f,end_date:e.target.value}))} required/>
           </div>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Hours Worked (per day) *</label>
+          <input className="form-input" type="number" step="0.5" min="0.5" max="16" value={form.hours} onChange={e=>setForm(f=>({...f,hours:e.target.value}))} placeholder="e.g. 8" required/>
+          {form.start_date && form.end_date && form.end_date!==form.start_date &&
+            <div style={{ fontSize:11, color:'#64748b', marginTop:5 }}>
+              Creates one entry per day from {dateFmt(form.start_date)} to {dateFmt(form.end_date)} ({dateRange(form.start_date,form.end_date).length} days), {form.hours||'—'}h each.
+            </div>}
         </div>
         <div className="form-group">
           <label className="form-label">Project</label>

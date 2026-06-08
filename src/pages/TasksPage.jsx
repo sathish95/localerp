@@ -3,12 +3,12 @@ import { useAuth } from '../context/AuthContext'
 import { supabase, dateFmt, rupee } from '../lib/supabase'
 import { Modal, Loader, Empty, Confirm, SearchBox } from '../components/ui'
 import { Plus, Edit2, Trash2, LayoutGrid, List, BarChart2,
-  Filter, X, Target, Zap, UserPlus, Shield, Save, ChevronDown } from 'lucide-react'
+  Filter, X, Target, Zap, UserPlus, Shield, Save, ChevronDown, Eye } from 'lucide-react'
 
 /* ─── Constants ─────────────────────────────────────────── */
-const STATUSES=['backlog','todo','in_progress','qa','ready_for_demo','closed']
-const SL={backlog:'Backlog',todo:'To Do',in_progress:'In Progress',qa:'QA Testing',ready_for_demo:'Ready for Demo',closed:'Closed'}
-const SC={backlog:'#64748b',todo:'#3b82f6',in_progress:'#f59e0b',qa:'#8b5cf6',ready_for_demo:'#10b981',closed:'#94a3b8'}
+const STATUSES=['backlog','todo','in_progress','delayed','qa','ready_for_demo','closed']
+const SL={backlog:'Backlog',todo:'To Do',in_progress:'In Progress',delayed:'Delayed',qa:'QA Testing',ready_for_demo:'Ready for Demo',closed:'Closed'}
+const SC={backlog:'#64748b',todo:'#3b82f6',in_progress:'#f59e0b',delayed:'#e11d48',qa:'#8b5cf6',ready_for_demo:'#10b981',closed:'#94a3b8'}
 const PC={critical:'#e11d48',high:'#f59e0b',medium:'#3b82f6',low:'#10b981'}
 const PI={critical:'🔴',high:'🟠',medium:'🔵',low:'🟢'}
 const PRIOS=['critical','high','medium','low']
@@ -33,6 +33,7 @@ const DEF_PERMS={
 const Pill=({label,color,bg})=><span style={{padding:'2px 8px',borderRadius:4,fontSize:10,fontWeight:700,background:bg||`${color}18`,color,border:`1px solid ${color}28`,textTransform:'capitalize',whiteSpace:'nowrap'}}>{label?.replace(/_/g,' ')}</span>
 const Ava=({name='?',size=24})=>{const i=(name||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();return<div title={name} style={{width:size,height:size,borderRadius:Math.round(size*.3),background:'linear-gradient(135deg,var(--c1),#8b5cf6)',display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontSize:Math.round(size*.38),fontWeight:700,flexShrink:0}}>{i}</div>}
 const Kpi=({label,v,color='var(--c1)',sub})=><div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:10,borderTop:`2px solid ${color}`,padding:'10px 14px'}}><div style={{fontFamily:'var(--font-mono)',fontWeight:700,fontSize:20,color,lineHeight:1,marginBottom:3}}>{v}</div><div style={{fontSize:10,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase',letterSpacing:'.05em'}}>{label}</div>{sub&&<div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>{sub}</div>}</div>
+const KpiGroup=({title,children})=><div><div style={{fontSize:11,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>{title}</div><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(105px,1fr))',gap:10}}>{children}</div></div>
 const ProgBar=({pct,color='var(--c1)'})=><div style={{height:4,borderRadius:2,background:'var(--bg-3)',overflow:'hidden'}}><div style={{height:'100%',width:`${Math.min(100,pct||0)}%`,background:color,borderRadius:2,transition:'width .3s'}}/></div>
 const isOverdue=t=>t.planned_end_date&&new Date(t.planned_end_date)<new Date()&&t.status!=='closed'
 const TypeBadge=({type,size='sm'})=>{const c=TYPE_CLR[type]||'#3b82f6';return<span style={{padding:'2px 8px',borderRadius:4,fontSize:10,fontWeight:700,background:`${c}15`,color:c,border:`1px solid ${c}25`,whiteSpace:'nowrap'}}>{TYPE_ICO[type]} {type?.replace(/_/g,' ')}</span>}
@@ -191,6 +192,44 @@ function PermissionsPanel({perms,setPerms,onSave,saved}) {
   )
 }
 
+/* ─── Task Detail (read-only view) ───────────────────────── */
+function TaskDetail({task,projects,users,stories,sprints,changReqs}) {
+  if(!task) return null
+  const proj=projects.find(p=>p.id===task.project_id)
+  const assignee=users.find(u=>u.id===task.assigned_to)
+  const story=stories.find(s=>s.id===task.user_story_id)
+  const sprint=sprints.find(s=>s.id===task.sprint_id)
+  const cr=changReqs.find(c=>c.id===task.change_request_id)
+  const over=isOverdue(task)
+  const Row=({label,children})=>(<div style={{display:'flex',gap:12,padding:'8px 0',borderBottom:'1px solid var(--border)'}}><div style={{width:130,fontSize:12,color:'var(--text-muted)',fontWeight:600,flexShrink:0}}>{label}</div><div style={{fontSize:13,flex:1,minWidth:0}}>{(children===null||children===undefined||children==='')?<span style={{color:'var(--text-muted)'}}>—</span>:children}</div></div>)
+  return (
+    <div>
+      <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:12}}>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:12,color:'var(--c1)',fontWeight:700}}>{task.task_id||'—'}</span>
+        <TypeBadge type={task.task_type||'task'}/>
+        <Pill label={SL[task.status]} color={SC[task.status]}/>
+        <Pill label={task.priority} color={PC[task.priority]}/>
+        {over&&<span style={{padding:'2px 8px',borderRadius:4,fontSize:10,background:'rgba(225,29,72,.1)',color:'var(--rose)',fontWeight:700}}>⚠ OVERDUE</span>}
+      </div>
+      <div style={{fontSize:17,fontWeight:700,marginBottom:14,lineHeight:1.3}}>{task.task_name}</div>
+      <Row label="Project">{proj?.name}</Row>
+      <Row label="Module">{task.module_name}</Row>
+      <Row label="Assignee">{assignee?<span style={{display:'inline-flex',alignItems:'center',gap:6}}><Ava name={assignee.full_name} size={20}/>{assignee.full_name}</span>:null}</Row>
+      <Row label="Priority">{PI[task.priority]} {task.priority}</Row>
+      <Row label="Planned Start">{dateFmt(task.planned_start_date)}</Row>
+      <Row label="Planned End"><span style={{color:over?'var(--rose)':undefined}}>{dateFmt(task.planned_end_date)}</span></Row>
+      {task.actual_start_date&&<Row label="Actual Start">{dateFmt(task.actual_start_date)}</Row>}
+      {task.actual_end_date&&<Row label="Actual End">{dateFmt(task.actual_end_date)}</Row>}
+      <Row label="Estimated Hours">{task.estimated_hours!=null?`${task.estimated_hours}h`:null}</Row>
+      <Row label="Actual Hours">{task.actual_hours!=null?`${task.actual_hours}h`:null}</Row>
+      <Row label="User Story">{story?`[${story.story_id}] ${story.title}`:null}</Row>
+      <Row label="Sprint">{sprint?.name}</Row>
+      <Row label="Change Request">{cr?`[${cr.cr_id}] ${cr.title}`:null}</Row>
+      <Row label="Description"><div style={{whiteSpace:'pre-wrap'}}>{task.description}</div></Row>
+    </div>
+  )
+}
+
 /* ══ MAIN PAGE ═══════════════════════════════════════════════ */
 export default function TasksPage() {
   const { profile } = useAuth()
@@ -221,6 +260,8 @@ export default function TasksPage() {
   const [view,      setView]     = useState('kanban')
 
   const [showTask,   setShowTask]  = useState(false); const [editTask,  setEditTask]  = useState(null); const [taskForm,  setTaskForm]  = useState({}); const [subTask,  setSubTask]  = useState(false); const [delTask,  setDelTask]  = useState(null)
+  const [detailTask, setDetailTask]= useState(null)
+  const openDetail=t=>setDetailTask(t)
   const [showStory,  setShowStory] = useState(false); const [editStory, setEditStory] = useState(null); const [storyForm, setStoryForm] = useState({}); const [subStory, setSubStory] = useState(false); const [delStory, setDelStory] = useState(null)
   const [showSprint, setShowSprint]= useState(false); const [editSprint,setEditSprint]= useState(null); const [sprintForm,setSprintForm]= useState({})
   const [showAssign, setShowAssign]= useState(false); const [assignments,setAssignments]= useState([]); const [newAssign, setNewAssign] = useState({user_id:'',role:'member'})
@@ -315,6 +356,7 @@ export default function TasksPage() {
     total:projTasks.length,backlog:projTasks.filter(t=>t.status==='backlog').length,
     todo:projTasks.filter(t=>t.status==='todo').length,inProgress:projTasks.filter(t=>t.status==='in_progress').length,
     qa:projTasks.filter(t=>t.status==='qa').length,demo:projTasks.filter(t=>t.status==='ready_for_demo').length,
+    delayed:projTasks.filter(t=>t.status==='delayed').length,
     closed:projTasks.filter(t=>t.status==='closed').length,overdue:projTasks.filter(t=>isOverdue(t)).length,
     estHrs:projTasks.reduce((s,t)=>s+(t.estimated_hours||0),0),actHrs:projTasks.reduce((s,t)=>s+(t.actual_hours||0),0),
     crCount:projTasks.filter(t=>t.task_type==='change_request').length,
@@ -379,6 +421,7 @@ export default function TasksPage() {
         <Kpi label="Backlog"     v={kpis.backlog}                  color="#64748b"/>
         <Kpi label="To Do"       v={kpis.todo}                     color="#3b82f6"/>
         <Kpi label="In Progress" v={kpis.inProgress}               color="#f59e0b"/>
+        <Kpi label="Delayed"     v={kpis.delayed}                  color="#e11d48"/>
         <Kpi label="QA"          v={kpis.qa}                       color="#8b5cf6"/>
         <Kpi label="Demo"        v={kpis.demo}                     color="#10b981"/>
         <Kpi label="Closed"      v={kpis.closed}                   color="#94a3b8"/>
@@ -403,7 +446,7 @@ export default function TasksPage() {
       {/* KANBAN */}
       {view==='kanban'&&(
         <div style={{overflowX:'auto',paddingBottom:12}}>
-          <div style={{display:'grid',gridTemplateColumns:`repeat(${STATUSES.length},minmax(220px,1fr))`,gap:10,minWidth:1320}}>
+          <div style={{display:'grid',gridTemplateColumns:`repeat(${STATUSES.length},minmax(220px,1fr))`,gap:10,minWidth:STATUSES.length*230}}>
             {STATUSES.map(status=>{
               const colTasks=projTasks.filter(t=>t.status===status),cc=SC[status]
               return (
@@ -418,6 +461,7 @@ export default function TasksPage() {
                     {colTasks.map(task=>(
                       <KanbanCard key={task.id} task={task} users={users}
                         canEdit={myPerm.can_edit} canDelete={myPerm.can_delete} canChangeStatus={myPerm.can_change_status}
+                        onView={()=>openDetail(task)}
                         onEdit={()=>{setEditTask(task);setTaskForm({...task});setShowTask(true)}}
                         onDelete={()=>setDelTask(task.id)}
                         onStatus={s=>changeStatus(task.id,s)}/>
@@ -658,7 +702,7 @@ export default function TasksPage() {
   )
 }
 
-function KanbanCard({task,users,canEdit,canDelete,canChangeStatus,onEdit,onDelete,onStatus}) {
+function KanbanCard({task,users,canEdit,canDelete,canChangeStatus,onView,onEdit,onDelete,onStatus}) {
   const [dragging,setDragging]=useState(false)
   const assignee=users.find(u=>u.id===task.assigned_to),over=isOverdue(task)
   return (
@@ -674,11 +718,12 @@ function KanbanCard({task,users,canEdit,canDelete,canChangeStatus,onEdit,onDelet
           <TypeBadge type={task.task_type||'task'}/>
         </div>
         <div style={{display:'flex',gap:3}}>
+          {onView&&<button style={{background:'none',border:'none',cursor:'pointer',padding:2,opacity:.5,color:'var(--text)'}} title="View details" onClick={onView}><Eye size={11}/></button>}
           {canEdit&&<button style={{background:'none',border:'none',cursor:'pointer',padding:2,opacity:.5,color:'var(--text)'}} onClick={onEdit}><Edit2 size={10}/></button>}
           {canDelete&&<button style={{background:'none',border:'none',cursor:'pointer',padding:2,opacity:.5,color:'var(--rose)'}} onClick={onDelete}><Trash2 size={10}/></button>}
         </div>
       </div>
-      <div style={{fontSize:12,fontWeight:600,marginBottom:6,lineHeight:1.4}}>{task.task_name}</div>
+      <div style={{fontSize:12,fontWeight:600,marginBottom:6,lineHeight:1.4,cursor:onView?'pointer':'default'}} onClick={onView}>{task.task_name}</div>
       <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:7}}>
         <span style={{fontSize:10}}>{PI[task.priority]} {task.priority}</span>
         {task.module_name&&<span style={{padding:'1px 6px',borderRadius:3,fontSize:10,background:'var(--bg-3)',color:'var(--text-muted)'}}>{task.module_name}</span>}

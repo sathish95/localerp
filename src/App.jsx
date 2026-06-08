@@ -28,6 +28,7 @@ import LandingPage from './pages/LandingPage'
 import AuthPage from './pages/AuthPage'
 import AdminContentPage from './pages/AdminContentPage'
 import ResourcePage from './pages/ResourcePage'
+import TasksPage from './pages/TasksPage'
 
 function AppRoutes() {
   const { user, profile, loading } = useAuth()
@@ -57,6 +58,7 @@ function AppRoutes() {
           <Route path="/approvals" element={isManager || isHR ? <ApprovalsPage /> : <Navigate to="/" />} />
           <Route path="/vendors" element={isManager || isFinance ? <VendorsPage /> : <Navigate to="/" />} />
           <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/tasks" element={<TasksPage />} />
           <Route path="/budget" element={<BudgetPage />} />
           <Route path="/assets" element={<AssetsPage />} />
           <Route path="/procurement" element={<ProcurementPage />} />

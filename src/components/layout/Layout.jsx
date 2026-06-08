@@ -7,7 +7,7 @@ import {
   LayoutDashboard, Receipt, Users, FolderOpen, PieChart, Box, CheckSquare,
   FileText, TrendingUp, Settings, LogOut, Menu, X, ChevronLeft,
   Truck, Plane, ShoppingCart, Briefcase, CreditCard, Building2, Package, BarChart2,
-  Calendar, Clock, FileSpreadsheet, Megaphone
+  Calendar, Clock, FileSpreadsheet, Megaphone, ClipboardList
 } from 'lucide-react'
 
 const roleColor = {
@@ -30,6 +30,7 @@ const ALL_NAV = [
   ]},
   { section: 'Operations', items: [
     { to: '/projects', tab: 'projects', label: 'Projects', icon: FolderOpen },
+    { to: '/tasks', tab: 'tasks', label: 'Task Management', icon: ClipboardList },
     { to: '/budget', tab: 'budget', label: 'Budget', icon: PieChart },
     { to: '/assets', tab: 'assets', label: 'Assets', icon: Box },
   ]},
@@ -85,6 +86,7 @@ export default function Layout({ children }) {
   const pageMap = {
     '/': 'Dashboard', '/expenses': 'Expenses', '/travel': 'Travel Requests',
     '/approvals': 'Approvals', '/vendors': 'Vendors', '/projects': 'Projects',
+    '/tasks': 'Task Management',
     '/budget': 'Budget', '/assets': 'Assets', '/procurement': 'Procurement',
     '/invoices': 'Invoices', '/fundflow': 'Fund Flow', '/pos': 'Purchase Orders',
     '/grn': 'GRN', '/users': 'Users', '/settings': 'Settings', '/reports': 'Reports',
