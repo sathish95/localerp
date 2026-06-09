@@ -1,6 +1,7 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { supabase, dateFmt, rupee } from '../lib/supabase'
+import { sendNotif } from '../lib/notifications'
 import { Modal, Loader, Empty, Confirm, SearchBox } from '../components/ui'
 import { Plus, Edit2, Trash2, LayoutGrid, List, BarChart2,
   Filter, X, Target, Zap, UserPlus, Shield, Save, ChevronDown, Eye } from 'lucide-react'
@@ -192,8 +193,8 @@ function PermissionsPanel({perms,setPerms,onSave,saved}) {
   )
 }
 
-/* ─── Task Detail (read-only view) ───────────────────────── */
-function TaskDetail({task,projects,users,stories,sprints,changReqs}) {
+/* ─── Task Detail (view with inline status change) ───────── */
+function TaskDetail({task,projects,users,stories,sprints,changReqs,canChangeStatus,onStatusChange}) {
   if(!task) return null
   const proj=projects.find(p=>p.id===task.project_id)
   const assignee=users.find(u=>u.id===task.assigned_to)
@@ -207,11 +208,18 @@ function TaskDetail({task,projects,users,stories,sprints,changReqs}) {
       <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:12}}>
         <span style={{fontFamily:'var(--font-mono)',fontSize:12,color:'var(--c1)',fontWeight:700}}>{task.task_id||'—'}</span>
         <TypeBadge type={task.task_type||'task'}/>
-        <Pill label={SL[task.status]} color={SC[task.status]}/>
         <Pill label={task.priority} color={PC[task.priority]}/>
         {over&&<span style={{padding:'2px 8px',borderRadius:4,fontSize:10,background:'rgba(225,29,72,.1)',color:'var(--rose)',fontWeight:700}}>⚠ OVERDUE</span>}
       </div>
       <div style={{fontSize:17,fontWeight:700,marginBottom:14,lineHeight:1.3}}>{task.task_name}</div>
+      <Row label="Status">
+        {canChangeStatus
+          ? <select style={{background:`${SC[task.status]}12`,color:SC[task.status],border:`1px solid ${SC[task.status]}30`,borderRadius:5,padding:'4px 10px',fontSize:12,fontWeight:700,cursor:'pointer',outline:'none',fontFamily:'inherit'}}
+              value={task.status} onChange={e=>onStatusChange&&onStatusChange(e.target.value)}>
+              {STATUSES.map(s=><option key={s} value={s}>{SL[s]}</option>)}
+            </select>
+          : <Pill label={SL[task.status]} color={SC[task.status]}/>}
+      </Row>
       <Row label="Project">{proj?.name}</Row>
       <Row label="Module">{task.module_name}</Row>
       <Row label="Assignee">{assignee?<span style={{display:'inline-flex',alignItems:'center',gap:6}}><Ava name={assignee.full_name} size={20}/>{assignee.full_name}</span>:null}</Row>
@@ -246,6 +254,7 @@ export default function TasksPage() {
   const [sprints,   setSprints]   = useState([])
   const [epics,     setEpics]     = useState([])
   const [users,     setUsers]     = useState([])
+  const usersRef    = useRef([])
   const [changReqs, setChangReqs] = useState([])
   const [loading,   setLoading]   = useState(true)
 
@@ -258,6 +267,7 @@ export default function TasksPage() {
   const [selType,   setSelType]  = useState('')
   const [search,    setSearch]   = useState('')
   const [view,      setView]     = useState('kanban')
+  const [groupBy,   setGroupBy]  = useState('none')
 
   const [showTask,   setShowTask]  = useState(false); const [editTask,  setEditTask]  = useState(null); const [taskForm,  setTaskForm]  = useState({}); const [subTask,  setSubTask]  = useState(false); const [delTask,  setDelTask]  = useState(null)
   const [detailTask, setDetailTask]= useState(null)
@@ -267,32 +277,123 @@ export default function TasksPage() {
   const [showAssign, setShowAssign]= useState(false); const [assignments,setAssignments]= useState([]); const [newAssign, setNewAssign] = useState({user_id:'',role:'member'})
   const [showPerms,  setShowPerms] = useState(false)
 
-  useEffect(()=>{loadAll()},[profile?.id])
+  // Keep usersRef current so the realtime closure always resolves assignee names
+  useEffect(()=>{ usersRef.current=users },[users])
+
+  useEffect(()=>{
+    loadAll()
+    // Fallback: reload when user returns to this tab (covers cases where realtime
+    // wasn't active, e.g. STEP21 SQL not yet run)
+    const onVisible=()=>{ if(document.visibilityState==='visible') loadAll() }
+    document.addEventListener('visibilitychange',onVisible)
+    return ()=>document.removeEventListener('visibilitychange',onVisible)
+  },[profile?.id])
+
+  // Real-time: auto-sync Kanban when check-in/out (or any writer) updates
+  // a task status. Requires STEP21 SQL (realtime enabled on project_tasks).
+  useEffect(()=>{
+    const ch=supabase.channel('task-status-sync')
+      .on('postgres_changes',{event:'UPDATE',schema:'public',table:'project_tasks'},payload=>{
+        const u=payload.new
+        // payload.new is a flat DB row — it never contains the joined `assignee`
+        // object. Reconstruct it from the local users cache so avatars stay correct.
+        const resolvedAssignee=usersRef.current.find(usr=>usr.id===u.assigned_to)||null
+        setTasks(prev=>{
+          // Ignore updates for tasks outside the current user's project scope
+          if(!prev.some(t=>t.id===u.id)) return prev
+          return prev.map(t=>t.id!==u.id?t:{
+            ...t, ...u,
+            // If assigned_to didn't change keep the richer joined object, else use resolved
+            assignee: u.assigned_to===t.assigned_to ? t.assignee : resolvedAssignee
+          })
+        })
+        setDetailTask(d=>d?.id!==u.id?d:{
+          ...d, ...u,
+          assignee: u.assigned_to===d.assigned_to ? d.assignee : resolvedAssignee
+        })
+      })
+      .subscribe()
+    return ()=>{ supabase.removeChannel(ch) }
+  },[])
 
   async function loadAll() {
     setLoading(true)
     const [uR,pR,permR] = await Promise.all([
       supabase.from('profiles').select('id,full_name,role').order('full_name'),
-      isMgr ? supabase.from('projects').select('id,name,code,status').eq('status','active').order('name')
-             : supabase.from('project_assignments').select('project:projects(id,name,code,status)').eq('user_id',profile.id),
+      isMgr
+        ? supabase.from('projects').select('id,name,code,status').eq('status','active').order('name')
+        : supabase.from('project_assignments').select('project:projects(id,name,code,status)').eq('user_id',profile.id),
       supabase.from('task_role_permissions').select('*').is('project_id',null),
     ])
     const us=uR.data||[]
-    const ps=isMgr?(pR.data||[]):(pR.data||[]).map(r=>r.project).filter(Boolean)
-    setUsers(us); setProjects(ps)
-    if(permR.data?.length>0){const dp={};permR.data.forEach(p=>{dp[p.role]={can_view:p.can_view,can_create:p.can_create,can_edit:p.can_edit,can_delete:p.can_delete,can_change_status:p.can_change_status}});setPerms({...DEF_PERMS,...dp})}
-    if(ps.length>0){
-      const ids=ps.map(p=>p.id)
-      const [tR,sR,spR,eR,crR]=await Promise.all([
-        supabase.from('project_tasks').select('*,assignee:profiles!assigned_to(id,full_name)').in('project_id',ids).order('created_at',{ascending:false}),
-        supabase.from('user_stories').select('*,assignee:profiles!assignee_id(id,full_name)').in('project_id',ids).order('created_at',{ascending:false}),
-        supabase.from('sprints').select('*').in('project_id',ids).order('created_at',{ascending:false}),
-        supabase.from('epics').select('*').in('project_id',ids),
-        supabase.from('change_requests').select('*').in('project_id',ids).order('created_at',{ascending:false}),
-      ])
-      setTasks(tR.data||[]); setStories(sR.data||[])
-      setSprints(spR.data||[]); setEpics(eR.data||[])
-      setChangReqs(crR.data||[])
+    setUsers(us)
+    if(permR.data?.length>0){
+      const dp={}
+      permR.data.forEach(p=>{dp[p.role]={can_view:p.can_view,can_create:p.can_create,can_edit:p.can_edit,can_delete:p.can_delete,can_change_status:p.can_change_status}})
+      setPerms({...DEF_PERMS,...dp})
+    }
+
+    if(isMgr) {
+      // Managers see all active projects and all their tasks
+      const ps=pR.data||[]
+      setProjects(ps)
+      if(ps.length>0){
+        const ids=ps.map(p=>p.id)
+        const [tR,sR,spR,eR,crR]=await Promise.all([
+          supabase.from('project_tasks').select('*,assignee:profiles!assigned_to(id,full_name)').in('project_id',ids).order('created_at',{ascending:false}),
+          supabase.from('user_stories').select('*,assignee:profiles!assignee_id(id,full_name)').in('project_id',ids).order('created_at',{ascending:false}),
+          supabase.from('sprints').select('*').in('project_id',ids).order('created_at',{ascending:false}),
+          supabase.from('epics').select('*').in('project_id',ids),
+          supabase.from('change_requests').select('*').in('project_id',ids).order('created_at',{ascending:false}),
+        ])
+        setTasks(tR.data||[]); setStories(sR.data||[])
+        setSprints(spR.data||[]); setEpics(eR.data||[])
+        setChangReqs(crR.data||[])
+      }
+    } else {
+      // Non-managers (employee, developer, lead, etc.):
+      // Load tasks ASSIGNED TO THEM + tasks in any project they are formally assigned to.
+      // This ensures employees always see their tasks even if not in project_assignments.
+      const assignedProjects=(pR.data||[]).map(r=>r.project).filter(Boolean)
+      const assignedProjIds=assignedProjects.map(p=>p.id)
+
+      // Build task query: directly assigned OR in their projects
+      let taskQ=supabase.from('project_tasks')
+        .select('*,assignee:profiles!assigned_to(id,full_name)')
+        .order('created_at',{ascending:false})
+      if(assignedProjIds.length>0){
+        taskQ=taskQ.or(`assigned_to.eq.${profile.id},project_id.in.(${assignedProjIds.join(',')})`)
+      } else {
+        taskQ=taskQ.eq('assigned_to',profile.id)
+      }
+      const {data:taskData}=await taskQ
+      const fetchedTasks=taskData||[]
+
+      // Discover projects from task results that aren't already in assignedProjects
+      const taskProjIds=[...new Set(fetchedTasks.map(t=>t.project_id).filter(Boolean))]
+      const extraProjIds=taskProjIds.filter(id=>!assignedProjIds.includes(id))
+      let allProjects=[...assignedProjects]
+      if(extraProjIds.length>0){
+        const {data:extraProjs}=await supabase.from('projects').select('id,name,code,status').in('id',extraProjIds)
+        if(extraProjs) allProjects=[...allProjects,...extraProjs]
+      }
+      setProjects(allProjects)
+      setTasks(fetchedTasks)
+
+      // Load stories, sprints, epics, CRs for all visible project IDs
+      const allProjIds=[...new Set([...assignedProjIds,...taskProjIds])]
+      if(allProjIds.length>0){
+        const [sR,spR,eR,crR]=await Promise.all([
+          supabase.from('user_stories').select('*,assignee:profiles!assignee_id(id,full_name)').in('project_id',allProjIds).order('created_at',{ascending:false}),
+          supabase.from('sprints').select('*').in('project_id',allProjIds).order('created_at',{ascending:false}),
+          supabase.from('epics').select('*').in('project_id',allProjIds),
+          supabase.from('change_requests').select('*').in('project_id',allProjIds).order('created_at',{ascending:false}),
+        ])
+        setStories(sR.data||[]); setSprints(spR.data||[])
+        setEpics(eR.data||[]); setChangReqs(crR.data||[])
+      } else {
+        setStories([]); setSprints([]); setEpics([]); setChangReqs([])
+      }
     }
     setLoading(false)
   }
@@ -308,8 +409,20 @@ export default function TasksPage() {
     e.preventDefault(); setSubTask(true)
     try {
       const p={task_name:taskForm.task_name,task_type:taskForm.task_type||'task',description:taskForm.description||null,module_name:taskForm.module_name||null,priority:taskForm.priority||'medium',assigned_to:taskForm.assigned_to||null,status:taskForm.status||'backlog',planned_start_date:taskForm.planned_start_date||null,planned_end_date:taskForm.planned_end_date||null,estimated_hours:parseFloat(taskForm.estimated_hours)||null,actual_hours:parseFloat(taskForm.actual_hours)||null,user_story_id:taskForm.user_story_id||null,sprint_id:taskForm.sprint_id||null,change_request_id:taskForm.change_request_id||null,project_id:taskForm.project_id||selProj||projects[0]?.id}
-      if(editTask)await supabase.from('project_tasks').update(p).eq('id',editTask.id)
-      else await supabase.from('project_tasks').insert({...p,created_by:profile.id})
+      if(editTask){
+        const wasAssignedTo = editTask.assigned_to
+        await supabase.from('project_tasks').update(p).eq('id',editTask.id)
+        // Notify if assignee changed
+        if(p.assigned_to && p.assigned_to !== wasAssignedTo && p.assigned_to !== profile.id){
+          sendNotif(p.assigned_to,{type:'task_assigned',title:`📋 Task assigned to you`,body:`${p.task_name} — ${SL[p.status]||p.status}`,link:'/tasks',senderId:profile.id})
+        }
+      } else {
+        await supabase.from('project_tasks').insert({...p,created_by:profile.id})
+        // Notify the assignee
+        if(p.assigned_to && p.assigned_to !== profile.id){
+          sendNotif(p.assigned_to,{type:'task_assigned',title:`📋 New task assigned to you`,body:`${p.task_name}`,link:'/tasks',senderId:profile.id})
+        }
+      }
       setShowTask(false);setEditTask(null);loadAll()
     }catch(e){alert(e.message)}finally{setSubTask(false)}
   }
@@ -331,8 +444,19 @@ export default function TasksPage() {
     setShowSprint(false);setEditSprint(null);loadAll()
   }
 
-  async function dropOnColumn(e,st){e.preventDefault();const tid=e.dataTransfer.getData('task_id');if(!tid||!myPerm.can_change_status)return;await supabase.from('project_tasks').update({status:st}).eq('id',tid);setTasks(p=>p.map(t=>t.id===tid?{...t,status:st}:t))}
-  async function changeStatus(id,st){if(!myPerm.can_change_status)return;await supabase.from('project_tasks').update({status:st}).eq('id',id);setTasks(p=>p.map(t=>t.id===id?{...t,status:st}:t))}
+  async function dropOnColumn(e,st){e.preventDefault();const tid=e.dataTransfer.getData('task_id');if(!tid||!myPerm.can_change_status)return;await supabase.from('project_tasks').update({status:st}).eq('id',tid);setTasks(p=>p.map(t=>t.id===tid?{...t,status:st}:t));setDetailTask(d=>d?.id===tid?{...d,status:st}:d)}
+  async function changeStatus(id,st){
+    if(!myPerm.can_change_status)return
+    await supabase.from('project_tasks').update({status:st}).eq('id',id)
+    setTasks(p=>p.map(t=>t.id===id?{...t,status:st}:t))
+    setDetailTask(d=>d?.id===id?{...d,status:st}:d)
+    // Notify the task creator/assignee about status change (if different from current user)
+    const task = tasks.find(t=>t.id===id)
+    if(task){
+      const notifyId = task.assigned_to !== profile.id ? task.assigned_to : (task.created_by !== profile.id ? task.created_by : null)
+      if(notifyId) sendNotif(notifyId,{type:'task_status',title:`🔄 Task status updated`,body:`${task.task_name} → ${SL[st]||st}`,link:'/tasks',senderId:profile.id})
+    }
+  }
 
   async function loadAssignments(pid){const{data}=await supabase.from('project_assignments').select('*,user:profiles(id,full_name,role)').eq('project_id',pid);setAssignments(data||[])}
   async function addAssignment(){if(!newAssign.user_id||!selProj)return;await supabase.from('project_assignments').upsert({project_id:selProj,user_id:newAssign.user_id,role:newAssign.role,assigned_by:profile.id});loadAssignments(selProj);setNewAssign({user_id:'',role:'member'})}
@@ -393,6 +517,16 @@ export default function TasksPage() {
         <option value="">All Types</option>{TASK_TYPES.map(t=><option key={t} value={t}>{TYPE_ICO[t]} {t.replace(/_/g,' ')}</option>)}
       </select>
       <div style={{flex:1,minWidth:120}}><SearchBox value={search} onChange={setSearch} placeholder="Search tasks…"/></div>
+      {view==='list'&&(
+        <select className="form-select" value={groupBy} onChange={e=>setGroupBy(e.target.value)} style={{width:'auto',fontSize:12}}>
+          <option value="none">No Grouping</option>
+          <option value="status">Group by Status</option>
+          <option value="assignee">Group by Assignee</option>
+          <option value="module">Group by Module</option>
+          <option value="priority">Group by Priority</option>
+          <option value="sprint">Group by Sprint</option>
+        </select>
+      )}
       {(selProj||selSprint||selModule||selAssign||selStatus||selPrio||selType||search)&&
         <button className="btn btn-ghost btn-sm" onClick={()=>{setSelProj('');setSelSprint('');setSelModule('');setSelAssign('');setSelStatus('');setSelPrio('');setSelType('');setSearch('')}}><X size={11}/> Clear</button>}
     </div>
@@ -483,37 +617,66 @@ export default function TasksPage() {
       )}
 
       {/* LIST */}
-      {view==='list'&&(
-        <div className="table-wrap"><table>
-          <thead><tr><th>ID</th><th>Type</th><th>Task Name</th><th>Module</th><th>Project</th><th>Assignee</th><th>Priority</th><th>Status</th><th>End Date</th><th>Est.</th><th>Act.</th>{(myPerm.can_edit||myPerm.can_delete)&&<th></th>}</tr></thead>
-          <tbody>
-            {projTasks.length===0?<tr><td colSpan={12} style={{padding:'30px',textAlign:'center',color:'var(--text-muted)'}}>No tasks found — try clearing filters</td></tr>
-              :projTasks.map(t=>{const proj=projects.find(p=>p.id===t.project_id),over=isOverdue(t)
-                return <tr key={t.id} style={{background:over?'rgba(225,29,72,.03)':'transparent'}}>
-                  <td><span style={{fontFamily:'var(--font-mono)',fontSize:11,color:'var(--c1)',fontWeight:700}}>{t.task_id||'—'}</span></td>
-                  <td><TypeBadge type={t.task_type||'task'}/></td>
-                  <td><div style={{fontWeight:600,fontSize:13,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.task_name}</div>{over&&<div style={{fontSize:10,color:'var(--rose)'}}>⚠ Overdue</div>}</td>
-                  <td><span style={{fontSize:11,color:'var(--text-muted)'}}>{t.module_name||'—'}</span></td>
-                  <td><span style={{fontSize:11,color:'var(--text-muted)'}}>{proj?.name||'—'}</span></td>
-                  <td>{t.assignee?<div style={{display:'flex',alignItems:'center',gap:5}}><Ava name={t.assignee.full_name} size={20}/><span style={{fontSize:11}}>{t.assignee.full_name.split(' ')[0]}</span></div>:<span style={{color:'var(--text-muted)',fontSize:11}}>—</span>}</td>
-                  <td><span style={{fontSize:12}}>{PI[t.priority]} {t.priority}</span></td>
-                  <td>{myPerm.can_change_status
-                    ?<select style={{background:`${SC[t.status]}12`,color:SC[t.status],border:`1px solid ${SC[t.status]}30`,borderRadius:5,padding:'3px 8px',fontSize:11,fontWeight:700,cursor:'pointer',outline:'none',fontFamily:'inherit'}} value={t.status} onChange={e=>changeStatus(t.id,e.target.value)}>{STATUSES.map(s=><option key={s} value={s}>{SL[s]}</option>)}</select>
-                    :<Pill label={SL[t.status]} color={SC[t.status]}/>}
-                  </td>
-                  <td><span style={{fontSize:11,color:over?'var(--rose)':'var(--text-muted)',fontFamily:'var(--font-mono)'}}>{dateFmt(t.planned_end_date)||'—'}</span></td>
-                  <td><span style={{fontFamily:'var(--font-mono)',fontSize:11}}>{t.estimated_hours||'—'}</span></td>
-                  <td><span style={{fontFamily:'var(--font-mono)',fontSize:11,color:t.actual_hours>t.estimated_hours?'var(--rose)':'var(--text)'}}>{t.actual_hours||'—'}</span></td>
-                  {(myPerm.can_edit||myPerm.can_delete)&&<td><div style={{display:'flex',gap:4}}>
-                    {myPerm.can_edit&&<button className="btn btn-ghost btn-sm btn-icon" onClick={()=>{setEditTask(t);setTaskForm({...t});setShowTask(true)}}><Edit2 size={11}/></button>}
-                    {myPerm.can_delete&&<button className="btn btn-ghost btn-sm btn-icon" style={{color:'var(--rose)'}} onClick={()=>setDelTask(t.id)}><Trash2 size={11}/></button>}
-                  </div></td>}
-                </tr>
-              })
-            }
-          </tbody>
-        </table></div>
-      )}
+      {view==='list'&&(()=>{
+        const TaskRow=({t})=>{const proj=projects.find(p=>p.id===t.project_id),over=isOverdue(t);return(
+          <tr key={t.id} style={{background:over?'rgba(225,29,72,.03)':'transparent'}}>
+            <td><span style={{fontFamily:'var(--font-mono)',fontSize:11,color:'var(--c1)',fontWeight:700,cursor:'pointer'}} onClick={()=>openDetail(t)}>{t.task_id||'—'}</span></td>
+            <td><TypeBadge type={t.task_type||'task'}/></td>
+            <td><div style={{fontWeight:600,fontSize:13,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',cursor:'pointer'}} onClick={()=>openDetail(t)}>{t.task_name}</div>{over&&<div style={{fontSize:10,color:'var(--rose)'}}>⚠ Overdue</div>}</td>
+            <td><span style={{fontSize:11,color:'var(--text-muted)'}}>{t.module_name||'—'}</span></td>
+            <td><span style={{fontSize:11,color:'var(--text-muted)'}}>{proj?.name||'—'}</span></td>
+            <td>{t.assignee?<div style={{display:'flex',alignItems:'center',gap:5}}><Ava name={t.assignee.full_name} size={20}/><span style={{fontSize:11}}>{t.assignee.full_name.split(' ')[0]}</span></div>:<span style={{color:'var(--text-muted)',fontSize:11}}>—</span>}</td>
+            <td><span style={{fontSize:12}}>{PI[t.priority]} {t.priority}</span></td>
+            <td>{myPerm.can_change_status
+              ?<select style={{background:`${SC[t.status]}12`,color:SC[t.status],border:`1px solid ${SC[t.status]}30`,borderRadius:5,padding:'3px 8px',fontSize:11,fontWeight:700,cursor:'pointer',outline:'none',fontFamily:'inherit'}} value={t.status} onChange={e=>changeStatus(t.id,e.target.value)}>{STATUSES.map(s=><option key={s} value={s}>{SL[s]}</option>)}</select>
+              :<Pill label={SL[t.status]} color={SC[t.status]}/>}
+            </td>
+            <td><span style={{fontSize:11,color:over?'var(--rose)':'var(--text-muted)',fontFamily:'var(--font-mono)'}}>{dateFmt(t.planned_end_date)||'—'}</span></td>
+            <td><span style={{fontFamily:'var(--font-mono)',fontSize:11}}>{t.estimated_hours||'—'}</span></td>
+            <td><span style={{fontFamily:'var(--font-mono)',fontSize:11,color:t.actual_hours>t.estimated_hours?'var(--rose)':'var(--text)'}}>{t.actual_hours||'—'}</span></td>
+            <td><div style={{display:'flex',gap:4}}>
+              <button className="btn btn-ghost btn-sm btn-icon" title="View" onClick={()=>openDetail(t)}><Eye size={11}/></button>
+              {myPerm.can_edit&&<button className="btn btn-ghost btn-sm btn-icon" onClick={()=>{setEditTask(t);setTaskForm({...t});setShowTask(true)}}><Edit2 size={11}/></button>}
+              {myPerm.can_delete&&<button className="btn btn-ghost btn-sm btn-icon" style={{color:'var(--rose)'}} onClick={()=>setDelTask(t.id)}><Trash2 size={11}/></button>}
+            </div></td>
+          </tr>
+        )}
+        const THead=()=><thead><tr><th>ID</th><th>Type</th><th>Task Name</th><th>Module</th><th>Project</th><th>Assignee</th><th>Priority</th><th>Status</th><th>End Date</th><th>Est.</th><th>Act.</th><th></th></tr></thead>
+        const GroupHeader=({label,color,count})=><tr><td colSpan={12} style={{padding:'10px 14px',background:'var(--surface-2)',borderTop:'2px solid var(--border)',fontWeight:700,fontSize:12,color:color||'var(--text-muted)'}}>{label} <span style={{fontWeight:400,fontSize:11}}>({count})</span></td></tr>
+        if(projTasks.length===0)return<div className="table-wrap"><table><THead/><tbody><tr><td colSpan={12} style={{padding:'30px',textAlign:'center',color:'var(--text-muted)'}}>No tasks found — try clearing filters</td></tr></tbody></table></div>
+        if(groupBy==='none')return<div className="table-wrap"><table><THead/><tbody>{projTasks.map(t=><TaskRow key={t.id} t={t}/>)}</tbody></table></div>
+        // Grouped rendering
+        const groupKey=t=>{
+          if(groupBy==='status')return t.status
+          if(groupBy==='assignee')return t.assigned_to||(t.assignee?.id)||'__unassigned'
+          if(groupBy==='module')return t.module_name||'__no_module'
+          if(groupBy==='priority')return t.priority||'medium'
+          if(groupBy==='sprint')return t.sprint_id||'__no_sprint'
+          return 'all'
+        }
+        const groupLabel=k=>{
+          if(groupBy==='status')return SL[k]||k
+          if(groupBy==='assignee'){if(k==='__unassigned')return'Unassigned';const u=users.find(u=>u.id===k);return u?.full_name||k}
+          if(groupBy==='module')return k==='__no_module'?'No Module':k
+          if(groupBy==='priority')return k.charAt(0).toUpperCase()+k.slice(1)
+          if(groupBy==='sprint'){if(k==='__no_sprint')return'No Sprint';const s=sprints.find(s=>s.id===k);return s?.name||k}
+          return k
+        }
+        const groupColor=k=>{
+          if(groupBy==='status')return SC[k]
+          if(groupBy==='priority')return PC[k]
+          return 'var(--c1)'
+        }
+        const groupOrder=groupBy==='status'?STATUSES:groupBy==='priority'?PRIOS:null
+        const grouped=projTasks.reduce((acc,t)=>{const k=groupKey(t);(acc[k]=acc[k]||[]).push(t);return acc},{})
+        const keys=groupOrder?[...groupOrder.filter(k=>grouped[k]),...Object.keys(grouped).filter(k=>!groupOrder.includes(k))]:Object.keys(grouped).sort()
+        return<div className="table-wrap"><table><THead/><tbody>
+          {keys.map(k=>[
+            <GroupHeader key={`hdr-${k}`} label={groupLabel(k)} color={groupColor(k)} count={(grouped[k]||[]).length}/>,
+            ...(grouped[k]||[]).map(t=><TaskRow key={t.id} t={t}/>)
+          ])}
+        </tbody></table></div>
+      })()}
 
       {/* STORIES */}
       {view==='stories'&&(
@@ -543,13 +706,13 @@ export default function TasksPage() {
                     </div>
                   </div>
                   {stTasks.length>0&&<div style={{borderTop:'1px solid var(--border)',padding:'8px 16px',display:'flex',gap:6,flexWrap:'wrap'}}>
-                    {stTasks.slice(0,6).map(t=>(
+                    {stTasks.slice(0,8).map(t=>(
                       <span key={t.id} style={{display:'inline-flex',alignItems:'center',gap:5,padding:'3px 9px',borderRadius:5,fontSize:11,background:`${SC[t.status]}12`,color:SC[t.status],border:`1px solid ${SC[t.status]}25`,cursor:'pointer'}}
-                        onClick={()=>{if(myPerm.can_edit){setEditTask(t);setTaskForm({...t});setShowTask(true)}}}>
-                        {TYPE_ICO[t.task_type||'task']} {t.task_id} · {t.task_name.slice(0,18)}{t.task_name.length>18?'…':''}
+                        onClick={()=>openDetail(t)}>
+                        {TYPE_ICO[t.task_type||'task']} {t.task_id} · {t.task_name.slice(0,20)}{t.task_name.length>20?'…':''}
                       </span>
                     ))}
-                    {stTasks.length>6&&<span style={{fontSize:11,color:'var(--text-muted)'}}>+{stTasks.length-6} more</span>}
+                    {stTasks.length>8&&<span style={{fontSize:11,color:'var(--text-muted)'}}>+{stTasks.length-8} more</span>}
                   </div>}
                 </div>
               )
@@ -641,6 +804,20 @@ export default function TasksPage() {
       )}
 
       {/* MODALS */}
+
+      {/* Task Detail Modal */}
+      <Modal open={!!detailTask} onClose={()=>setDetailTask(null)}
+        title={detailTask?.task_id||'Task Detail'} size="lg"
+        footer={<>
+          {myPerm.can_edit&&detailTask&&<button className="btn btn-outline btn-sm" onClick={()=>{setEditTask(detailTask);setTaskForm({...detailTask});setDetailTask(null);setShowTask(true)}}><Edit2 size={12}/> Edit</button>}
+          <button className="btn btn-ghost" onClick={()=>setDetailTask(null)}>Close</button>
+        </>}>
+        <TaskDetail task={detailTask} projects={projects} users={users} stories={stories}
+          sprints={sprints} changReqs={changReqs}
+          canChangeStatus={myPerm.can_change_status}
+          onStatusChange={s=>changeStatus(detailTask.id,s)}/>
+      </Modal>
+
       <Modal open={showTask} onClose={()=>{setShowTask(false);setEditTask(null)}} title={editTask?`Edit ${editTask.task_id||'Task'}`:'New Task'} size="lg"
         footer={<><button className="btn btn-ghost" onClick={()=>{setShowTask(false);setEditTask(null)}}>Cancel</button><button className="btn btn-primary" onClick={saveTask} disabled={subTask}>{subTask?'Saving…':'Save Task'}</button></>}>
         <TaskForm form={taskForm} setForm={setTaskForm} projects={projects} users={users} isMgr={isMgr}

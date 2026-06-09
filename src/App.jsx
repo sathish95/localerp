@@ -24,11 +24,15 @@ import SettingsPage from './pages/SettingsPage'
 import ReportsPage from './pages/ReportsPage'
 import LeavePage from './pages/LeavePage'
 import TimesheetPage from './pages/TimesheetPage'
+import TimesheetApprovalPage from './pages/TimesheetApprovalPage'
+import ChatPage from './pages/ChatPage'
+import AppMonitorPage from './pages/AppMonitorPage'
 import LandingPage from './pages/LandingPage'
 import AuthPage from './pages/AuthPage'
 import AdminContentPage from './pages/AdminContentPage'
 import ResourcePage from './pages/ResourcePage'
 import TasksPage from './pages/TasksPage'
+import { NotificationProvider } from './context/NotificationContext'
 
 function AppRoutes() {
   const { user, profile, loading } = useAuth()
@@ -50,6 +54,7 @@ function AppRoutes() {
 
   return (
     <TabVisibilityProvider>
+      <NotificationProvider>
       <Layout>
         <Routes>
           <Route path="/" element={<DashboardPage />} />
@@ -72,11 +77,15 @@ function AppRoutes() {
           <Route path="/leave" element={<LeavePage />} />
           <Route path="/resources" element={<ResourcePage />} />
           <Route path="/timesheet" element={<TimesheetPage />} />
+          <Route path="/timesheet-approvals" element={<TimesheetApprovalPage />} />
+          <Route path="/chat" element={<ChatPage />} />
+          <Route path="/app-monitor" element={isAdmin ? <AppMonitorPage /> : <Navigate to="/" />} />
           <Route path="/content" element={isAdmin ? <AdminContentPage /> : <Navigate to="/" />} />
           <Route path="/login" element={<Navigate to="/" />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
       </Layout>
+      </NotificationProvider>
     </TabVisibilityProvider>
   )
 }

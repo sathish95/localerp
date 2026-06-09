@@ -1,13 +1,16 @@
 import { useState, useEffect } from 'react'
 import CheckInWidget from '../CheckInWidget'
+import NotificationBell from '../NotificationBell'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { useTabVisibility } from '../../context/TabVisibilityContext'
+import { supabase } from '../../lib/supabase'
 import {
   LayoutDashboard, Receipt, Users, FolderOpen, PieChart, Box, CheckSquare,
   FileText, TrendingUp, Settings, LogOut, Menu, X, ChevronLeft,
   Truck, Plane, ShoppingCart, Briefcase, CreditCard, Building2, Package, BarChart2,
-  Calendar, Clock, FileSpreadsheet, Megaphone, ClipboardList
+  Calendar, Clock, FileSpreadsheet, Megaphone, ClipboardList, FileClock,
+  MessageSquare, Activity
 } from 'lucide-react'
 
 const roleColor = {
@@ -46,14 +49,20 @@ const ALL_NAV = [
     { to: '/leave', tab: 'leave', label: 'Leave Management', icon: Calendar },
     { to: '/resources', tab: 'resources', label: 'Resource Tracking', icon: Clock },
     { to: '/timesheet', tab: 'timesheet', label: 'Timesheet', icon: FileSpreadsheet },
+    { to: '/timesheet-approvals', tab: 'timesheet-approvals', label: 'Timesheet Approvals', icon: FileClock },
+    { to: '/chat', tab: 'chat', label: 'Chat', icon: MessageSquare },
   ]},
   { section: 'Admin', items: [
     { to: '/users', tab: 'users', label: 'Users', icon: Users, roles: ['admin','ceo','manager','finance'] },
     { to: '/reports', tab: 'reports', label: 'Reports', icon: BarChart2 },
     { to: '/settings', tab: 'settings', label: 'Settings', icon: Settings, roles: ['admin','ceo'] },
     { to: '/content', tab: 'content', label: 'Landing Content', icon: Megaphone, roles: ['admin','ceo'] },
+    { to: '/app-monitor', tab: 'app-monitor', label: 'App Monitor', icon: Activity, roles: ['admin','ceo'] },
   ]},
 ]
+
+// Stable session ID for this browser tab's lifetime
+const SESSION_ID = Math.random().toString(36).slice(2)
 
 export default function Layout({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -68,6 +77,17 @@ export default function Layout({ children }) {
 
   // Close sidebar on mobile nav
   useEffect(() => { setSidebarOpen(false) }, [location.pathname])
+
+  // Track page views for app monitor
+  useEffect(() => {
+    if (!profile?.id) return
+    supabase.from('app_events').insert({
+      event_type: 'page_view',
+      path: location.pathname,
+      user_id: profile.id,
+      session_id: SESSION_ID,
+    }).then(() => {})
+  }, [location.pathname, profile?.id])
 
   async function handleSignOut() { await signOut(); navigate('/login') }
 
@@ -90,7 +110,8 @@ export default function Layout({ children }) {
     '/budget': 'Budget', '/assets': 'Assets', '/procurement': 'Procurement',
     '/invoices': 'Invoices', '/fundflow': 'Fund Flow', '/pos': 'Purchase Orders',
     '/grn': 'GRN', '/users': 'Users', '/settings': 'Settings', '/reports': 'Reports',
-    '/timesheet': 'Timesheet', '/content': 'Landing Content',
+    '/timesheet': 'Timesheet', '/timesheet-approvals': 'Timesheet Approvals', '/content': 'Landing Content',
+    '/chat': 'Chat', '/app-monitor': 'App Monitor',
   }
   const pageTitle = pageMap[location.pathname] || 'ThingsAlive NeoX'
 
@@ -169,6 +190,7 @@ export default function Layout({ children }) {
           </button>
           <div className="topbar-title">{pageTitle}</div>
           <div className="topbar-right" style={{display:'flex',alignItems:'center',gap:10}}>
+            <NotificationBell />
             <CheckInWidget />
             <div className="topbar-avatar" style={{ background: color }}>{initials}</div>
           </div>

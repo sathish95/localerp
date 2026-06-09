@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase, dateFmt } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { notifyManagers } from '../lib/notifications'
 
 const SL = { backlog:'Backlog', todo:'To Do', in_progress:'In Progress', delayed:'Delayed', qa:'QA Testing', ready_for_demo:'Ready for Demo', closed:'Closed' }
 const SC = { backlog:'#64748b', todo:'#3b82f6', in_progress:'#f59e0b', delayed:'#e11d48', qa:'#8b5cf6', ready_for_demo:'#10b981', closed:'#94a3b8' }
@@ -75,6 +76,14 @@ export default function CheckInWidget({ variant = 'widget' }) {
           .in('id', selTasks).not('status', 'in', '("in_progress","qa","ready_for_demo","closed")')
       }
       setSelTasks([]); setComment(''); setSelProject(''); setOpen(false)
+      // Notify managers about check-in
+      notifyManagers({
+        type: 'checkin',
+        title: `🟢 ${profile.full_name} checked in`,
+        body: comment || (selProject ? `Project session started` : 'Work session started'),
+        link: '/resources',
+        senderId: profile.id,
+      })
       init()
     } catch(e) { alert(e.message) }
     setLoading(false)
@@ -101,6 +110,14 @@ export default function CheckInWidget({ variant = 'widget' }) {
           await supabase.from('checkin_tasks').update({ status_update: ct.new_status }).eq('id', ct.id)
         }
       }
+      // Notify managers about checkout
+      notifyManagers({
+        type: 'checkout',
+        title: `🔴 ${profile.full_name} checked out`,
+        body: `Session duration: ${elapsed || hrs + 'h'}`,
+        link: '/resources',
+        senderId: profile.id,
+      })
       setOpen(false); setPhase('idle'); setActiveLog(null); setCoTasks([])
       init()
     } catch(e) { alert(e.message) }
@@ -111,11 +128,13 @@ export default function CheckInWidget({ variant = 'widget' }) {
 
   const widgetStyle = {
     display:'flex', alignItems:'center', gap:6, padding:'5px 12px',
-    borderRadius:7, border:`1.5px solid ${isActive?'#10b981':'rgba(255,255,255,0.15)'}`,
-    background: isActive ? 'rgba(16,185,129,0.12)' : 'rgba(255,255,255,0.07)',
+    borderRadius:7,
+    border: isActive ? '1.5px solid #10b981' : '1.5px solid rgba(99,102,241,0.45)',
+    background: isActive ? 'rgba(16,185,129,0.15)' : 'rgba(99,102,241,0.12)',
     cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700,
-    color: isActive ? '#10b981' : 'rgba(255,255,255,0.8)', transition:'all .2s',
-    whiteSpace:'nowrap', position:'relative',
+    color: isActive ? '#10b981' : '#a5b4fc',
+    boxShadow: isActive ? '0 0 8px rgba(16,185,129,0.25)' : 'none',
+    transition:'all .2s', whiteSpace:'nowrap', position:'relative',
   }
 
   const popupStyle = {
