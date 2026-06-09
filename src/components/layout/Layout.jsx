@@ -10,7 +10,7 @@ import {
   FileText, TrendingUp, Settings, LogOut, Menu, X, ChevronLeft,
   Truck, Plane, ShoppingCart, Briefcase, CreditCard, Building2, Package, BarChart2,
   Calendar, Clock, FileSpreadsheet, Megaphone, ClipboardList, FileClock,
-  MessageSquare, Activity
+  MessageSquare, Activity, Sparkles
 } from 'lucide-react'
 
 const roleColor = {
@@ -34,6 +34,7 @@ const ALL_NAV = [
   { section: 'Operations', items: [
     { to: '/projects', tab: 'projects', label: 'Projects', icon: FolderOpen },
     { to: '/tasks', tab: 'tasks', label: 'Task Management', icon: ClipboardList },
+    { to: '/neo-task-ai', tab: 'neo-task-ai', label: 'Neo Task AI', icon: Sparkles },
     { to: '/budget', tab: 'budget', label: 'Budget', icon: PieChart },
     { to: '/assets', tab: 'assets', label: 'Assets', icon: Box },
   ]},
@@ -111,7 +112,7 @@ export default function Layout({ children }) {
     '/invoices': 'Invoices', '/fundflow': 'Fund Flow', '/pos': 'Purchase Orders',
     '/grn': 'GRN', '/users': 'Users', '/settings': 'Settings', '/reports': 'Reports',
     '/timesheet': 'Timesheet', '/timesheet-approvals': 'Timesheet Approvals', '/content': 'Landing Content',
-    '/chat': 'Chat', '/app-monitor': 'App Monitor',
+    '/chat': 'Chat', '/app-monitor': 'App Monitor', '/neo-task-ai': 'Neo Task AI',
   }
   const pageTitle = pageMap[location.pathname] || 'ThingsAlive NeoX'
 

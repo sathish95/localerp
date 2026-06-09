@@ -32,6 +32,7 @@ import AuthPage from './pages/AuthPage'
 import AdminContentPage from './pages/AdminContentPage'
 import ResourcePage from './pages/ResourcePage'
 import TasksPage from './pages/TasksPage'
+import NeoTaskAIPage from './pages/NeoTaskAIPage'
 import { NotificationProvider } from './context/NotificationContext'
 
 function AppRoutes() {
@@ -64,6 +65,7 @@ function AppRoutes() {
           <Route path="/vendors" element={isManager || isFinance ? <VendorsPage /> : <Navigate to="/" />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/tasks" element={<TasksPage />} />
+          <Route path="/neo-task-ai" element={<NeoTaskAIPage />} />
           <Route path="/budget" element={<BudgetPage />} />
           <Route path="/assets" element={<AssetsPage />} />
           <Route path="/procurement" element={<ProcurementPage />} />
