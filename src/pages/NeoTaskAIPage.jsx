@@ -97,11 +97,12 @@ export default function NeoTaskAIPage() {
   const [projects, setProjects] = useState([])
 
   // Upload form
-  const [docText,    setDocText]    = useState('')
-  const [docName,    setDocName]    = useState('')
-  const [selProject, setSelProject] = useState('')
-  const [selModel,   setSelModel]   = useState('deepseek-v3')
-  const [uploading,  setUploading]  = useState(false)
+  const [docText,      setDocText]      = useState('')
+  const [docName,      setDocName]      = useState('')
+  const [selProject,   setSelProject]   = useState('')
+  const [selModel,     setSelModel]     = useState('deepseek-v3')
+  const [ollamaModel,  setOllamaModel]  = useState('qwen2.5-coder:7b')
+  const [uploading,    setUploading]    = useState(false)
 
   // Results
   const [session, setSession] = useState(null)
@@ -116,6 +117,9 @@ export default function NeoTaskAIPage() {
 
   // View tab
   const [viewTab, setViewTab] = useState('stories')
+
+  // Ollama streaming progress
+  const [ollamaProgress, setOllamaProgress] = useState({ tokens: 0, preview: '' })
 
   // Import state
   const [importing, setImporting] = useState(false)
@@ -158,10 +162,12 @@ export default function NeoTaskAIPage() {
       if (error) throw error
 
       setSession(sess)
+      setOllamaProgress({ tokens: 0, preview: '' })
       setStep('analyzing')
 
       // Call selected LLM
-      await analyzeRequirements(sess.id, selModel)
+      const progressCb = selModel === 'ollama-local' ? (p) => setOllamaProgress(p) : null
+      await analyzeRequirements(sess.id, selModel, ollamaModel, progressCb)
 
       await loadResults(sess.id)
       setStep('results')
@@ -227,64 +233,88 @@ export default function NeoTaskAIPage() {
     setImporting(true)
     try {
       const projId = session.project_id
+      // Use short session prefix so task IDs are unique across imports
+      const sessionPrefix = session.id.replace(/-/g, '').slice(0, 6).toUpperCase()
+
       const approvedStories = stories.filter(s => s.status !== 'rejected')
-      const approvedTasks = tasks.filter(t => t.status !== 'rejected')
+      const approvedTasks   = tasks.filter(t => t.status !== 'rejected')
 
-      // Import stories as user_stories
+      // ── Batch insert stories ──────────────────────────────────
       const storyIdMap = {}
-      for (const s of approvedStories) {
-        const { data: inserted } = await supabase.from('user_stories').insert({
-          project_id: projId,
-          title: `As a ${s.role}, I want ${s.capability}`,
-          description: s.business_benefit || null,
-          story_type: 'story',
-          priority: s.priority || 'medium',
-          status: 'open',
+      if (approvedStories.length > 0) {
+        const storyRows = approvedStories.map(s => ({
+          project_id:   projId,
+          title:        `As a ${s.role}, I want ${s.capability}`,
+          description:  s.business_benefit || null,
+          story_type:   'story',
+          priority:     s.priority || 'medium',
+          status:       'open',
           story_points: s.story_points || 3,
-          created_by: profile.id,
-        }).select('id').single()
-        if (inserted) {
-          storyIdMap[s.id] = inserted.id
-          await supabase.from('ai_generated_stories').update({
-            status: 'imported', imported_story_id: inserted.id
-          }).eq('id', s.id)
+          created_by:   profile.id,
+        }))
+        const { data: insertedStories, error: storyErr } = await supabase
+          .from('user_stories').insert(storyRows).select('id')
+        if (storyErr) throw new Error(`Story import failed: ${storyErr.message}`)
+        ;(insertedStories || []).forEach((row, i) => {
+          storyIdMap[approvedStories[i].id] = row.id
+        })
+        // Mark ai_generated_stories as imported
+        const aiStoryUpdates = approvedStories.map((s, i) => ({
+          id: s.id,
+          status: 'imported',
+          imported_story_id: (insertedStories || [])[i]?.id || null,
+        }))
+        for (const u of aiStoryUpdates) {
+          await supabase.from('ai_generated_stories')
+            .update({ status: u.status, imported_story_id: u.imported_story_id })
+            .eq('id', u.id)
         }
       }
 
-      // Import tasks as project_tasks
-      let taskOrder = 1
-      for (const t of approvedTasks) {
-        const taskId = `TASK-AI-${String(taskOrder).padStart(3,'0')}`
-        const desc = [
-          t.description,
-          t.validation_notes    ? `\n**Validation:** ${t.validation_notes}` : '',
-          t.error_handling_notes? `\n**Error Handling:** ${t.error_handling_notes}` : '',
-          t.security_notes      ? `\n**Security:** ${t.security_notes}` : '',
-          t.performance_notes   ? `\n**Performance:** ${t.performance_notes}` : '',
-        ].filter(Boolean).join('')
+      // ── Batch insert tasks ────────────────────────────────────
+      if (approvedTasks.length > 0) {
+        const taskRows = approvedTasks.map((t, i) => {
+          const desc = [
+            t.description,
+            t.validation_notes     ? `\nValidation: ${t.validation_notes}` : '',
+            t.error_handling_notes ? `\nError Handling: ${t.error_handling_notes}` : '',
+            t.security_notes       ? `\nSecurity: ${t.security_notes}` : '',
+            t.performance_notes    ? `\nPerformance: ${t.performance_notes}` : '',
+          ].filter(Boolean).join('')
 
-        const { data: inserted } = await supabase.from('project_tasks').insert({
-          project_id: projId,
-          task_id: taskId,
-          task_name: `[${t.task_type}] ${t.title}`,
-          task_type: 'task',
-          description: desc || null,
-          priority: 'medium',
-          status: 'backlog',
-          estimated_hours: t.estimated_hours || null,
-          user_story_id: storyIdMap[t.story_id] || null,
-          created_by: profile.id,
-        }).select('id').single()
+          return {
+            project_id:      projId,
+            task_id:         `AI-${sessionPrefix}-${String(i + 1).padStart(3, '0')}`,
+            task_name:       `[${t.task_type}] ${t.title}`,
+            task_type:       'task',
+            description:     desc || null,
+            priority:        t.priority || 'medium',
+            status:          'backlog',
+            estimated_hours: t.estimated_hours || null,
+            user_story_id:   storyIdMap[t.story_id] || null,
+            created_by:      profile.id,
+          }
+        })
 
-        if (inserted) {
-          await supabase.from('ai_generated_tasks').update({
-            status: 'imported', imported_task_id: inserted.id
-          }).eq('id', t.id)
+        const { data: insertedTasks, error: taskErr } = await supabase
+          .from('project_tasks').insert(taskRows).select('id')
+        if (taskErr) throw new Error(`Task import failed: ${taskErr.message}`)
+
+        // Mark ai_generated_tasks as imported
+        const aiTaskUpdates = approvedTasks.map((t, i) => ({
+          id: t.id,
+          imported_task_id: (insertedTasks || [])[i]?.id || null,
+        }))
+        for (const u of aiTaskUpdates) {
+          await supabase.from('ai_generated_tasks')
+            .update({ status: 'imported', imported_task_id: u.imported_task_id })
+            .eq('id', u.id)
         }
-        taskOrder++
       }
 
-      await supabase.from('ai_analysis_sessions').update({ imported_at: new Date().toISOString() }).eq('id', session.id)
+      await supabase.from('ai_analysis_sessions')
+        .update({ imported_at: new Date().toISOString() })
+        .eq('id', session.id)
       await loadResults(session.id)
       setImportDone(true)
     } catch (e) {
@@ -445,13 +475,11 @@ export default function NeoTaskAIPage() {
           {/* ── LLM Model Selector ── */}
           <div style={{ marginBottom:20 }}>
             <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--text-muted)', marginBottom:8 }}>AI MODEL</label>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
               {LLM_MODELS.map(m => {
                 const active = selModel === m.id
-                const apiKey = m.id === 'deepseek-v3'
-                  ? import.meta.env.VITE_DEEPSEEK_API_KEY
-                  : import.meta.env.VITE_GEMINI_API_KEY
-                const keyMissing = !apiKey || apiKey.startsWith('your-')
+                const apiKey = m.envKey ? import.meta.env[m.envKey] : null
+                const keyMissing = m.envKey && (!apiKey || apiKey.startsWith('your-'))
                 return (
                   <div key={m.id} onClick={() => !keyMissing && setSelModel(m.id)}
                     style={{
@@ -464,7 +492,6 @@ export default function NeoTaskAIPage() {
                       transition:'all .15s',
                       position:'relative',
                     }}>
-                    {/* Selected tick */}
                     {active && (
                       <div style={{ position:'absolute', top:8, right:8, width:18, height:18, borderRadius:'50%', background:m.color, display:'flex', alignItems:'center', justifyContent:'center' }}>
                         <Check size={10} style={{ color:'#fff' }}/>
@@ -494,6 +521,22 @@ export default function NeoTaskAIPage() {
                 )
               })}
             </div>
+
+            {/* Ollama model name input */}
+            {selModel === 'ollama-local' && (
+              <div style={{ marginTop:10, padding:'12px 14px', borderRadius:8, border:'1px solid #10b98140', background:'#10b98108' }}>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#10b981', marginBottom:6 }}>OLLAMA MODEL NAME</label>
+                <input
+                  value={ollamaModel}
+                  onChange={e => setOllamaModel(e.target.value)}
+                  placeholder="e.g. llama3.1, mistral, qwen2.5-coder:7b, codellama"
+                  style={{ width:'100%', padding:'8px 10px', borderRadius:6, border:'1px solid #10b98140', background:'var(--surface)', color:'var(--text)', fontSize:12, fontFamily:'inherit', outline:'none', boxSizing:'border-box' }}
+                />
+                <div style={{ fontSize:10, color:'var(--text-muted)', marginTop:5 }}>
+                  Run <code style={{ background:'var(--surface-2)', padding:'1px 5px', borderRadius:3 }}>ollama list</code> to see installed models · Ollama must be running on port 11434
+                </div>
+              </div>
+            )}
           </div>
 
           <div style={{ marginBottom:20 }}>
@@ -505,7 +548,7 @@ export default function NeoTaskAIPage() {
             <div style={{ fontSize:11, color:'var(--text-muted)', marginTop:4 }}>{docText.length.toLocaleString()} characters · {Math.round(docText.length/4)} est. tokens</div>
           </div>
 
-          <button onClick={startAnalysis} disabled={!docText.trim() || uploading}
+          <button onClick={startAnalysis} disabled={!docText.trim() || uploading || (selModel === 'ollama-local' && !ollamaModel.trim())}
             className="btn btn-primary"
             style={{ width:'100%', padding:'12px', fontSize:14, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', gap:8 }}>
             <Sparkles size={16}/>
@@ -516,26 +559,83 @@ export default function NeoTaskAIPage() {
   )
 
   /* ANALYZING ─────────────────────────────────────────────────── */
-  if (step === 'analyzing') return (
-    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', minHeight:'60vh', gap:20 }}>
-      <div style={{ width:80, height:80, borderRadius:'50%', background:'linear-gradient(135deg,#6366f1,#8b5cf6)', display:'flex', alignItems:'center', justifyContent:'center', animation:'pulse 2s infinite' }}>
-        <Sparkles size={36} style={{ color:'#fff' }}/>
-      </div>
-      <div style={{ fontWeight:800, fontSize:20 }}>Neo Task AI is analyzing…</div>
-      <div style={{ color:'var(--text-muted)', fontSize:13, textAlign:'center', maxWidth:400 }}>
-        Extracting requirements, generating user stories, acceptance criteria, tasks, test cases, and sprint plan.
-        <br/>This takes 15–30 seconds.
-      </div>
-      <div style={{ display:'flex', gap:16, marginTop:8 }}>
-        {['Parsing document','Identifying modules','Generating stories','Creating tasks','Writing test cases','Recommending sprints'].map((s, i) => (
-          <div key={s} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
-            <div style={{ width:10, height:10, borderRadius:'50%', background:'#6366f1', animation:`pulse ${1 + i * 0.3}s infinite` }}/>
-            <div style={{ fontSize:9, color:'var(--text-muted)', textAlign:'center', maxWidth:60 }}>{s}</div>
+  if (step === 'analyzing') {
+    const isOllama = selModel === 'ollama-local'
+    const pct = isOllama ? Math.min(96, Math.round((ollamaProgress.tokens / 4000) * 100)) : 0
+    const accentColor = isOllama ? '#10b981' : '#6366f1'
+
+    return (
+      <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', minHeight:'60vh', gap:24 }}>
+        <style>{`@keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}`}</style>
+
+        {/* Icon */}
+        <div style={{ width:80, height:80, borderRadius:'50%', background:`linear-gradient(135deg,${accentColor},${isOllama?'#059669':'#8b5cf6'})`, display:'flex', alignItems:'center', justifyContent:'center', animation:'pulse 2s infinite' }}>
+          <Sparkles size={36} style={{ color:'#fff' }}/>
+        </div>
+
+        <div style={{ fontWeight:800, fontSize:20 }}>Neo Task AI is analyzing…</div>
+
+        {isOllama ? (
+          /* ── Ollama live progress ── */
+          <div style={{ width:'100%', maxWidth:520, display:'flex', flexDirection:'column', gap:12 }}>
+
+            {/* Progress bar */}
+            <div style={{ background:'var(--surface-2)', borderRadius:8, height:10, overflow:'hidden', border:'1px solid var(--border)' }}>
+              <div style={{
+                height:'100%',
+                background:`linear-gradient(90deg,${accentColor},#059669)`,
+                width: pct > 0 ? `${pct}%` : '4%',
+                transition:'width 0.4s ease',
+                borderRadius:8,
+                boxShadow:`0 0 8px ${accentColor}80`,
+              }}/>
+            </div>
+
+            {/* Stats row */}
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', fontSize:12 }}>
+              <span style={{ color:'var(--text-muted)', fontWeight:600 }}>
+                {ollamaProgress.tokens > 0 ? `${ollamaProgress.tokens.toLocaleString()} tokens generated` : 'Loading model…'}
+              </span>
+              <span style={{ fontWeight:800, color:accentColor }}>{pct}%</span>
+            </div>
+
+            {/* Streaming preview */}
+            <div style={{ borderRadius:10, border:`1px solid ${accentColor}30`, background:`${accentColor}08`, padding:'12px 14px', minHeight:60 }}>
+              <div style={{ fontSize:10, fontWeight:700, color:accentColor, letterSpacing:.5, marginBottom:6 }}>GENERATING</div>
+              <div style={{ fontSize:11, fontFamily:'monospace', color:'var(--text-muted)', lineHeight:1.7, wordBreak:'break-all', whiteSpace:'pre-wrap' }}>
+                {ollamaProgress.preview
+                  ? <>{ollamaProgress.preview}<span style={{ animation:'blink 1s infinite', color:accentColor }}>▍</span></>
+                  : <span style={{ opacity:.4, fontStyle:'italic' }}>Waiting for first token…</span>
+                }
+              </div>
+            </div>
+
+            {/* Model badge */}
+            <div style={{ textAlign:'center', fontSize:11, color:'var(--text-muted)' }}>
+              Running locally on <span style={{ color:accentColor, fontWeight:700 }}>Ollama</span>
+              {' · '}<code style={{ background:'var(--surface-2)', padding:'1px 6px', borderRadius:4, fontSize:10 }}>{ollamaModel}</code>
+            </div>
           </div>
-        ))}
+        ) : (
+          /* ── Cloud model dots ── */
+          <>
+            <div style={{ color:'var(--text-muted)', fontSize:13, textAlign:'center', maxWidth:400 }}>
+              Extracting requirements, generating user stories, tasks, test cases, and sprint plan.
+              <br/>This takes 15–30 seconds.
+            </div>
+            <div style={{ display:'flex', gap:16, marginTop:8 }}>
+              {['Parsing document','Identifying modules','Generating stories','Creating tasks','Writing test cases','Recommending sprints'].map((s, i) => (
+                <div key={s} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
+                  <div style={{ width:10, height:10, borderRadius:'50%', background:'#6366f1', animation:`pulse ${1 + i * 0.3}s infinite` }}/>
+                  <div style={{ fontSize:9, color:'var(--text-muted)', textAlign:'center', maxWidth:60 }}>{s}</div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
-    </div>
-  )
+    )
+  }
 
   /* RESULTS ───────────────────────────────────────────────────── */
   if (step === 'results') {

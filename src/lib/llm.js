@@ -1,6 +1,6 @@
 /**
  * Unified LLM service for Neo Task AI
- * Supports: DeepSeek V3, Gemini 2.5 Pro
+ * Supports: DeepSeek V3, Gemini 2.5 Pro, Ollama (local)
  */
 import { supabase } from './supabase'
 
@@ -32,6 +32,19 @@ export const LLM_MODELS = [
     badge:       'Most Capable',
     envKey:      'VITE_GEMINI_API_KEY',
   },
+  {
+    id:          'ollama-local',
+    label:       'Ollama (Local)',
+    provider:    'Ollama',
+    model:       'qwen2.5-coder:7b',
+    color:       '#10b981',
+    bg:          '#10b98118',
+    description: 'Run AI locally on your machine. Private, no API key, no data sent to cloud.',
+    context:     'Model-dependent',
+    speed:       'Local',
+    badge:       'Private',
+    envKey:      null,
+  },
 ]
 
 export function getModel(id) {
@@ -39,7 +52,7 @@ export function getModel(id) {
 }
 
 // ── Main entry point ─────────────────────────────────────────
-export async function analyzeRequirements(sessionId, modelId = 'deepseek-v3') {
+export async function analyzeRequirements(sessionId, modelId = 'deepseek-v3', ollamaModel = '', onProgress = null) {
   const modelDef = getModel(modelId)
 
   const { data: session, error } = await supabase
@@ -53,11 +66,14 @@ export async function analyzeRequirements(sessionId, modelId = 'deepseek-v3') {
     .update({ status: 'analyzing', llm_model: modelDef.id, updated_at: new Date().toISOString() })
     .eq('id', sessionId)
 
-  const prompt = buildPrompt(session.document_text || '', session.document_name || 'document')
+  const isLocal = modelDef.id === 'ollama-local'
+  const prompt = buildPrompt(session.document_text || '', session.document_name || 'document', isLocal)
 
   let rawText
   if (modelDef.id === 'gemini-2.5-pro') {
     rawText = await callGemini(prompt, modelDef)
+  } else if (modelDef.id === 'ollama-local') {
+    rawText = await callOllama(prompt, ollamaModel || modelDef.model, onProgress)
   } else {
     rawText = await callDeepSeek(prompt, modelDef)
   }
@@ -131,6 +147,69 @@ async function callGemini(prompt, modelDef) {
 
   const data = await res.json()
   return data.choices?.[0]?.message?.content || ''
+}
+
+// ── Ollama local API call (native /api/chat endpoint) ────────
+async function callOllama(prompt, model, onProgress) {
+  const baseUrl = (import.meta.env.VITE_OLLAMA_URL || 'http://localhost:11434').replace(/\/$/, '')
+
+  let res
+  try {
+    res = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: prompt },
+        ],
+        stream: true,
+        options: { temperature: 0.3, num_predict: 6000 },
+      }),
+    })
+  } catch {
+    throw new Error('Cannot reach Ollama. Make sure it is running: ollama serve')
+  }
+
+  if (!res.ok) {
+    const err = await res.text()
+    let msg
+    try { msg = JSON.parse(err).error || err } catch { msg = err }
+    throw new Error(`Ollama: ${msg}`)
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let fullContent = ''
+  let tokenCount = 0
+  let buf = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buf += decoder.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop() // keep any incomplete trailing line
+
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const chunk = JSON.parse(line)
+        const token = chunk.message?.content
+        if (token) {
+          fullContent += token
+          tokenCount++
+          if (onProgress) onProgress({ tokens: tokenCount, preview: fullContent.slice(-100) })
+        }
+        if (chunk.done) break
+      } catch {}
+    }
+  }
+
+  if (!fullContent) throw new Error('Ollama returned empty response. Try a different model.')
+  return fullContent
 }
 
 // ── JSON parser (robust) ─────────────────────────────────────
@@ -288,12 +367,14 @@ function validPriority(p) {
 
 const SYSTEM_PROMPT = `You are Neo Task AI — an expert Solution Architect, Product Owner, and Technical Lead. You convert requirement documents into complete, implementation-ready project artifacts. Always return valid JSON only. Never include any text outside the JSON object.`
 
-function buildPrompt(docText, docName) {
+function buildPrompt(docText, docName, isLocal = false) {
+  // Local 7B models have limited context — keep input tight
+  const maxChars = isLocal ? 6000 : 14000
   return `Analyze this requirement document and generate a complete project execution plan.
 
 Document: "${docName}"
 ---
-${docText.slice(0, 14000)}
+${docText.slice(0, maxChars)}
 ---
 
 Return a JSON object with this exact structure. Be specific and implementation-ready, never generic.
