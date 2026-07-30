@@ -1,53 +1,57 @@
-// Admin-controlled tab visibility per role
-// Stored in Supabase app_settings table OR localStorage as fallback
-import { createContext, useContext, useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+// Module enablement — company-wide on/off switch (STEP43 `modules.enabled`,
+// applies to every role including admin/ceo) plus per-role visibility
+// (`module_role_visibility`, default visible unless a row says otherwise).
+// Supabase-backed (org-wide, shared across every browser/device) —
+// replaces the old localStorage-only DEFAULT_TABS, which only ever
+// changed the editing admin's own browser.
+import { createContext, useContext, useState, useEffect, useMemo } from 'react'
 import { useAuth } from './AuthContext'
-
-const SETTING_KEY = 'tab_visibility_config'
-
-export const DEFAULT_TABS = {
-  admin:    { timesheet:true, 'timesheet-approvals':true, content:true,  leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:true, vendors:true, projects:true, tasks:true, budget:true, assets:true, procurement:true, invoices:true, fundflow:true, pos:true, grn:true, users:true, reports:true, settings:true,  chat:true, 'app-monitor':true,  'neo-task-ai':true },
-  ceo:      { timesheet:true, 'timesheet-approvals':true, leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:true, vendors:true, projects:true, tasks:true, budget:true, assets:true, procurement:true, invoices:true, fundflow:true, pos:true, grn:true, users:true, reports:true, settings:true,  chat:true, 'app-monitor':true,  'neo-task-ai':true },
-  manager:  { timesheet:true, 'timesheet-approvals':true, leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:true, vendors:true, projects:true, tasks:true, budget:true, assets:true, procurement:true, invoices:true, fundflow:false, pos:true, grn:true, users:true, reports:true, settings:false, chat:true, 'app-monitor':false, 'neo-task-ai':true },
-  finance:  { timesheet:true, 'timesheet-approvals':true, leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:false, vendors:true, projects:true, tasks:true, budget:true, assets:true, procurement:false, invoices:true, fundflow:true, pos:true, grn:true, users:true, reports:true, settings:false, chat:true, 'app-monitor':false, 'neo-task-ai':false },
-  hr:       { timesheet:true, 'timesheet-approvals':true, leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:true, vendors:false, projects:true, tasks:true, budget:true, assets:true, procurement:false, invoices:false, fundflow:false, pos:false, grn:false, users:true, reports:true, settings:false, chat:true, 'app-monitor':false, 'neo-task-ai':false },
-  employee: { timesheet:true, 'timesheet-approvals':true, leave:true, resources:true, dashboard:true, expenses:true, travel:true, approvals:false, vendors:false, projects:true, tasks:true, budget:false, assets:true, procurement:false, invoices:false, fundflow:false, pos:false, grn:false, users:false, reports:true, settings:false, chat:true, 'app-monitor':false, 'neo-task-ai':false },
-}
+import { getModules, getModuleRoleVisibility, syncModulesFromConfig } from '../lib/modules'
 
 const Ctx = createContext(null)
 
 export function TabVisibilityProvider({ children }) {
   const { profile } = useAuth()
-  const [config, setConfig] = useState(DEFAULT_TABS)
+  const role = profile?.role || 'employee'
+  const [modules, setModules] = useState([])
+  const [visibility, setVisibility] = useState([])
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => { loadConfig() }, [profile?.id])
+  useEffect(() => { load() }, [])
 
-  async function loadConfig() {
-    // Try to load from localStorage first (fast)
+  async function load() {
+    setLoading(true)
     try {
-      const local = localStorage.getItem(SETTING_KEY)
-      if (local) { setConfig(JSON.parse(local)); setLoading(false); return }
-    } catch {}
-    setConfig(DEFAULT_TABS)
-    setLoading(false)
+      // Self-healing seed only attempted by roles that can actually write
+      // to `modules` (RLS-restricted to admin/ceo) — pointless for anyone
+      // else, the insert would just be silently rejected.
+      if (['admin', 'ceo'].includes(role)) await syncModulesFromConfig()
+      const [mods, vis] = await Promise.all([getModules(), getModuleRoleVisibility()])
+      setModules(mods)
+      setVisibility(vis)
+    } finally {
+      setLoading(false)
+    }
   }
 
-  function saveConfig(newConfig) {
-    setConfig(newConfig)
-    try { localStorage.setItem(SETTING_KEY, JSON.stringify(newConfig)) } catch {}
-  }
+  const moduleByKey = useMemo(() => Object.fromEntries(modules.map(m => [m.key, m])), [modules])
+  const visibilityByRole = useMemo(() => {
+    const m = {}
+    visibility.forEach(v => { (m[v.role] ||= {})[v.module_key] = v.visible })
+    return m
+  }, [visibility])
 
   function isTabVisible(tab) {
-    const role = profile?.role || 'employee'
-    // Admin/CEO always see everything
+    const mod = moduleByKey[tab]
+    // Company-wide kill switch — overrides everything, even admin/ceo.
+    if (mod && mod.enabled === false) return false
+    // Admin/CEO bypass per-role visibility (not the kill switch above).
     if (role === 'admin' || role === 'ceo') return true
-    return config[role]?.[tab] !== false
+    return visibilityByRole[role]?.[tab] !== false
   }
 
   return (
-    <Ctx.Provider value={{ config, saveConfig, isTabVisible, loading }}>
+    <Ctx.Provider value={{ modules, visibility, isTabVisible, loading, refresh: load }}>
       {children}
     </Ctx.Provider>
   )

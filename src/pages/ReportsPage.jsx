@@ -3,82 +3,122 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { Loader } from '../components/ui'
 import { Download, FileSpreadsheet, CheckCircle, AlertCircle } from 'lucide-react'
+import { toCSV, download } from '../lib/csvExport'
+import CustomReportBuilder from '../components/CustomReportBuilder'
 
 const rupee = v => v != null ? '₹' + Number(v).toLocaleString('en-IN') : '—'
 const fmt = d => d ? new Date(d).toLocaleDateString('en-IN') : '—'
+
+const EXPENSE_CATEGORIES = ['Travel','Food & Beverage','Accommodation','Office Supplies','Software','Marketing','Training','Medical','Utilities','Miscellaneous']
+const VENDOR_CATEGORIES = ['Technology','Manufacturing','Services','Logistics','Healthcare','Finance','Construction','Retail','Other']
+const ASSET_CATEGORIES = ['Laptop','Desktop','Mobile','Tablet','Printer','Server','Vehicle','Furniture','Equipment','Other']
+const APPROVAL_STATUSES = ['submitted','manager_review','ceo_review','finance_review','approved','rejected']
 
 const REPORTS = [
   {
     id: 'expenses', label: 'Expenses', emoji: '🧾',
     desc: 'All expense requests — title, amount, category, status, date',
     color: '#7c3aed', light: '#ede9fe',
+    table: 'expense_requests',
+    selectCols: 'expense_number,title,category,amount,total_amount,status,expense_date,created_at',
     fetch: () => supabase.from('expense_requests').select('expense_number,title,category,amount,total_amount,status,expense_date,created_at').order('created_at',{ascending:false}),
-    map: r => ({ 'Expense #': r.expense_number, Title: r.title, Category: r.category, Amount: r.amount, 'Total Amount': r.total_amount, Status: r.status, Date: fmt(r.expense_date), Submitted: fmt(r.created_at) })
+    map: r => ({ 'Expense #': r.expense_number, Title: r.title, Category: r.category, Amount: r.amount, 'Total Amount': r.total_amount, Status: r.status, Date: fmt(r.expense_date), Submitted: fmt(r.created_at) }),
+    filters: { date: 'expense_date', status: { field: 'status', options: APPROVAL_STATUSES }, category: { field: 'category', options: EXPENSE_CATEGORIES }, amount: 'total_amount', search: { fields: ['title'] } },
   },
   {
     id: 'travel', label: 'Travel Requests', emoji: '✈️',
     desc: 'Travel requests — from/to, dates, mode, estimated cost, status',
     color: '#ec4899', light: '#fce7f3',
+    table: 'travel_requests',
+    selectCols: 'request_number,from_location,to_location,travel_date,return_date,travel_mode,estimated_cost,status,created_at',
     fetch: () => supabase.from('travel_requests').select('request_number,from_location,to_location,travel_date,return_date,travel_mode,estimated_cost,status,created_at').order('created_at',{ascending:false}),
-    map: r => ({ 'Request #': r.request_number, From: r.from_location, To: r.to_location, 'Travel Date': fmt(r.travel_date), 'Return Date': fmt(r.return_date), Mode: r.travel_mode, 'Est. Cost': r.estimated_cost, Status: r.status })
+    map: r => ({ 'Request #': r.request_number, From: r.from_location, To: r.to_location, 'Travel Date': fmt(r.travel_date), 'Return Date': fmt(r.return_date), Mode: r.travel_mode, 'Est. Cost': r.estimated_cost, Status: r.status }),
+    filters: { date: 'travel_date', status: { field: 'status', options: APPROVAL_STATUSES }, amount: 'estimated_cost', search: { fields: ['from_location', 'to_location'] } },
   },
   {
     id: 'vendors', label: 'Vendors', emoji: '🏪',
     desc: 'Vendor directory — name, category, GST, contact, status',
     color: '#0891b2', light: '#cffafe',
+    table: 'vendors',
+    selectCols: 'name,code,category,gst_number,email,phone,city,status,created_at',
     fetch: () => supabase.from('vendors').select('name,code,category,gst_number,email,phone,city,status,created_at').order('name'),
-    map: r => ({ Name: r.name, Code: r.code, Category: r.category, GST: r.gst_number, Email: r.email, Phone: r.phone, City: r.city, Status: r.status, Added: fmt(r.created_at) })
+    map: r => ({ Name: r.name, Code: r.code, Category: r.category, GST: r.gst_number, Email: r.email, Phone: r.phone, City: r.city, Status: r.status, Added: fmt(r.created_at) }),
+    filters: { date: 'created_at', status: { field: 'status', options: ['active', 'inactive', 'blacklisted'] }, category: { field: 'category', options: VENDOR_CATEGORIES }, search: { fields: ['name'] } },
   },
   {
     id: 'invoices', label: 'Invoices', emoji: '📄',
     desc: 'Invoice register — number, vendor, amount, status, due date',
     color: '#d97706', light: '#fef3c7',
+    table: 'invoices',
+    selectCols: 'invoice_number,vendor_name,subtotal,gst_amount,total_amount,status,invoice_date,due_date,created_at',
     fetch: () => supabase.from('invoices').select('invoice_number,vendor_name,subtotal,gst_amount,total_amount,status,invoice_date,due_date,created_at').order('created_at',{ascending:false}),
-    map: r => ({ 'Invoice #': r.invoice_number, Vendor: r.vendor_name, Subtotal: r.subtotal, GST: r.gst_amount, Total: r.total_amount, Status: r.status, 'Invoice Date': fmt(r.invoice_date), 'Due Date': fmt(r.due_date) })
+    map: r => ({ 'Invoice #': r.invoice_number, Vendor: r.vendor_name, Subtotal: r.subtotal, GST: r.gst_amount, Total: r.total_amount, Status: r.status, 'Invoice Date': fmt(r.invoice_date), 'Due Date': fmt(r.due_date) }),
+    filters: { date: 'invoice_date', status: { field: 'status', options: ['uploaded', 'processing', 'verified', 'matched', 'rejected', 'paid'] }, amount: 'total_amount', search: { fields: ['vendor_name'] } },
   },
   {
     id: 'procurement', label: 'Purchase Requisitions', emoji: '🛒',
     desc: 'PR register — title, category, amount, priority, status',
     color: '#dc2626', light: '#fee2e2',
+    table: 'purchase_requisitions',
+    selectCols: 'pr_number,title,category,estimated_amount,priority,status,created_at',
     fetch: () => supabase.from('purchase_requisitions').select('pr_number,title,category,estimated_amount,priority,status,created_at').order('created_at',{ascending:false}),
-    map: r => ({ 'PR #': r.pr_number, Title: r.title, Category: r.category, 'Est. Amount': r.estimated_amount, Priority: r.priority, Status: r.status, Date: fmt(r.created_at) })
+    map: r => ({ 'PR #': r.pr_number, Title: r.title, Category: r.category, 'Est. Amount': r.estimated_amount, Priority: r.priority, Status: r.status, Date: fmt(r.created_at) }),
+    filters: { date: 'created_at', status: { field: 'status', options: ['draft', 'procurement_lead_review', 'pm_review', 'cto_review', 'finance_review', 'ceo_review', 'approved', 'rejected', 'cancelled'] }, amount: 'estimated_amount', search: { fields: ['title'] } },
   },
   {
     id: 'assets', label: 'Assets', emoji: '📦',
     desc: 'Asset register — code, name, category, value, status',
     color: '#059669', light: '#d1fae5',
+    table: 'assets',
+    selectCols: 'asset_code,name,category,make,model,serial_number,purchase_value,purchase_date,status,location',
     fetch: () => supabase.from('assets').select('asset_code,name,category,make,model,serial_number,purchase_value,purchase_date,status,location').order('name'),
-    map: r => ({ Code: r.asset_code, Name: r.name, Category: r.category, Make: r.make, Model: r.model, Serial: r.serial_number, Value: r.purchase_value, 'Purchase Date': fmt(r.purchase_date), Status: r.status, Location: r.location })
+    map: r => ({ Code: r.asset_code, Name: r.name, Category: r.category, Make: r.make, Model: r.model, Serial: r.serial_number, Value: r.purchase_value, 'Purchase Date': fmt(r.purchase_date), Status: r.status, Location: r.location }),
+    filters: { date: 'purchase_date', status: { field: 'status', options: ['purchased', 'assigned', 'returned', 'scrap'] }, category: { field: 'category', options: ASSET_CATEGORIES }, amount: 'purchase_value', search: { fields: ['name'] } },
   },
   {
     id: 'projects', label: 'Projects', emoji: '📁',
     desc: 'Project list — name, budget, spent, status, dates',
     color: '#6366f1', light: '#ede9fe',
+    table: 'projects',
+    selectCols: 'code,name,budget,spent,status,start_date,end_date',
     fetch: () => supabase.from('projects').select('code,name,budget,spent,status,start_date,end_date').order('name'),
-    map: r => ({ Code: r.code, Name: r.name, Budget: r.budget, Spent: r.spent, Status: r.status, 'Start Date': fmt(r.start_date), 'End Date': fmt(r.end_date) })
+    map: r => ({ Code: r.code, Name: r.name, Budget: r.budget, Spent: r.spent, Status: r.status, 'Start Date': fmt(r.start_date), 'End Date': fmt(r.end_date) }),
+    filters: { date: 'start_date', status: { field: 'status', options: ['active', 'on_hold', 'completed', 'cancelled'] }, amount: 'budget', search: { fields: ['name'] } },
   },
   {
     id: 'users', label: 'Users', emoji: '👥',
     desc: 'User directory — name, email, role, department',
     color: '#475569', light: '#f1f5f9',
+    table: 'profiles',
+    selectCols: 'full_name,email,role,designation,phone,is_active,created_at',
     fetch: () => supabase.from('profiles').select('full_name,email,role,designation,phone,is_active,created_at').order('full_name'),
-    map: r => ({ Name: r.full_name, Email: r.email, Role: r.role, Designation: r.designation, Phone: r.phone, Active: r.is_active ? 'Yes' : 'No', Joined: fmt(r.created_at) })
+    map: r => ({ Name: r.full_name, Email: r.email, Role: r.role, Designation: r.designation, Phone: r.phone, Active: r.is_active ? 'Yes' : 'No', Joined: fmt(r.created_at) }),
+    filters: { date: 'created_at', active: 'is_active', search: { fields: ['full_name'] } },
   },
 ]
 
-function toCSV(rows) {
-  if (!rows.length) return ''
-  const keys = Object.keys(rows[0])
-  const escape = v => { const s = String(v ?? ''); return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g,'""')}"` : s }
-  return [keys.join(','), ...rows.map(r => keys.map(k => escape(r[k])).join(','))].join('\n')
-}
-
-function download(content, filename) {
-  const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = filename; a.click()
-  URL.revokeObjectURL(url)
+// Builds a filtered Supabase query for a report given a set of filter values
+// (from CustomReportBuilder) — reuses the report's own table/selectCols/filters
+// metadata rather than a bespoke query per entity.
+export function buildFilteredQuery(report, values, selectOptions) {
+  let q = supabase.from(report.table).select(report.selectCols, selectOptions)
+  const f = report.filters || {}
+  if (f.date) {
+    if (values.dateFrom) q = q.gte(f.date, values.dateFrom)
+    if (values.dateTo) q = q.lte(f.date, values.dateTo)
+  }
+  if (f.status && values.status) q = q.eq(f.status.field, values.status)
+  if (f.category && values.category) q = q.eq(f.category.field, values.category)
+  if (f.amount) {
+    if (values.amountMin !== '' && values.amountMin != null) q = q.gte(f.amount, Number(values.amountMin))
+    if (values.amountMax !== '' && values.amountMax != null) q = q.lte(f.amount, Number(values.amountMax))
+  }
+  if (f.active && values.active) q = q.eq(f.active, values.active === 'yes')
+  if (f.search?.fields?.length && values.search?.trim()) {
+    const term = values.search.trim().replace(/[%_]/g, '')
+    q = q.or(f.search.fields.map(col => `${col}.ilike.%${term}%`).join(','))
+  }
+  return q
 }
 
 export default function ReportsPage() {
@@ -162,8 +202,10 @@ export default function ReportsPage() {
         </button>
       </div>
 
+      <CustomReportBuilder reports={REPORTS} />
+
       {/* Summary strip */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 10, marginBottom: 28 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 28 }}>
         {REPORTS.slice(0, 6).map(r => (
           <div key={r.id} style={{ background: '#fff', borderRadius: 12, padding: '12px 14px', border: `1.5px solid ${r.color}20`, borderTop: `3px solid ${r.color}` }}>
             <div style={{ fontSize: 20, marginBottom: 4 }}>{r.emoji}</div>
@@ -174,7 +216,7 @@ export default function ReportsPage() {
       </div>
 
       {/* Report cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
         {REPORTS.map(r => {
           const busy = exporting === r.id
           return (

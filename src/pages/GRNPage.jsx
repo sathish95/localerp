@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+import { supabase, rupee } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { getGRNItems } from '../lib/grn'
 import { StatusBadge, SearchBox, Empty, Modal, Loader } from '../components/ui'
 import { ClipboardCheck, Eye, CheckCircle, XCircle, AlertTriangle, Package, Truck } from 'lucide-react'
 
@@ -14,11 +15,17 @@ const STATUS_META = {
 }
 
 export default function GRNPage() {
+  const { profile } = useAuth()
+  const role = profile?.role || 'employee'
+  const canEditAmount = ['admin', 'ceo', 'finance', 'procurement_lead'].includes(role)
   const [grns, setGRNs] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [selected, setSelected] = useState(null)
+  const [selectedItems, setSelectedItems] = useState([])
+  const [receivedAmount, setReceivedAmount] = useState('')
+  const [savingAmount, setSavingAmount] = useState(false)
 
   useEffect(() => { load() }, [])
 
@@ -41,6 +48,21 @@ export default function GRNPage() {
 
   const counts = Object.fromEntries(Object.keys(STATUS_META).map(k => [k, grns.filter(g => g.status === k).length]))
 
+  function openDetail(grn) {
+    setSelected(grn); setReceivedAmount(grn.received_amount ?? ''); setSelectedItems([])
+    getGRNItems(grn.id).then(setSelectedItems)
+  }
+
+  async function saveReceivedAmount() {
+    setSavingAmount(true)
+    try {
+      const amt = receivedAmount === '' ? null : parseFloat(receivedAmount)
+      await supabase.from('grn').update({ received_amount: amt }).eq('id', selected.id)
+      setGRNs(prev => prev.map(g => g.id === selected.id ? { ...g, received_amount: amt } : g))
+      setSelected(prev => ({ ...prev, received_amount: amt }))
+    } finally { setSavingAmount(false) }
+  }
+
   if (loading) return <Loader />
 
   return (
@@ -53,7 +75,7 @@ export default function GRNPage() {
       </div>
 
       {/* Stats */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
         {[
           { label: 'Total GRNs', value: grns.length, color: '#059669' },
           { label: 'Pending', value: counts.pending || 0, color: '#f59e0b' },
@@ -131,7 +153,7 @@ export default function GRNPage() {
                       {grn.remarks || '—'}
                     </td>
                     <td>
-                      <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setSelected(grn)}>
+                      <button className="btn btn-ghost btn-sm btn-icon" onClick={() => openDetail(grn)}>
                         <Eye size={14} />
                       </button>
                     </td>
@@ -165,17 +187,49 @@ export default function GRNPage() {
               ['Status', STATUS_META[selected.status]?.label || selected.status],
             ].map(([k, v]) => (
               <div key={k} style={{ padding: '10px 14px', borderRadius: 10, background: '#f8fafc' }}>
-                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: '#94a3b8', marginBottom: 3 }}>{k}</div>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: '#94a3b8', marginBottom: 3 }}>{k}</div>
                 <div style={{ fontWeight: 600, fontSize: 14 }}>{v || '—'}</div>
               </div>
             ))}
+            <div style={{ padding: '10px 14px', borderRadius: 10, background: '#f8fafc' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: '#94a3b8', marginBottom: 3 }}>Received Amount</div>
+              {canEditAmount ? (
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input className="form-input" type="number" step="0.01" value={receivedAmount} onChange={e => setReceivedAmount(e.target.value)} placeholder="Not recorded" style={{ fontSize: 13 }} />
+                  <button className="btn btn-primary btn-sm" onClick={saveReceivedAmount} disabled={savingAmount}>{savingAmount ? '…' : 'Save'}</button>
+                </div>
+              ) : (
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{selected.received_amount != null ? rupee(selected.received_amount) : '—'}</div>
+              )}
+              <div style={{ fontSize: 10.5, color: '#94a3b8', marginTop: 4 }}>Used for 3-way match against the PO and Vendor Invoice amounts</div>
+            </div>
             {selected.remarks && (
               <div style={{ gridColumn: '1/-1', padding: '10px 14px', borderRadius: 10, background: '#fef3c7', border: '1px solid #fde68a' }}>
-                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: '#92400e', marginBottom: 3 }}>Remarks</div>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#92400e', marginBottom: 3 }}>Remarks</div>
                 <div style={{ fontSize: 13, color: '#78350f' }}>{selected.remarks}</div>
               </div>
             )}
-            {selected.items?.length > 0 && (
+            {selectedItems.length > 0 ? (
+              <div style={{ gridColumn: '1/-1' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#94a3b8', marginBottom: 8 }}>Items Received</div>
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>Part #</th><th>Description</th><th>Ordered</th><th>Received</th><th>Unit Cost</th></tr></thead>
+                    <tbody>{selectedItems.map(item => (
+                      <tr key={item.id}>
+                        <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{item.part_number || '—'}</td>
+                        <td>{item.description}</td>
+                        <td>{item.quantity_ordered}</td>
+                        <td style={{ fontWeight: 700 }}>{item.quantity_received}</td>
+                        <td>{rupee(item.unit_cost)}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              </div>
+            ) : selected.items?.length > 0 && (
+              // Legacy free-text items — pre-dates grn_items (structured line
+              // items with part_number), kept viewable for old seeded rows.
               <div style={{ gridColumn: '1/-1' }}>
                 <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#94a3b8', marginBottom: 8 }}>Items Received</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>

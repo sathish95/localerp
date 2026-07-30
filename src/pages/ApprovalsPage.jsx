@@ -1,10 +1,16 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { canActOn, buildApprovalUpdate, statusLabel, getChain } from '../lib/approvalFlow.js'
+import { canActOnSync, buildApprovalUpdate, statusLabel, warmChains } from '../lib/approvalFlow.js'
+import {
+  canActOnSync as procCanActOnSync, buildApprovalUpdate as procBuildApprovalUpdate, warmChains as warmProcChains,
+} from '../lib/procurementApproval'
+import { commitBudget } from '../lib/budgetSync'
 import ApprovalChainViz from '../components/ui/ApprovalChainViz'
 import { supabase, rupee, dateFmt } from '../lib/supabase'
 import { Tabs, StatusBadge, Loader, Empty, Modal } from '../components/ui'
 import { CheckCircle, XCircle, Eye, MinusCircle } from 'lucide-react'
+
+const PROCUREMENT_PENDING_STATUSES = ['procurement_lead_review', 'pm_review', 'cto_review', 'finance_review', 'ceo_review']
 
 export default function ApprovalsPage() {
   const { profile } = useAuth()
@@ -20,8 +26,12 @@ export default function ApprovalsPage() {
   const [submitting, setSubmitting] = useState(false)
 
   const role = profile?.role || 'manager'
+  const [, setChainVer] = useState(0)
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    Promise.all([warmChains('expense'), warmChains('travel'), warmProcChains()]).then(() => setChainVer(v => v + 1))
+  }, [])
 
   async function load() {
     setLoading(true)
@@ -45,10 +55,15 @@ export default function ApprovalsPage() {
       const table = type === 'expense' ? 'expense_requests' : type === 'travel' ? 'travel_requests' : type === 'procurement' ? 'purchase_requisitions' : 'invoices'
       const submitterRole = item.requester?.role || item.employee?.role || 'employee'
       const update = (type === 'expense' || type === 'travel')
-        ? buildApprovalUpdate(action, item.status, role, submitterRole, profile.id, reviewNote)
+        ? await buildApprovalUpdate(action, item.status, role, submitterRole, profile.id, reviewNote, type)
+        : type === 'procurement'
+        ? await procBuildApprovalUpdate(action, item.status, item.chain_type, profile.id, reviewNote)
         : { status: action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'closed',
             approved_by: profile.id, approved_at: new Date().toISOString() }
       await supabase.from(table).update(update).eq('id', item.id)
+      if (type === 'procurement' && update.status === 'approved') {
+        await commitBudget(item.budget_id, item.estimated_total || item.estimated_amount || 0)
+      }
       if (type === 'expense' || type === 'travel' || type === 'procurement') {
         await supabase.from('approval_logs').insert({
           entity_type: type,
@@ -67,8 +82,16 @@ export default function ApprovalsPage() {
 
   const pendingExp = expenses.filter(e => e.status === 'submitted')
   const pendingTravel = travel.filter(t => t.status === 'submitted')
-  const pendingProcurement = procurement.filter(p => p.status === 'submitted')
+  const pendingProcurement = procurement.filter(p => PROCUREMENT_PENDING_STATUSES.includes(p.status))
   const pendingInvoices = role === 'finance' || role === 'admin' || role === 'ceo' ? invoices.filter(i => i.status === 'uploaded') : []
+
+  function isReviewable(item, type) {
+    if (type === 'expense') return canActOnSync(role, item.status, item.requester?.role || 'employee', 'expense')
+    if (type === 'travel') return canActOnSync(role, item.status, item.requester?.role || 'employee', 'travel')
+    if (type === 'procurement') return procCanActOnSync(role, item.status, item.chain_type)
+    if (type === 'invoice') return ['finance', 'admin', 'ceo'].includes(role) && item.status === 'uploaded'
+    return false
+  }
 
   const tabs = [
     { id: 'pending', label: 'Pending', count: pendingExp.length + pendingTravel.length + pendingProcurement.length + pendingInvoices.length },
@@ -84,7 +107,7 @@ export default function ApprovalsPage() {
     return (
       <div style={{ display: 'flex', gap: 6 }}>
         <button className="btn btn-ghost btn-sm btn-icon" onClick={() => { setShowDetail(item); setDetailType(type) }}><Eye size={13} /></button>
-        {item.status === 'submitted' ? <>
+        {isReviewable(item, type) ? <>
           <button className="btn btn-danger btn-sm" onClick={async () => { setReviewNote(''); await handleAction(item, type, 'reject') }}><XCircle size={13} /> Reject</button>
           <button className="btn btn-success btn-sm" onClick={async () => { setReviewNote(''); await handleAction(item, type, 'approve') }}><CheckCircle size={13} /> Approve</button>
         </> : null}
@@ -228,7 +251,7 @@ export default function ApprovalsPage() {
       <Modal open={!!showDetail} onClose={() => setShowDetail(null)} title="Request Details" size="lg"
         footer={<>
           <button className="btn btn-ghost" onClick={() => setShowDetail(null)}>Close</button>
-          {(showDetail?.status === 'submitted') && <>
+          {showDetail && isReviewable(showDetail, detailType) && <>
             <button className="btn btn-danger" onClick={() => handleAction(showDetail, detailType, 'reject')} disabled={submitting}><XCircle size={14}/> Reject</button>
             <button className="btn btn-success" onClick={() => handleAction(showDetail, detailType, 'approve')} disabled={submitting}><CheckCircle size={14}/> Approve</button>
           </>}
@@ -252,13 +275,19 @@ export default function ApprovalsPage() {
                 ...(detailType === 'travel' ? [['From', showDetail.from_location], ['To', showDetail.to_location]] : []),
               ].map(([k, v]) => (
                 <div key={k} style={{ padding: '10px 14px', background: 'var(--surface)', borderRadius: 8 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink-muted)', marginBottom: 2 }}>{k}</div>
-                  <div style={{ fontWeight: 600 }}>{v}</div>
+                  <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--ink-muted)', marginBottom: 3 }}>{k}</div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>{v}</div>
                 </div>
               ))}
             </div>
             {(showDetail.description || showDetail.purpose) && (
               <div style={{ padding: '12px 14px', background: 'var(--surface)', borderRadius: 10, fontSize: 13, color: 'var(--ink-soft)' }}>{showDetail.description || showDetail.purpose}</div>
+            )}
+            {(detailType === 'expense' || detailType === 'travel') && (
+              <div style={{ marginTop: 16, padding: '14px 16px', background: 'var(--surface)', borderRadius: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--ink-muted)', marginBottom: 8 }}>Approval Chain</div>
+                <ApprovalChainViz submitterRole={showDetail.requester?.role || 'employee'} currentStatus={showDetail.status} workflow={detailType} />
+              </div>
             )}
             <div className="form-group" style={{ marginTop: 16 }}>
               <label className="form-label">Your Comments</label>

@@ -76,7 +76,7 @@ export default function FundFlowPage() {
       </div>
 
       {/* KPI Banner */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12, marginBottom: 24 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 24 }}>
         {[
           { label: 'Total Invoiced', value: rupee(grandTotal), color: '#6366f1', icon: <DollarSign size={18} />, sub: `${invoices.length} invoices` },
           { label: 'Paid Out', value: rupee(totals.paid), color: '#10b981', icon: <CheckCircle size={18} />, sub: `${invoices.filter(i=>i.status==='paid').length} invoices` },

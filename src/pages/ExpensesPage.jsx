@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { supabase, rupee, dateFmt, nextNum } from '../lib/supabase'
-import { getChain, canActOn, buildApprovalUpdate, statusLabel } from '../lib/approvalFlow.js'
+import { getChainSync, canActOnSync, buildApprovalUpdate, statusLabel, warmChains } from '../lib/approvalFlow.js'
 import ApprovalChainViz from '../components/ui/ApprovalChainViz'
 import { Modal, StatusBadge, SearchBox, Loader, Empty, Confirm } from '../components/ui'
 import { Plus, Eye, Trash2, CheckCircle, XCircle, Upload, IndianRupee } from 'lucide-react'
@@ -29,6 +29,7 @@ export default function ExpensesPage() {
   const [note,       setNote]       = useState('')
   const [err,        setErr]        = useState('')
   const [file,       setFile]       = useState(null)
+  const [, setChainVer] = useState(0)
 
   const initForm = () => ({
     title: '', amount: '', category: '', description: '',
@@ -36,7 +37,7 @@ export default function ExpensesPage() {
   })
   const [form, setForm] = useState(initForm)
 
-  useEffect(() => { load(); loadProjects() }, [role])
+  useEffect(() => { load(); loadProjects(); warmChains('expense').then(() => setChainVer(v => v + 1)) }, [role])
 
   async function loadProjects() {
     const { data } = await supabase.from('projects')
@@ -122,7 +123,7 @@ export default function ExpensesPage() {
     setSub(true)
     try {
       const submitterRole = item.requester?.role || 'employee'
-      const update = buildApprovalUpdate(action, item.status, role, submitterRole, profile.id, note)
+      const update = await buildApprovalUpdate(action, item.status, role, submitterRole, profile.id, note)
       const { error } = await supabase.from('expense_requests').update(update).eq('id', item.id)
       if (error) throw error
       await supabase.from('approval_logs').insert({
@@ -159,7 +160,7 @@ export default function ExpensesPage() {
   if (loading) return <Loader />
 
   // ── Approval flow banner ──────────────────────────────────────
-  const myChain = getChain(role)
+  const myChain = getChainSync(role, 'expense')
   const FlowBanner = () => (
     <div style={{ background: '#f8fafc', border: '1.5px solid #e2e8f0', borderRadius: 14, padding: '12px 18px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
       <span style={{ fontSize: 11, fontWeight: 800, color: '#94a3b8', letterSpacing: '.06em' }}>YOUR APPROVAL FLOW</span>
@@ -201,7 +202,7 @@ export default function ExpensesPage() {
           { l: 'Approved ₹',   v: rupee(items.filter(i => i.status === 'approved').reduce((s,i) => s+(i.amount||0), 0)), c: '#3b82f6' },
         ].map(s => (
           <div key={s.l} className="stat-card" style={{ borderTopColor: s.c }}>
-            <div className="stat-value" style={{ fontSize: 20, color: s.c }}>{s.v}</div>
+            <div className="stat-value" style={{ color: s.c }}>{s.v}</div>
             <div className="stat-label">{s.l}</div>
           </div>
         ))}
@@ -238,10 +239,10 @@ export default function ExpensesPage() {
               ? <tr><td colSpan={10}><Empty icon="🧾" title="No expenses" desc="Submit your first expense" /></td></tr>
               : filtered.map(item => {
                   const submitterRole = item.requester?.role || 'employee'
-                  const canReview = canActOn(role, item.status, submitterRole)
+                  const canReview = canActOnSync(role, item.status, submitterRole, 'expense')
                   return (
                     <tr key={item.id}>
-                      <td style={{ fontFamily:'monospace', fontSize:11, fontWeight:700, color:'#6366f1' }}>{item.expense_number}</td>
+                      <td style={{ fontFamily:'monospace', fontSize:12, fontWeight:700, color:'#6366f1' }}>{item.expense_number}</td>
                       <td className="td-bold">{item.title}</td>
                       <td>
                         {item.project
@@ -343,7 +344,7 @@ export default function ExpensesPage() {
       {/* ── Detail Modal ── */}
       <Modal open={!!showDetail} onClose={() => setShowDetail(null)} title="Expense Details" size="lg"
         footer={<>
-          {canActOn(role, showDetail?.status, showDetail?.requester?.role||'employee') && (
+          {canActOnSync(role, showDetail?.status, showDetail?.requester?.role||'employee', 'expense') && (
             <button className="btn btn-primary btn-sm" onClick={() => { setShowReview(showDetail); setShowDetail(null) }}>Review</button>
           )}
           <button className="btn btn-ghost" onClick={() => setShowDetail(null)}>Close</button>
@@ -436,7 +437,7 @@ export default function ExpensesPage() {
             {/* Next step info */}
             {(() => {
               const submitterRole = showReview.requester?.role || 'employee'
-              const chain = getChain(submitterRole)
+              const chain = getChainSync(submitterRole, 'expense')
               const curIdx = chain.findIndex(s => s.status === showReview.status)
               const next = chain[curIdx + 1]
               return (

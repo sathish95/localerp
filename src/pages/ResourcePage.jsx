@@ -300,7 +300,7 @@ export default function ResourcePage() {
       {/* ── TEAM OVERVIEW ── */}
       {tab === 'team' && isManager && (
         <div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 }}>
             {empSummary.map(emp => (
               <div key={emp.id} style={{ background: '#fff', borderRadius: 16, border: '1.5px solid #e2e8f0', padding: '18px 20px', boxShadow: '0 1px 4px rgba(0,0,0,.04)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
@@ -321,11 +321,11 @@ export default function ResourcePage() {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                   <div style={{ padding: '8px 10px', borderRadius: 8, background: '#f8fafc' }}>
                     <div style={{ fontSize: 10, color: '#94a3b8', fontWeight: 600 }}>Hours (Month)</div>
-                    <div style={{ fontWeight: 800, fontSize: 18, color: '#6366f1' }}>{emp.totalHours.toFixed(1)}h</div>
+                    <div style={{ fontWeight: 800, fontSize: 16, color: '#6366f1' }}>{emp.totalHours.toFixed(1)}h</div>
                   </div>
                   <div style={{ padding: '8px 10px', borderRadius: 8, background: '#f8fafc' }}>
                     <div style={{ fontSize: 10, color: '#94a3b8', fontWeight: 600 }}>Monthly Rate</div>
-                    <div style={{ fontWeight: 700, fontSize: 14, color: '#10b981' }}>{emp.monthlyRate ? rupee(emp.monthlyRate) : '—'}</div>
+                    <div style={{ fontWeight: 800, fontSize: 16, color: '#10b981' }}>{emp.monthlyRate ? rupee(emp.monthlyRate) : '—'}</div>
                   </div>
                 </div>
                 {emp.payroll && (

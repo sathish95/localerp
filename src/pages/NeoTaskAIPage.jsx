@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
-import { analyzeRequirements, LLM_MODELS, getModel } from '../lib/llm'
+import { analyzeRequirements, LLM_MODELS, getModel, isModelUsable } from '../lib/llm'
 import { useAuth } from '../context/AuthContext'
 import { Loader } from '../components/ui'
 import {
@@ -95,6 +95,15 @@ export default function NeoTaskAIPage() {
   // Step machine: 'home' | 'upload' | 'analyzing' | 'results' | 'importing'
   const [step, setStep] = useState('home')
   const [projects, setProjects] = useState([])
+  const [keyStatus, setKeyStatus] = useState({})
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all(LLM_MODELS.map(async m => [m.id, await isModelUsable(m)])).then(pairs => {
+      if (!cancelled) setKeyStatus(Object.fromEntries(pairs))
+    })
+    return () => { cancelled = true }
+  }, [])
 
   // Upload form
   const [docText,      setDocText]      = useState('')
@@ -167,7 +176,7 @@ export default function NeoTaskAIPage() {
 
       // Call selected LLM
       const progressCb = selModel === 'ollama-local' ? (p) => setOllamaProgress(p) : null
-      await analyzeRequirements(sess.id, selModel, ollamaModel, progressCb)
+      await analyzeRequirements(sess.id, selModel, ollamaModel, progressCb, profile?.id)
 
       await loadResults(sess.id)
       setStep('results')
@@ -363,7 +372,7 @@ export default function NeoTaskAIPage() {
       </div>
 
       {/* KPI strip */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(160px,1fr))', gap:12, marginBottom:24 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))', gap:12, marginBottom:24 }}>
         {[
           { label:'Total Analyses', value: sessions.length, icon: FileText, color:'#6366f1' },
           { label:'Completed',      value: sessions.filter(s=>s.status==='completed').length, icon: Check,      color:'#10b981' },
@@ -478,8 +487,7 @@ export default function NeoTaskAIPage() {
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
               {LLM_MODELS.map(m => {
                 const active = selModel === m.id
-                const apiKey = m.envKey ? import.meta.env[m.envKey] : null
-                const keyMissing = m.envKey && (!apiKey || apiKey.startsWith('your-'))
+                const keyMissing = keyStatus[m.id] === false
                 return (
                   <div key={m.id} onClick={() => !keyMissing && setSelModel(m.id)}
                     style={{
@@ -514,7 +522,7 @@ export default function NeoTaskAIPage() {
                     </div>
                     {keyMissing && (
                       <div style={{ marginTop:7, fontSize:10, color:'#f59e0b', fontWeight:600 }}>
-                        ⚠ API key not set in .env
+                        ⚠ API key not set — configure it in Settings
                       </div>
                     )}
                   </div>
@@ -923,7 +931,7 @@ export default function NeoTaskAIPage() {
                 <Section key={sprintNum} icon={Activity} title={`Sprint ${sprintNum}`}
                   color={SPRINT_COLOR[sprintNum]||'#6366f1'}
                   badge={<><PointsBadge n={sprintPoints}/></>}>
-                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))', gap:10 }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))', gap:10 }}>
                     {sprintStories.map(s => (
                       <div key={s.id} style={{ padding:'10px 12px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surface-2)' }}>
                         <div style={{ fontSize:10, fontWeight:700, color:'#6366f1', marginBottom:4 }}>USER STORY</div>
@@ -961,7 +969,7 @@ export default function NeoTaskAIPage() {
             {/* Total summary */}
             <div className="card" style={{ marginTop:16 }}>
               <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>Project Summary</div>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))', gap:10 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))', gap:10 }}>
                 {[
                   { label:'User Stories', value:stories.length, color:'#6366f1' },
                   { label:'Backlog Items', value:backlog.length, color:'#8b5cf6' },

@@ -3,10 +3,12 @@ import { MISSING_ENV } from './lib/supabase'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { TabVisibilityProvider } from './context/TabVisibilityContext'
 import Layout from './components/layout/Layout'
+import ModuleGate from './components/ModuleGate'
 import { Loader } from './components/ui'
 
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
+import KnowledgeBasePage from './pages/KnowledgeBasePage'
 import ExpensesPage from './pages/ExpensesPage'
 import ApprovalsPage from './pages/ApprovalsPage'
 import VendorsPage from './pages/VendorsPage'
@@ -27,12 +29,35 @@ import TimesheetPage from './pages/TimesheetPage'
 import TimesheetApprovalPage from './pages/TimesheetApprovalPage'
 import ChatPage from './pages/ChatPage'
 import AppMonitorPage from './pages/AppMonitorPage'
+import LLMMonitorPage from './pages/LLMMonitorPage'
 import LandingPage from './pages/LandingPage'
 import AuthPage from './pages/AuthPage'
 import AdminContentPage from './pages/AdminContentPage'
 import ResourcePage from './pages/ResourcePage'
 import TasksPage from './pages/TasksPage'
 import NeoTaskAIPage from './pages/NeoTaskAIPage'
+import CustomersPage from './pages/CustomersPage'
+import ProductsPage from './pages/ProductsPage'
+import BomManagementPage from './pages/BomManagementPage'
+import InventoryPage from './pages/InventoryPage'
+import DevicesPage from './pages/DevicesPage'
+import SkillMatrixPage from './pages/SkillMatrixPage'
+import AllocationsPage from './pages/AllocationsPage'
+import CapacityPage from './pages/CapacityPage'
+import RoleRatesPage from './pages/RoleRatesPage'
+import CustomerInvoicesPage from './pages/CustomerInvoicesPage'
+import PaymentsPage from './pages/PaymentsPage'
+import AgingReportPage from './pages/AgingReportPage'
+import ProfitMarginPage from './pages/ProfitMarginPage'
+import SpendAnalyzerPage from './pages/SpendAnalyzerPage'
+import WarrantyPage from './pages/WarrantyPage'
+import DataAssistantPage from './pages/DataAssistantPage'
+import ProposalsPage from './pages/ProposalsPage'
+import PerformanceCyclesPage from './pages/PerformanceCyclesPage'
+import MyPerformancePage from './pages/MyPerformancePage'
+import TeamReviewsPage from './pages/TeamReviewsPage'
+import CalibrationPage from './pages/CalibrationPage'
+import PerformanceDashboardPage from './pages/PerformanceDashboardPage'
 import { NotificationProvider } from './context/NotificationContext'
 
 function AppRoutes() {
@@ -52,37 +77,72 @@ function AppRoutes() {
   const isAdmin    = ['admin','ceo'].includes(role)
   const isHR       = ['admin','ceo','hr'].includes(role)
   const isHROrManager = ['admin','ceo','hr','manager','department_head'].includes(role)
+  const isProcurementModule = ['admin','ceo','manager','department_head','finance','procurement_lead','pm','cto'].includes(role)
+  const isProposalModule = ['admin','ceo','finance','cto','sales_lead'].includes(role)
+  const isPerformanceAdmin = ['admin','ceo','hr'].includes(role)
+  const isPerformanceReviewer = ['admin','ceo','hr','manager','department_head'].includes(role)
+  const isPerformanceDashboard = ['admin','ceo','hr','manager','department_head','cto'].includes(role)
+  // PMO Head has no dedicated role in this app; 'manager' stands in as the
+  // closest cross-project oversight role. department_head also gets in per
+  // the stakeholder decision to give both the enterprise page and a
+  // project-scoped mirror (rather than department_head being enterprise-blocked).
+  const canViewSpendAnalyzer = ['admin','ceo','finance','manager','department_head'].includes(role)
+  const canViewWarranty = ['admin','ceo','manager','department_head','finance','procurement_lead','pm','cto','field_technician'].includes(role)
 
   return (
     <TabVisibilityProvider>
       <NotificationProvider>
       <Layout>
         <Routes>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/expenses" element={<ExpensesPage />} />
-          <Route path="/travel" element={<TravelPage />} />
-          <Route path="/approvals" element={isManager || isHR ? <ApprovalsPage /> : <Navigate to="/" />} />
-          <Route path="/vendors" element={isManager || isFinance ? <VendorsPage /> : <Navigate to="/" />} />
-          <Route path="/projects" element={<ProjectsPage />} />
-          <Route path="/tasks" element={<TasksPage />} />
-          <Route path="/neo-task-ai" element={<NeoTaskAIPage />} />
-          <Route path="/budget" element={<BudgetPage />} />
-          <Route path="/assets" element={<AssetsPage />} />
-          <Route path="/procurement" element={<ProcurementPage />} />
-          <Route path="/invoices" element={isManager || isFinance ? <InvoicesPage /> : <Navigate to="/" />} />
-          <Route path="/fundflow" element={isFinance ? <FundFlowPage /> : <Navigate to="/" />} />
-          <Route path="/pos" element={isManager || isFinance ? <PurchaseOrdersPage /> : <Navigate to="/" />} />
-          <Route path="/grn" element={isManager || isFinance ? <GRNPage /> : <Navigate to="/" />} />
-          <Route path="/users" element={isManager || isFinance || isHR ? <UsersPage /> : <Navigate to="/" />} />
-          <Route path="/settings" element={isAdmin ? <SettingsPage /> : <Navigate to="/" />} />
-          <Route path="/reports" element={<ReportsPage />} />
-          <Route path="/leave" element={<LeavePage />} />
-          <Route path="/resources" element={<ResourcePage />} />
-          <Route path="/timesheet" element={<TimesheetPage />} />
-          <Route path="/timesheet-approvals" element={<TimesheetApprovalPage />} />
-          <Route path="/chat" element={<ChatPage />} />
-          <Route path="/app-monitor" element={isAdmin ? <AppMonitorPage /> : <Navigate to="/" />} />
-          <Route path="/content" element={isAdmin ? <AdminContentPage /> : <Navigate to="/" />} />
+          <Route path="/" element={<ModuleGate tab="dashboard" allowed={true}><DashboardPage /></ModuleGate>} />
+          <Route path="/knowledge-base" element={<ModuleGate tab="knowledge-base" allowed={true}><KnowledgeBasePage /></ModuleGate>} />
+          <Route path="/expenses" element={<ModuleGate tab="expenses" allowed={true}><ExpensesPage /></ModuleGate>} />
+          <Route path="/travel" element={<ModuleGate tab="travel" allowed={true}><TravelPage /></ModuleGate>} />
+          <Route path="/approvals" element={<ModuleGate tab="approvals" allowed={isManager || isHR}><ApprovalsPage /></ModuleGate>} />
+          <Route path="/vendors" element={<ModuleGate tab="vendors" allowed={isManager || isFinance}><VendorsPage /></ModuleGate>} />
+          <Route path="/projects" element={<ModuleGate tab="projects" allowed={true}><ProjectsPage /></ModuleGate>} />
+          <Route path="/tasks" element={<ModuleGate tab="tasks" allowed={true}><TasksPage /></ModuleGate>} />
+          <Route path="/neo-task-ai" element={<ModuleGate tab="neo-task-ai" allowed={true}><NeoTaskAIPage /></ModuleGate>} />
+          <Route path="/budget" element={<ModuleGate tab="budget" allowed={true}><BudgetPage /></ModuleGate>} />
+          <Route path="/assets" element={<ModuleGate tab="assets" allowed={true}><AssetsPage /></ModuleGate>} />
+          <Route path="/procurement" element={<ModuleGate tab="procurement" allowed={true}><ProcurementPage /></ModuleGate>} />
+          <Route path="/customers" element={<ModuleGate tab="customers" allowed={isProcurementModule}><CustomersPage /></ModuleGate>} />
+          <Route path="/products" element={<ModuleGate tab="products" allowed={isProcurementModule}><ProductsPage /></ModuleGate>} />
+          <Route path="/bom" element={<ModuleGate tab="bom" allowed={isProcurementModule}><BomManagementPage /></ModuleGate>} />
+          <Route path="/inventory" element={<ModuleGate tab="inventory" allowed={isProcurementModule}><InventoryPage /></ModuleGate>} />
+          <Route path="/devices" element={<ModuleGate tab="devices" allowed={isProcurementModule}><DevicesPage /></ModuleGate>} />
+          <Route path="/warranty" element={<ModuleGate tab="warranty" allowed={canViewWarranty}><WarrantyPage /></ModuleGate>} />
+          <Route path="/proposals" element={<ModuleGate tab="proposals" allowed={isProposalModule}><ProposalsPage /></ModuleGate>} />
+          <Route path="/performance-cycles" element={<ModuleGate tab="performance-cycles" allowed={isPerformanceAdmin}><PerformanceCyclesPage /></ModuleGate>} />
+          <Route path="/my-performance" element={<ModuleGate tab="my-performance" allowed={true}><MyPerformancePage /></ModuleGate>} />
+          <Route path="/team-reviews" element={<ModuleGate tab="team-reviews" allowed={isPerformanceReviewer}><TeamReviewsPage /></ModuleGate>} />
+          <Route path="/calibration" element={<ModuleGate tab="calibration" allowed={isPerformanceAdmin}><CalibrationPage /></ModuleGate>} />
+          <Route path="/performance-dashboard" element={<ModuleGate tab="performance-dashboard" allowed={isPerformanceDashboard}><PerformanceDashboardPage /></ModuleGate>} />
+          <Route path="/skill-matrix" element={<ModuleGate tab="skill-matrix" allowed={true}><SkillMatrixPage /></ModuleGate>} />
+          <Route path="/allocations" element={<ModuleGate tab="allocations" allowed={true}><AllocationsPage /></ModuleGate>} />
+          <Route path="/capacity" element={<ModuleGate tab="capacity" allowed={true}><CapacityPage /></ModuleGate>} />
+          <Route path="/role-rates" element={<ModuleGate tab="role-rates" allowed={isFinance || role==='hr'}><RoleRatesPage /></ModuleGate>} />
+          <Route path="/customer-invoices" element={<ModuleGate tab="customer-invoices" allowed={isFinance}><CustomerInvoicesPage /></ModuleGate>} />
+          <Route path="/payments" element={<ModuleGate tab="payments" allowed={isFinance}><PaymentsPage /></ModuleGate>} />
+          <Route path="/aging-report" element={<ModuleGate tab="aging-report" allowed={isFinance}><AgingReportPage /></ModuleGate>} />
+          <Route path="/profit-margins" element={<ModuleGate tab="profit-margins" allowed={isFinance}><ProfitMarginPage /></ModuleGate>} />
+          <Route path="/spend-analyzer" element={<ModuleGate tab="spend-analyzer" allowed={canViewSpendAnalyzer}><SpendAnalyzerPage /></ModuleGate>} />
+          <Route path="/invoices" element={<ModuleGate tab="invoices" allowed={isManager || isFinance}><InvoicesPage /></ModuleGate>} />
+          <Route path="/fundflow" element={<ModuleGate tab="fundflow" allowed={isFinance}><FundFlowPage /></ModuleGate>} />
+          <Route path="/pos" element={<ModuleGate tab="pos" allowed={isManager || isFinance}><PurchaseOrdersPage /></ModuleGate>} />
+          <Route path="/grn" element={<ModuleGate tab="grn" allowed={isManager || isFinance}><GRNPage /></ModuleGate>} />
+          <Route path="/users" element={<ModuleGate tab="users" allowed={isManager || isFinance || isHR}><UsersPage /></ModuleGate>} />
+          <Route path="/settings" element={<ModuleGate tab="settings" allowed={isAdmin}><SettingsPage /></ModuleGate>} />
+          <Route path="/reports" element={<ModuleGate tab="reports" allowed={true}><ReportsPage /></ModuleGate>} />
+          <Route path="/leave" element={<ModuleGate tab="leave" allowed={true}><LeavePage /></ModuleGate>} />
+          <Route path="/resources" element={<ModuleGate tab="resources" allowed={true}><ResourcePage /></ModuleGate>} />
+          <Route path="/timesheet" element={<ModuleGate tab="timesheet" allowed={true}><TimesheetPage /></ModuleGate>} />
+          <Route path="/timesheet-approvals" element={<ModuleGate tab="timesheet-approvals" allowed={true}><TimesheetApprovalPage /></ModuleGate>} />
+          <Route path="/chat" element={<ModuleGate tab="chat" allowed={true}><ChatPage /></ModuleGate>} />
+          <Route path="/data-assistant" element={<ModuleGate tab="data-assistant" allowed={true}><DataAssistantPage /></ModuleGate>} />
+          <Route path="/app-monitor" element={<ModuleGate tab="app-monitor" allowed={isAdmin}><AppMonitorPage /></ModuleGate>} />
+          <Route path="/llm-monitor" element={<ModuleGate tab="llm-monitor" allowed={isAdmin}><LLMMonitorPage /></ModuleGate>} />
+          <Route path="/content" element={<ModuleGate tab="content" allowed={isAdmin}><AdminContentPage /></ModuleGate>} />
           <Route path="/login" element={<Navigate to="/" />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>

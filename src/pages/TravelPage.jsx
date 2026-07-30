@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { supabase, dateFmt, rupee, nextNum } from '../lib/supabase'
-import { getChain, canActOn, buildApprovalUpdate, statusLabel } from '../lib/approvalFlow.js'
+import { getChainSync, canActOnSync, buildApprovalUpdate, statusLabel, warmChains } from '../lib/approvalFlow.js'
 import ApprovalChainViz from '../components/ui/ApprovalChainViz'
 import { Modal, StatusBadge, SearchBox, Loader, Empty, Confirm } from '../components/ui'
 import { Plus, Trash2, Plane, Calendar, DollarSign, Eye, CheckCircle, XCircle } from 'lucide-react'
@@ -31,8 +31,9 @@ export default function TravelPage() {
   const [note,       setNote]    = useState('')
   const [submitting, setSub]     = useState(false)
   const [err,        setErr]     = useState('')
+  const [, setChainVer] = useState(0)
 
-  useEffect(() => { load(); loadProjects() }, [role])
+  useEffect(() => { load(); loadProjects(); warmChains('travel').then(() => setChainVer(v => v + 1)) }, [role])
 
   async function loadProjects() {
     const { data } = await supabase.from('projects').select('id,name,code,budget,spent').order('name')
@@ -90,7 +91,7 @@ export default function TravelPage() {
     setSub(true)
     try {
       const submitterRole = item.requester?.role || 'employee'
-      const update = buildApprovalUpdate(action, item.status, role, submitterRole, profile.id, note)
+      const update = await buildApprovalUpdate(action, item.status, role, submitterRole, profile.id, note, 'travel')
       const { error } = await supabase.from('travel_requests').update(update).eq('id', item.id)
       if (error) throw error
       await supabase.from('approval_logs').insert({
@@ -114,7 +115,7 @@ export default function TravelPage() {
     i.purpose?.toLowerCase().includes(search.toLowerCase())
   )
 
-  const myChain = getChain(role)
+  const myChain = getChainSync(role, 'travel')
 
   if (loading) return <Loader />
 
@@ -152,7 +153,7 @@ export default function TravelPage() {
           { l:'Rejected', v:items.filter(i=>i.status==='rejected').length, c:'#ef4444' },
         ].map(s => (
           <div key={s.l} className="stat-card" style={{ borderTopColor:s.c }}>
-            <div className="stat-value" style={{ fontSize:22, color:s.c }}>{s.v}</div>
+            <div className="stat-value" style={{ color:s.c }}>{s.v}</div>
             <div className="stat-label">{s.l}</div>
           </div>
         ))}
@@ -176,10 +177,10 @@ export default function TravelPage() {
             <tbody>
               {filtered.map(item => {
                 const submitterRole = item.requester?.role || 'employee'
-                const canReview = canActOn(role, item.status, submitterRole)
+                const canReview = canActOnSync(role, item.status, submitterRole, 'travel')
                 return (
                   <tr key={item.id}>
-                    <td style={{ fontFamily:'monospace', fontSize:11, fontWeight:700, color:'#6366f1' }}>{item.request_number}</td>
+                    <td style={{ fontFamily:'monospace', fontSize:12, fontWeight:700, color:'#6366f1' }}>{item.request_number}</td>
                     <td>
                       <div style={{ fontWeight:700, fontSize:13 }}>{item.from_location} → {item.to_location}</div>
                       <div style={{ fontSize:11, color:'#94a3b8' }}>{item.purpose?.slice(0,40)}{item.purpose?.length>40?'…':''}</div>
@@ -200,7 +201,7 @@ export default function TravelPage() {
                         {statusLabel(item.status)}
                       </span>
                     </td>
-                    <td><ApprovalChainViz submitterRole={submitterRole} currentStatus={item.status} compact /></td>
+                    <td><ApprovalChainViz submitterRole={submitterRole} currentStatus={item.status} compact workflow="travel" /></td>
                     <td>
                       <div style={{ display:'flex', gap:5 }}>
                         <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setShowDetail(item)}><Eye size={13} /></button>
@@ -273,14 +274,14 @@ export default function TravelPage() {
         </div>
         <div style={{ padding:'10px 14px', borderRadius:10, background:'#f0f9ff', border:'1px solid #bae6fd' }}>
           <div style={{ fontSize:11, fontWeight:700, color:'#0369a1', marginBottom:8 }}>APPROVAL CHAIN</div>
-          <ApprovalChainViz submitterRole={role} currentStatus="submitted" />
+          <ApprovalChainViz submitterRole={role} currentStatus="submitted" workflow="travel" />
         </div>
       </Modal>
 
       {/* Detail Modal */}
       <Modal open={!!showDetail} onClose={() => setShowDetail(null)} title="Travel Request Details" size="lg"
         footer={<>
-          {showDetail && canActOn(role, showDetail.status, showDetail.requester?.role||'employee') && (
+          {showDetail && canActOnSync(role, showDetail.status, showDetail.requester?.role||'employee', 'travel') && (
             <button className="btn btn-primary btn-sm" onClick={() => { setShowReview(showDetail); setShowDetail(null) }}>Review</button>
           )}
           <button className="btn btn-ghost" onClick={() => setShowDetail(null)}>Close</button>
@@ -305,14 +306,14 @@ export default function TravelPage() {
                 ['Return Date', dateFmt(showDetail.return_date)],
               ].map(([k,v]) => (
                 <div key={k} style={{ padding:'10px 14px', borderRadius:10, background:'#f8fafc' }}>
-                  <div style={{ fontSize:10, fontWeight:700, textTransform:'uppercase', color:'#94a3b8', marginBottom:3 }}>{k}</div>
+                  <div style={{ fontSize:11, fontWeight:700, textTransform:'uppercase', color:'#94a3b8', marginBottom:3 }}>{k}</div>
                   <div style={{ fontWeight:600, fontSize:14 }}>{v||'—'}</div>
                 </div>
               ))}
             </div>
             <div style={{ marginBottom:14 }}>
               <div style={{ fontSize:11, fontWeight:700, color:'#94a3b8', textTransform:'uppercase', marginBottom:8 }}>Approval Chain</div>
-              <ApprovalChainViz submitterRole={showDetail.requester?.role||'employee'} currentStatus={showDetail.status} />
+              <ApprovalChainViz submitterRole={showDetail.requester?.role||'employee'} currentStatus={showDetail.status} workflow="travel" />
             </div>
           </div>
         )}
@@ -338,7 +339,7 @@ export default function TravelPage() {
             </div>
             {(() => {
               const submitterRole = showReview.requester?.role || 'employee'
-              const chain = getChain(submitterRole)
+              const chain = getChainSync(submitterRole, 'travel')
               const curIdx = chain.findIndex(s => s.status === showReview.status)
               const next = chain[curIdx + 1]
               return (
@@ -348,7 +349,7 @@ export default function TravelPage() {
               )
             })()}
             <div style={{ marginBottom:12 }}>
-              <ApprovalChainViz submitterRole={showReview.requester?.role||'employee'} currentStatus={showReview.status} />
+              <ApprovalChainViz submitterRole={showReview.requester?.role||'employee'} currentStatus={showReview.status} workflow="travel" />
             </div>
             <div className="form-group">
               <label className="form-label">Comments (optional)</label>

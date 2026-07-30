@@ -39,6 +39,9 @@ const STATUS_MAP = {
   dept_review:    { label: 'Dept Review',   bg: '#ede9fe', color: '#6d28d9' },
   ceo_review:     { label: 'CEO Review',    bg: '#fee2e2', color: '#dc2626' },
   finance_review: { label: 'Finance Review',bg: '#d1fae5', color: '#065f46' },
+  procurement_lead_review: { label: 'Proc. Lead Review', bg: '#e0e7ff', color: '#4338ca' },
+  pm_review:      { label: 'PM Review',     bg: '#dbeafe', color: '#1d4ed8' },
+  cto_review:     { label: 'CTO Review',    bg: '#fce7f3', color: '#be185d' },
   approved:       { label: 'Approved',      bg: '#dcfce7', color: '#15803d' },
   rejected:       { label: 'Rejected',      bg: '#fee2e2', color: '#dc2626' },
   paid:           { label: 'Paid',          bg: '#dcfce7', color: '#15803d' },
@@ -60,6 +63,8 @@ const STATUS_MAP = {
   sent:           { label: 'Sent',          bg: '#dbeafe', color: '#1d4ed8' },
   acknowledged:   { label: 'Acknowledged',  bg: '#ede9fe', color: '#6d28d9' },
   delivered:      { label: 'Delivered',     bg: '#dcfce7', color: '#15803d' },
+  requested:      { label: 'Requested',     bg: '#fef3c7', color: '#b45309' },
+  completed:      { label: 'Completed',     bg: '#dbeafe', color: '#1d4ed8' },
 }
 
 export function StatusBadge({ status }) {

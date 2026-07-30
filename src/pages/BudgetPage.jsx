@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Fragment } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { supabase, rupee } from '../lib/supabase'
 import { Modal, Loader, Empty } from '../components/ui'
-import { Plus, Edit2, Trash2, AlertTriangle } from 'lucide-react'
+import { proposeRevision, reviewRevision } from '../lib/budgetRevisions'
+import { Plus, Edit2, Trash2, AlertTriangle, History, ChevronDown, ChevronRight, Check, X } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 
 const CURRENT_YEAR = new Date().getFullYear()
@@ -32,6 +33,13 @@ export default function BudgetPage() {
   const [deleteConfirm, setDel] = useState(null)
   const [filterType, setFilterType] = useState('all')
   const [filterYear, setFilterYear] = useState(CURRENT_YEAR)
+  const [revisions, setRevisions] = useState([])
+  const [expandedRevisions, setExpandedRevisions] = useState(() => new Set())
+  const [pendingOnly, setPendingOnly] = useState(false)
+  const [showRevise, setShowRevise] = useState(null) // budget row being revised
+  const [reviseForm, setReviseForm] = useState({ requested_allocated: '', reason: '' })
+  const [rejectTarget, setRejectTarget] = useState(null)
+  const [rejectReason, setRejectReason] = useState('')
 
   const role     = profile?.role || 'employee'
   const canEdit  = ['admin', 'ceo', 'finance'].includes(role)
@@ -40,18 +48,46 @@ export default function BudgetPage() {
 
   async function loadAll() {
     setLoading(true)
-    const [b, d, p] = await Promise.all([
+    const [b, d, p, r] = await Promise.all([
       supabase.from('budgets')
         .select('*, dept:departments(id,name,code), proj:projects(id,name,code)')
         .order('fiscal_year', { ascending: false })
         .order('created_at', { ascending: false }),
       supabase.from('departments').select('id, name, code').order('name'),
       supabase.from('projects').select('id, name, code').eq('status', 'active').order('name'),
+      supabase.from('budget_revisions').select('*,requester:profiles!requested_by(full_name),reviewer:profiles!reviewed_by(full_name)').order('revision_number', { ascending: false }),
     ])
     setBudgets(b.data || [])
     setDepts(d.data || [])
     setProjects(p.data || [])
+    setRevisions(r.data || [])
     setLoading(false)
+  }
+
+  function toggleRevisions(budgetId) {
+    setExpandedRevisions(prev => { const n = new Set(prev); n.has(budgetId) ? n.delete(budgetId) : n.add(budgetId); return n })
+  }
+
+  async function submitRevision(e) {
+    e.preventDefault()
+    if (!showRevise || !reviseForm.requested_allocated || !reviseForm.reason.trim()) return
+    setSub(true)
+    try {
+      await proposeRevision(showRevise.id, showRevise.allocated || 0, parseFloat(reviseForm.requested_allocated), reviseForm.reason.trim(), profile.id)
+      setShowRevise(null); setReviseForm({ requested_allocated: '', reason: '' }); loadAll()
+    } catch (e) { alert(e.message) } finally { setSub(false) }
+  }
+
+  async function approveRevision(rev) {
+    if (rev.requested_by === profile.id && role !== 'admin') { alert('You cannot approve your own revision request.'); return }
+    await reviewRevision(rev, 'approve', profile.id)
+    loadAll()
+  }
+
+  async function rejectRevision() {
+    if (!rejectReason.trim()) return
+    await reviewRevision(rejectTarget, 'reject', profile.id, rejectReason.trim())
+    setRejectTarget(null); setRejectReason(''); loadAll()
   }
 
   async function handleSubmit(e) {
@@ -103,10 +139,15 @@ export default function BudgetPage() {
     setErr(''); setShowModal(true)
   }
 
+  const revisionsByBudget = {}
+  revisions.forEach(r => { (revisionsByBudget[r.budget_id] ||= []).push(r) })
+  const pendingRevisionsCount = revisions.filter(r => r.status === 'pending_review').length
+
   const filtered = budgets.filter(b => {
     const mt = filterType === 'all' || (filterType === 'department' && b.department_id) || (filterType === 'project' && b.project_id)
     const my = b.fiscal_year === filterYear
-    return mt && my
+    const mp = !pendingOnly || (revisionsByBudget[b.id] || []).some(r => r.status === 'pending_review')
+    return mt && my && mp
   })
 
   const totalAllocated = filtered.reduce((s, b) => s + (b.allocated || 0), 0)
@@ -161,6 +202,11 @@ export default function BudgetPage() {
         {['all','department','project'].map(t => (
           <button key={t} onClick={() => setFilterType(t)} style={{ padding: '6px 16px', borderRadius: 20, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12, background: filterType === t ? '#6366f1' : '#f1f5f9', color: filterType === t ? '#fff' : '#475569', textTransform: 'capitalize' }}>{t === 'all' ? 'All Types' : t}</button>
         ))}
+        {canEdit && (
+          <button onClick={() => setPendingOnly(p => !p)} style={{ padding: '6px 16px', borderRadius: 20, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12, background: pendingOnly ? '#f59e0b' : '#f1f5f9', color: pendingOnly ? '#fff' : '#475569', display: 'flex', alignItems: 'center', gap: 5 }}>
+            <History size={12} /> Pending Revisions{pendingRevisionsCount > 0 ? ` (${pendingRevisionsCount})` : ''}
+          </button>
+        )}
         <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
           {YEARS.map(y => (
             <button key={y} onClick={() => setFilterYear(y)} style={{ padding: '6px 14px', borderRadius: 20, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12, background: filterYear === y ? '#1e293b' : '#f1f5f9', color: filterYear === y ? '#fff' : '#475569' }}>{y}</button>
@@ -214,8 +260,12 @@ export default function BudgetPage() {
                   const over  = pct > 100
                   const c     = COLORS[i % COLORS.length]
                   const period = b.month ? `${MONTHS[b.month-1]} ${b.fiscal_year}` : `FY ${b.fiscal_year}`
+                  const budgetRevs = revisionsByBudget[b.id] || []
+                  const hasPending = budgetRevs.some(r => r.status === 'pending_review')
+                  const isExpanded = expandedRevisions.has(b.id)
                   return (
-                    <tr key={b.id}>
+                    <Fragment key={b.id}>
+                    <tr>
                       <td>
                         <span style={{ padding: '3px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: b.department_id ? '#dbeafe' : '#ede9fe', color: b.department_id ? '#1d4ed8' : '#6d28d9' }}>{type}</span>
                       </td>
@@ -245,12 +295,46 @@ export default function BudgetPage() {
                       {canEdit && (
                         <td>
                           <div style={{ display: 'flex', gap: 4 }}>
-                            <button className="btn btn-ghost btn-sm btn-icon" onClick={() => openEdit(b)}><Edit2 size={12} /></button>
+                            <button className="btn btn-ghost btn-sm btn-icon" onClick={() => openEdit(b)} title="Edit"><Edit2 size={12} /></button>
+                            <button className="btn btn-ghost btn-sm btn-icon" onClick={() => { setShowRevise(b); setReviseForm({ requested_allocated: b.allocated || '', reason: '' }) }} title="Revise"><History size={12} /></button>
+                            {budgetRevs.length > 0 && (
+                              <button className="btn btn-ghost btn-sm btn-icon" onClick={() => toggleRevisions(b.id)} title="Revision history" style={{ color: hasPending ? '#f59e0b' : undefined }}>
+                                {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                              </button>
+                            )}
                             <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }} onClick={() => setDel(b.id)}><Trash2 size={12} /></button>
                           </div>
                         </td>
                       )}
                     </tr>
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={canEdit ? 9 : 8} style={{ background: '#f8fafc', padding: '10px 20px' }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', marginBottom: 8 }}>Revision History</div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {budgetRevs.map(rev => (
+                              <div key={rev.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, flexWrap: 'wrap' }}>
+                                <span style={{ fontSize: 11, fontWeight: 700, color: '#6366f1' }}>#{rev.revision_number}</span>
+                                <span style={{ fontSize: 12 }}>{rupee(rev.previous_allocated)} → {rupee(rev.requested_allocated)}</span>
+                                <span style={{ fontSize: 11, fontWeight: 700, color: rev.delta >= 0 ? '#10b981' : '#ef4444' }}>{rev.delta >= 0 ? '+' : ''}{rupee(rev.delta)}</span>
+                                <span style={{ fontSize: 11, color: '#64748b' }}>{rev.reason}</span>
+                                <span style={{ fontSize: 10.5, color: '#94a3b8' }}>by {rev.requester?.full_name}</span>
+                                <span style={{ marginLeft: 'auto', padding: '2px 9px', borderRadius: 999, fontSize: 10.5, fontWeight: 700,
+                                  background: rev.status === 'approved' ? '#dcfce7' : rev.status === 'rejected' ? '#fee2e2' : '#fef3c7',
+                                  color: rev.status === 'approved' ? '#15803d' : rev.status === 'rejected' ? '#dc2626' : '#b45309', textTransform: 'capitalize' }}>{rev.status.replace('_', ' ')}</span>
+                                {rev.status === 'pending_review' && canEdit && (
+                                  <div style={{ display: 'flex', gap: 4 }}>
+                                    <button className="btn btn-success btn-sm btn-icon" title="Approve" onClick={() => approveRevision(rev)}><Check size={12} /></button>
+                                    <button className="btn btn-danger btn-sm btn-icon" title="Reject" onClick={() => setRejectTarget(rev)}><X size={12} /></button>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   )
                 })
             }
@@ -333,6 +417,29 @@ export default function BudgetPage() {
             <span style={{ color: '#15803d', fontWeight: 600 }}>Monthly equivalent: {rupee(parseFloat(form.allocated) / 12)}/mo</span>
           </div>
         )}
+      </Modal>
+
+      {/* Revise Budget modal */}
+      <Modal open={!!showRevise} onClose={() => setShowRevise(null)} title={`Revise Budget — ${showRevise?.dept?.name || showRevise?.proj?.name || showRevise?.category || ''}`} size="md"
+        footer={<><button className="btn btn-ghost" onClick={() => setShowRevise(null)}>Cancel</button><button className="btn btn-primary" onClick={submitRevision} disabled={submitting}>{submitting ? 'Submitting…' : 'Submit for Review'}</button></>}>
+        <div style={{ fontSize: 12.5, color: '#64748b', marginBottom: 14 }}>Current allocated: <strong>{rupee(showRevise?.allocated || 0)}</strong>. Every revision is versioned — the original amount is preserved in the revision history.</div>
+        <div className="form-group">
+          <label className="form-label">Requested Amount (₹) *</label>
+          <input className="form-input" type="number" step="1000" value={reviseForm.requested_allocated} onChange={e => setReviseForm(f => ({ ...f, requested_allocated: e.target.value }))} required />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Reason *</label>
+          <textarea className="form-textarea" value={reviseForm.reason} onChange={e => setReviseForm(f => ({ ...f, reason: e.target.value }))} placeholder="Why is this budget being revised?" required />
+        </div>
+      </Modal>
+
+      {/* Reject revision modal */}
+      <Modal open={!!rejectTarget} onClose={() => { setRejectTarget(null); setRejectReason('') }} title="Reject Budget Revision"
+        footer={<><button className="btn btn-ghost" onClick={() => { setRejectTarget(null); setRejectReason('') }}>Cancel</button><button className="btn btn-danger" disabled={!rejectReason.trim()} onClick={rejectRevision}>Reject</button></>}>
+        <div className="form-group">
+          <label className="form-label">Reason *</label>
+          <textarea className="form-textarea" value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Explain why this revision is being rejected…" />
+        </div>
       </Modal>
 
       {/* Delete confirm */}

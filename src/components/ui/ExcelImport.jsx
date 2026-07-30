@@ -3,11 +3,33 @@ import { supabase, rupee, dateFmt } from '../../lib/supabase'
 import { useAuth } from '../../context/AuthContext'
 import { Upload, Download, X, CheckCircle, AlertTriangle, FileSpreadsheet } from 'lucide-react'
 
+const TASK_TYPE_OPTIONS = ['task','bug','change_request','feature','improvement']
+const PRIORITY_OPTIONS  = ['critical','high','medium','low']
+const EMPLOYMENT_TYPE_OPTIONS = ['FTE','Contractor','Intern']
+const PROFICIENCY_OPTIONS = ['Beginner','Intermediate','Expert','Master']
+
 /* ── Template definitions ── */
 export const TEMPLATES = {
+  tasks: {
+    label: 'Project Tasks',
+    table: 'project_tasks',
+    formatCurrency: false,
+    columns: ['task_name','task_type','module_name','priority','assignee_name','sprint_name','story_title','planned_start_date','planned_end_date','estimated_hours','actual_hours','description'],
+    required: ['task_name'],
+    types:    { estimated_hours:'number', actual_hours:'number' },
+    sample: [
+      ['Design login screen','feature','Auth','high','','Sprint 1','','2026-08-01','2026-08-05','8','','Figma mockups for login and signup flows'],
+      ['Fix password reset bug','bug','Auth','critical','Priya Sharma','Sprint 1','US-001 Login Flow','2026-08-01','2026-08-02','4','','Reset link expires too early'],
+      ['Setup CI pipeline','task','DevOps','medium','','','','2026-08-03','2026-08-06','6','',''],
+      ['Client requested extra filters','change_request','Reports','medium','','Sprint 2','','2026-08-10','2026-08-14','10','',''],
+      ['Improve dashboard load time','improvement','Dashboard','low','','','','','','5','',''],
+    ],
+    notes: 'Every imported task lands in Backlog. task_type: task/bug/change_request/feature/improvement · priority: critical/high/medium/low · assignee_name must match a team member\'s full name · sprint_name/story_title must match an existing Sprint/Story in the selected project (case-insensitive) — leave blank to skip.',
+  },
   hardware: {
     label: 'Hardware Costs',
     table: 'project_hardware_costs',
+    formatCurrency: true,
     columns: ['name','category','qty','unit_price','cost_company','cost_client','proposal_cost','vendor','notes'],
     required: ['name','qty','unit_price'],
     types:    { qty:'number', unit_price:'number', cost_company:'number', cost_client:'number', proposal_cost:'number' },
@@ -16,11 +38,12 @@ export const TEMPLATES = {
       ['PCB Assembly','assembly','50','800','40000','52000','60000','TechMfg Ltd','Custom PCBs'],
       ['Shipping & Logistics','logistics','1','12000','12000','15600','18000','DHL Express',''],
     ],
-    notes: 'cost_company auto-fills as qty × unit_price if blank. cost_client = ×1.3, proposal = ×1.5',
+    notes: 'cost_company auto-fits as qty × unit_price if blank. cost_client = ×1.3, proposal = ×1.5',
   },
   software: {
     label: 'Software Costs',
     table: 'project_software_costs',
+    formatCurrency: true,
     columns: ['name','category','qty','unit_price','cost_company','cost_client','proposal_cost','billing_cycle','notes'],
     required: ['name'],
     types:    { qty:'number', unit_price:'number', cost_company:'number', cost_client:'number', proposal_cost:'number' },
@@ -35,6 +58,7 @@ export const TEMPLATES = {
   expenses: {
     label: 'Expense Requests',
     table: 'expense_requests',
+    formatCurrency: true,
     columns: ['title','category','amount','expense_date','notes'],
     required: ['title','amount','expense_date'],
     types:    { amount:'number' },
@@ -45,6 +69,61 @@ export const TEMPLATES = {
       ['Hotel accommodation','accommodation','5400','2025-06-13','3 nights site stay'],
     ],
     notes: 'expense_date format: YYYY-MM-DD. category: transport/food/equipment/accommodation/other',
+  },
+  employees: {
+    label: 'Employees',
+    table: 'profiles',
+    formatCurrency: false,
+    columns: ['email','full_name','role','department_name','reporting_manager_email','employment_type','default_weekly_capacity_hours','date_joined'],
+    required: ['email'],
+    types:    { default_weekly_capacity_hours:'number' },
+    sample: [
+      ['priya.sharma@thingsalive.in','Priya Sharma','employee','Engineering','rahul.verma@thingsalive.in','FTE','40','2024-03-01'],
+      ['arjun.rao@thingsalive.in','Arjun Rao','manager','Engineering','','FTE','40','2022-11-15'],
+    ],
+    notes: 'email must match an existing user\'s account — this updates existing profiles, it does not create new logins. Blank cells leave that field unchanged. department_name/reporting_manager_email must match an existing department/employee (case-insensitive) — leave blank to skip. employment_type: FTE/Contractor/Intern.',
+  },
+  employee_skills: {
+    label: 'Employee Skills',
+    table: 'employee_skills',
+    formatCurrency: false,
+    columns: ['employee_email','skill_name','proficiency_level','years_experience','certified'],
+    required: ['employee_email','skill_name','proficiency_level'],
+    types:    { years_experience:'number' },
+    sample: [
+      ['priya.sharma@thingsalive.in','Embedded C','Expert','4','yes'],
+      ['priya.sharma@thingsalive.in','React','Intermediate','2','no'],
+      ['arjun.rao@thingsalive.in','Project Planning','Master','6','yes'],
+    ],
+    notes: 'employee_email must match an existing user, skill_name must match an existing entry in the Skill Matrix catalog (both case-insensitive) — unmatched rows are skipped, not auto-created. proficiency_level: Beginner/Intermediate/Expert/Master. certified: yes/no.',
+  },
+  components: {
+    label: 'Inventory Components',
+    table: 'products',
+    formatCurrency: true,
+    columns: ['part_number', 'name', 'device_type', 'standard_cost', 'reorder_level', 'reorder_qty', 'status'],
+    required: ['name'],
+    types: { standard_cost: 'number', reorder_level: 'number', reorder_qty: 'number' },
+    sample: [
+      ['CMP-1001', 'Temperature Sensor Module', 'Temperature Sensor', '450', '20', '50', 'active'],
+      ['CMP-1002', 'Enclosure — Standard', 'Other', '320', '10', '25', 'active'],
+      ['CMP-1003', 'Mounting Screw Set (4pc)', 'Other', '40', '100', '200', 'active'],
+    ],
+    notes: 'part_number is auto-generated if left blank. Every imported row is created as a non-serialized (bulk/consumable) component, listed under Inventory → Components — for serialized devices use the Products page instead. status: active/discontinued (defaults to active).',
+  },
+  bom: {
+    label: 'BOM Components',
+    table: null, // special-cased in doImport — staged into the edit form via onImportRows, not inserted directly
+    formatCurrency: false,
+    columns: ['component_name','component_id','component_part_number','per_unit_cost','quantity_stock','required_quantity_for_product','notes'],
+    required: ['component_part_number','required_quantity_for_product'],
+    types:    { required_quantity_for_product:'number' },
+    sample: [
+      ['Temperature Sensor Module','','PRD-1002','450','—','2','Sensor module'],
+      ['Enclosure — Standard','','PRD-1005','320','—','1','Enclosure'],
+      ['Mounting Screw Set (4pc)','','PRD-1009','40','—','4','Mounting screws (set of 4)'],
+    ],
+    notes: 'Only component_part_number and required_quantity_for_product are actually read — component_name/component_id/per_unit_cost/quantity_stock are reference-only and always re-fetched live from the Products catalog, never trusted from the file. component_part_number must match an existing Product part number (case-insensitive) — unmatched rows are skipped. Rows are staged into the edit form; you still need to click "Save as New Version" to commit. Use "Download Template" while a product is selected to get a ready-made sheet listing every real component with its current cost.',
   },
 }
 
@@ -86,10 +165,27 @@ async function parseXLSX(file) {
 }
 
 /* ── Download template CSV ── */
-function downloadTemplate(type) {
+function downloadTemplate(type, lookups) {
   const tmpl = TEMPLATES[type]
+  let sampleRows = tmpl.sample
+
+  // BOM: build the template from the real Products catalog instead of
+  // static placeholders, so component_name/component_id/per_unit_cost are
+  // already correct — the user only has to fill in
+  // required_quantity_for_product and delete rows they don't need.
+  if (type === 'bom' && lookups?.products?.length) {
+    sampleRows = lookups.products
+      .filter(p => p.part_number !== lookups.currentPartNumber)
+      .map(p => {
+        const stockCol = p.is_serialized
+          ? (lookups?.stockByPart?.[p.part_number] != null ? `${lookups.stockByPart[p.part_number]} in stock` : 'not shown')
+          : `Reorder @ ${p.reorder_level ?? '—'}`
+        return [p.name || '', p.id || '', p.part_number || '', Number(p.standard_cost || 0), stockCol, '', '']
+      })
+  }
+
   const header = tmpl.columns.join(',')
-  const rows   = tmpl.sample.map(r => r.map(v => `"${v}"`).join(','))
+  const rows   = sampleRows.map(r => r.map(v => `"${v}"`).join(','))
   const csv    = [header, ...rows].join('\n')
   const blob   = new Blob([csv], { type:'text/csv' })
   const a      = document.createElement('a')
@@ -99,7 +195,7 @@ function downloadTemplate(type) {
 }
 
 /* ══ Main Component ══════════════════════════════════════════ */
-export default function ExcelImport({ type, projectId, onSuccess, onClose }) {
+export default function ExcelImport({ type, projectId, lookups, onSuccess, onClose, onImportRows }) {
   const { profile } = useAuth()
   const tmpl = TEMPLATES[type]
   const fileRef = useRef()
@@ -194,6 +290,114 @@ export default function ExcelImport({ type, projectId, onSuccess, onClose }) {
         }
       }
 
+      if (type === 'tasks') {
+        let tt = (obj.task_type || 'task').toLowerCase().replace(/ /g,'_')
+        if (!TASK_TYPE_OPTIONS.includes(tt)) { warns.push(`Row ${rowNum}: task_type "${obj.task_type}" not recognised, defaulted to "task"`); tt = 'task' }
+        obj.task_type = tt
+
+        let pr = (obj.priority || 'medium').toLowerCase()
+        if (!PRIORITY_OPTIONS.includes(pr)) { warns.push(`Row ${rowNum}: priority "${obj.priority}" not recognised, defaulted to "medium"`); pr = 'medium' }
+        obj.priority = pr
+
+        if (!obj.estimated_hours) obj.estimated_hours = null
+        if (!obj.actual_hours) obj.actual_hours = null
+
+        obj.assigned_to = null
+        if (obj.assignee_name) {
+          const u = (lookups?.users || []).find(u => u.full_name?.toLowerCase().trim() === obj.assignee_name.toLowerCase().trim())
+          if (u) obj.assigned_to = u.id
+          else warns.push(`Row ${rowNum}: assignee "${obj.assignee_name}" not found in the team — left unassigned`)
+        }
+
+        obj.sprint_id = null
+        if (obj.sprint_name) {
+          const sp = (lookups?.sprints || []).find(s => s.name?.toLowerCase().trim() === obj.sprint_name.toLowerCase().trim())
+          if (sp) obj.sprint_id = sp.id
+          else warns.push(`Row ${rowNum}: sprint "${obj.sprint_name}" not found in this project — left unassigned`)
+        }
+
+        obj.user_story_id = null
+        if (obj.story_title) {
+          const st = (lookups?.stories || []).find(s => s.title?.toLowerCase().trim() === obj.story_title.toLowerCase().trim() || s.story_id?.toLowerCase() === obj.story_title.toLowerCase().trim())
+          if (st) obj.user_story_id = st.id
+          else warns.push(`Row ${rowNum}: story "${obj.story_title}" not found in this project — left unlinked`)
+        }
+
+        for (const d of ['planned_start_date','planned_end_date']) {
+          if (obj[d] && !/^\d{4}-\d{2}-\d{2}/.test(obj[d])) warns.push(`Row ${rowNum}: ${d} "${obj[d]}" — ensure format is YYYY-MM-DD`)
+        }
+      }
+
+      if (type === 'employees') {
+        const existing = (lookups?.users || []).find(u => u.email?.toLowerCase().trim() === obj.email.toLowerCase().trim())
+        if (existing) obj._profileId = existing.id
+        else { warns.push(`Row ${rowNum}: no existing account found for "${obj.email}" — row skipped`); hasError = true }
+
+        obj.department_id = null
+        if (obj.department_name) {
+          const d = (lookups?.departments || []).find(d => d.name?.toLowerCase().trim() === obj.department_name.toLowerCase().trim())
+          if (d) obj.department_id = d.id
+          else warns.push(`Row ${rowNum}: department "${obj.department_name}" not found — left unchanged`)
+        }
+
+        obj.reporting_manager_id = null
+        if (obj.reporting_manager_email) {
+          const m = (lookups?.users || []).find(u => u.email?.toLowerCase().trim() === obj.reporting_manager_email.toLowerCase().trim())
+          if (m) obj.reporting_manager_id = m.id
+          else warns.push(`Row ${rowNum}: manager "${obj.reporting_manager_email}" not found — left unchanged`)
+        }
+
+        if (obj.employment_type && !EMPLOYMENT_TYPE_OPTIONS.includes(obj.employment_type)) {
+          warns.push(`Row ${rowNum}: employment_type "${obj.employment_type}" not recognised — left unchanged`)
+          obj.employment_type = ''
+        }
+      }
+
+      if (type === 'employee_skills') {
+        obj.employee_id = null
+        if (obj.employee_email) {
+          const u = (lookups?.users || []).find(u => u.email?.toLowerCase().trim() === obj.employee_email.toLowerCase().trim())
+          if (u) obj.employee_id = u.id
+          else { warns.push(`Row ${rowNum}: no existing account found for "${obj.employee_email}" — row skipped`); hasError = true }
+        }
+
+        obj.skill_id = null
+        if (obj.skill_name) {
+          const sk = (lookups?.skills || []).find(s => s.skill_name?.toLowerCase().trim() === obj.skill_name.toLowerCase().trim())
+          if (sk) obj.skill_id = sk.id
+          else { warns.push(`Row ${rowNum}: skill "${obj.skill_name}" not found in the Skill Matrix catalog — row skipped`); hasError = true }
+        }
+
+        let pl = obj.proficiency_level
+        if (!PROFICIENCY_OPTIONS.includes(pl)) { warns.push(`Row ${rowNum}: proficiency_level "${pl}" not recognised, defaulted to "Beginner"`); pl = 'Beginner' }
+        obj.proficiency_level = pl
+        obj.certified = ['yes','true','1'].includes(String(obj.certified).toLowerCase().trim())
+      }
+
+      if (type === 'bom') {
+        const partKey = (obj.component_part_number || '').toLowerCase().trim()
+        const match = (lookups?.products || []).find(p => p.part_number?.toLowerCase().trim() === partKey)
+        if (!match) { warns.push(`Row ${rowNum}: component part "${obj.component_part_number}" not found in Products catalog — row skipped`); hasError = true }
+        else if (lookups?.currentPartNumber && match.part_number === lookups.currentPartNumber) { warns.push(`Row ${rowNum}: a product cannot be its own component — row skipped`); hasError = true }
+        else {
+          // component_name/component_id/per_unit_cost/quantity_stock are never
+          // trusted from the file — always re-derived from the live Products
+          // catalog so a stale or edited sheet can't smuggle in wrong data.
+          obj.component_part_number = match.part_number
+          obj.component_name = match.name
+          obj.component_id = match.id
+          obj.per_unit_cost = rupee(Number(match.standard_cost || 0))
+          if (match.is_serialized) {
+            const stock = lookups?.stockByPart?.[match.part_number]
+            obj.quantity_stock = stock != null ? `${stock} in stock` : 'not shown'
+          } else {
+            obj.quantity_stock = `Reorder @ ${match.reorder_level ?? '—'}`
+          }
+          const reqQty = Number(String(obj.required_quantity_for_product).replace(/[₹,\s]/g, ''))
+          obj.required_quantity_for_product = (!reqQty || reqQty <= 0) ? 1 : reqQty
+        }
+      }
+
       if (!hasError) cleaned.push(obj)
     })
 
@@ -207,14 +411,87 @@ export default function ExcelImport({ type, projectId, onSuccess, onClose }) {
     if (!rows.length) return
     setImporting(true)
     try {
-      const payloads = rows.map(r => {
-        const p = { ...r, created_by: profile.id }
-        if (projectId) p.project_id = projectId
-        // Expenses need extra fields
-        if (type === 'expenses') {
-          p.requested_by    = profile.id
-          p.status          = 'draft'
-          p.total_amount    = parseFloat(r.amount) || 0
+      // Employees: this is an update-by-account, not a row insert — this app has no
+      // service-role key to create logins, only the anon key (see src/lib/supabase.js),
+      // so unmatched emails were already skipped in validateAndPreview.
+      if (type === 'employees') {
+        let inserted = 0
+        for (const r of rows) {
+          const payload = {}
+          if (r.full_name) payload.full_name = r.full_name
+          if (r.role) payload.role = r.role
+          if (r.department_id) payload.department_id = r.department_id
+          if (r.reporting_manager_id) payload.reporting_manager_id = r.reporting_manager_id
+          if (r.employment_type) payload.employment_type = r.employment_type
+          if (r.default_weekly_capacity_hours) payload.default_weekly_capacity_hours = r.default_weekly_capacity_hours
+          if (r.date_joined) payload.date_joined = r.date_joined
+          if (Object.keys(payload).length === 0) continue
+          const { error } = await supabase.from('profiles').update(payload).eq('id', r._profileId)
+          if (!error) inserted++
+        }
+        setResult({ success: inserted, total: rows.length })
+        setStep('result')
+        if (onSuccess) onSuccess(inserted)
+        return
+      }
+
+      if (type === 'bom') {
+        if (onImportRows) onImportRows(rows)
+        setResult({ success: rows.length, total: rows.length })
+        setStep('result')
+        if (onSuccess) onSuccess(rows.length)
+        return
+      }
+
+      if (type === 'employee_skills') {
+        const payloads = rows.map(r => ({
+          employee_id: r.employee_id, skill_id: r.skill_id, proficiency_level: r.proficiency_level,
+          years_experience: r.years_experience || 0, certified: r.certified,
+          last_updated: new Date().toISOString(),
+        }))
+        const CHUNK = 100
+        let inserted = 0
+        for (let i = 0; i < payloads.length; i += CHUNK) {
+          const chunk = payloads.slice(i, i + CHUNK)
+          const { error } = await supabase.from('employee_skills').upsert(chunk, { onConflict: 'employee_id,skill_id' })
+          if (error) throw new Error(`Batch ${Math.floor(i / CHUNK) + 1}: ${error.message}`)
+          inserted += chunk.length
+        }
+        setResult({ success: inserted, total: rows.length })
+        setStep('result')
+        if (onSuccess) onSuccess(inserted)
+        return
+      }
+
+      const payloads = rows.map((r, i) => {
+        let p
+        if (type === 'tasks') {
+          // Whitelist real project_tasks columns — assignee_name/sprint_name/story_title
+          // are display-only lookups already resolved into assigned_to/sprint_id/user_story_id.
+          p = {
+            task_name: r.task_name, task_type: r.task_type, module_name: r.module_name || null,
+            priority: r.priority, assigned_to: r.assigned_to || null, status: 'backlog',
+            planned_start_date: r.planned_start_date || null, planned_end_date: r.planned_end_date || null,
+            estimated_hours: r.estimated_hours, actual_hours: r.actual_hours,
+            user_story_id: r.user_story_id || null, sprint_id: r.sprint_id || null,
+            description: r.description || null, project_id: projectId, created_by: profile.id,
+          }
+        } else {
+          p = { ...r, created_by: profile.id }
+          if (projectId) p.project_id = projectId
+          // Expenses need extra fields
+          if (type === 'expenses') {
+            p.requested_by    = profile.id
+            p.status          = 'draft'
+            p.total_amount    = parseFloat(r.amount) || 0
+          }
+          // Components are always non-serialized (bulk/consumable) products —
+          // serialized devices go through the Products page's own form instead.
+          if (type === 'components') {
+            p.is_serialized = false
+            if (!p.part_number) p.part_number = `CMP-${Date.now().toString().slice(-6)}-${i}`
+            if (!p.status) p.status = 'active'
+          }
         }
         // Remove empty strings → null
         Object.keys(p).forEach(k => { if (p[k] === '') p[k] = null })
@@ -251,7 +528,7 @@ export default function ExcelImport({ type, projectId, onSuccess, onClose }) {
           <div style={{ fontWeight:700, fontSize:15, color:'var(--text)' }}>Import {tmpl.label}</div>
           <div style={{ fontSize:12, color:'var(--text-muted)', marginTop:3 }}>Upload CSV or Excel file to bulk-import records</div>
         </div>
-        <button onClick={() => downloadTemplate(type)}
+        <button onClick={() => downloadTemplate(type, lookups)}
           style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:7, border:'1px solid var(--border)', background:'var(--surface-2)', cursor:'pointer', fontSize:12, color:'var(--text-soft)', fontFamily:'inherit' }}>
           <Download size={13}/> Download Template
         </button>
@@ -366,7 +643,7 @@ export default function ExcelImport({ type, projectId, onSuccess, onClose }) {
                       <tr key={i} style={{ borderBottom:'1px solid var(--border)' }}>
                         {tmpl.columns.map(col=>(
                           <td key={col} style={{ padding:'7px 12px', fontSize:12, color:'var(--text)', maxWidth:140, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                            {typeof row[col]==='number' ? rupee(row[col]) : row[col] || <span style={{ color:'var(--text-muted)' }}>—</span>}
+                            {tmpl.formatCurrency && typeof row[col]==='number' ? rupee(row[col]) : (row[col] ?? '') !== '' ? row[col] : <span style={{ color:'var(--text-muted)' }}>—</span>}
                           </td>
                         ))}
                       </tr>

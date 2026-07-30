@@ -4,6 +4,7 @@ import { supabase, dateFmt } from '../lib/supabase'
 import { Modal, Loader, Empty } from '../components/ui'
 import { Check, X, Send, Clock, Users, AlertCircle, CheckCircle } from 'lucide-react'
 import { sendNotif, notifyManagers } from '../lib/notifications'
+import { buildApprovalUpdate, getChainSync, warmChains } from '../lib/timesheetApproval'
 
 /* ─── Constants ─────────────────────────────────────────── */
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -121,10 +122,19 @@ function PendingList({ approvals, onApprove, onReject, emptyMsg }) {
 export default function TimesheetApprovalPage() {
   const { profile } = useAuth()
   const role    = profile?.role || 'employee'
-  const isMgr   = ['admin','ceo','manager','department_head'].includes(role)
-  const isHR    = ['admin','ceo','hr'].includes(role)
-  const isFinance = ['admin','ceo','finance'].includes(role)
   const isAdmin   = ['admin','ceo'].includes(role)
+
+  // Tab access is driven by the DB-configurable chain (Settings → Approval
+  // Chain can reassign which role sits at each of the 3 steps) — not a
+  // hardcoded role list, so a reassigned step is still reachable by whoever
+  // it now points to. chainVersion forces a re-render once warmChains()
+  // resolves (getChainSync is cache-only and synchronous).
+  const [chainVersion, setChainVersion] = useState(0)
+  useEffect(() => { warmChains().then(() => setChainVersion(v => v + 1)) }, [])
+  const chain = getChainSync()
+  const isMgr     = isAdmin || role === (chain[0]?.role || 'manager')
+  const isHR      = isAdmin || role === (chain[1]?.role || 'hr')
+  const isFinance = isAdmin || role === (chain[2]?.role || 'finance')
 
   const now = new Date()
   const [selMonth, setSelMonth] = useState(now.getMonth() + 1) // 1-12
@@ -228,30 +238,7 @@ export default function TimesheetApprovalPage() {
     setSubmitting(true)
     try {
       const { approval, action } = actionTarget
-      let update = {}
-      if (action === 'approve') {
-        // Determine next status based on current approval level
-        if (approval.status === 'pending_manager') {
-          update = { status:'pending_hr', manager_id:profile.id, manager_approved_at:new Date().toISOString(), manager_comment:actionComment||null }
-        } else if (approval.status === 'pending_hr') {
-          update = { status:'pending_finance', hr_id:profile.id, hr_approved_at:new Date().toISOString(), hr_comment:actionComment||null }
-        } else if (approval.status === 'pending_finance') {
-          update = { status:'approved', finance_id:profile.id, finance_approved_at:new Date().toISOString(), finance_comment:actionComment||null }
-        }
-        // Admin/CEO can approve any level in one step (skip levels)
-        if (isAdmin && approval.status === 'pending_manager') {
-          update = {
-            status:'approved',
-            manager_id:profile.id, manager_approved_at:new Date().toISOString(), manager_comment:actionComment||null,
-            hr_id:profile.id, hr_approved_at:new Date().toISOString(), hr_comment:'Auto-approved by admin',
-            finance_id:profile.id, finance_approved_at:new Date().toISOString(), finance_comment:'Auto-approved by admin',
-          }
-        }
-      } else {
-        const level = approval.status === 'pending_manager' ? 'manager'
-          : approval.status === 'pending_hr' ? 'hr' : 'finance'
-        update = { status:'rejected', rejected_by:profile.id, rejected_at:new Date().toISOString(), rejection_reason:actionComment||null, rejected_at_level:level }
-      }
+      const update = await buildApprovalUpdate(action, approval, profile.id, role, actionComment)
       await supabase.from('timesheet_approvals').update(update).eq('id', approval.id)
 
       // Notify the employee
@@ -329,7 +316,7 @@ export default function TimesheetApprovalPage() {
 
       {/* ── KPI strip (managers / HR / finance) ─────────────── */}
       {(isMgr || isHR || isFinance) && (
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(115px,1fr))', gap:10, marginBottom:16 }}>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(115px,1fr))', gap:10, marginBottom:16 }}>
           <Kpi label="Submitted"       value={allApprovals.length}                                       color="#6366f1"/>
           <Kpi label="Pending Manager" value={pendingMgrList.length}                                     color="#d97706"/>
           <Kpi label="Pending HR"      value={pendingHRList.length}                                      color="#7c3aed"/>

@@ -3,6 +3,25 @@
  * Supports: DeepSeek V3, Gemini 2.5 Pro, Ollama (local)
  */
 import { supabase } from './supabase'
+import { getLLMSettings } from './llmSettings'
+import { logLLMUsage } from './llmUsage'
+
+const PROVIDER_BY_MODEL_ID = { 'deepseek-v3': 'deepseek', 'gemini-2.5-pro': 'gemini', 'ollama-local': 'ollama', 'claude-opus-5': 'claude' }
+
+// UI-saved keys (Settings → AI / LLM Keys) take precedence over .env — lets
+// admins rotate/set keys from the app without a redeploy. Falls back to the
+// build-time VITE_ vars when no DB override is saved.
+async function resolveApiKey(envVarName, dbField) {
+  const settings = await getLLMSettings()
+  const fromDb = settings?.[dbField]
+  if (fromDb) return fromDb
+  return import.meta.env[envVarName]
+}
+
+async function resolveOllamaUrl() {
+  const settings = await getLLMSettings()
+  return (settings?.ollama_url || import.meta.env.VITE_OLLAMA_URL || 'http://localhost:11434').replace(/\/$/, '')
+}
 
 // ── Model registry ───────────────────────────────────────────
 export const LLM_MODELS = [
@@ -45,14 +64,39 @@ export const LLM_MODELS = [
     badge:       'Private',
     envKey:      null,
   },
+  {
+    id:          'claude-opus-5',
+    label:       'Claude Opus 5',
+    provider:    'Anthropic',
+    model:       'claude-opus-5',
+    color:       '#d97757',
+    bg:          '#d9775718',
+    description: 'Anthropic’s flagship model. Strongest reasoning, best for complex analysis.',
+    context:     '1M tokens',
+    speed:       'Moderate',
+    badge:       'Most Capable',
+    envKey:      'VITE_CLAUDE_API_KEY',
+  },
 ]
 
 export function getModel(id) {
   return LLM_MODELS.find(m => m.id === id) || LLM_MODELS[0]
 }
 
+const DB_FIELD_BY_ENV_KEY = { VITE_DEEPSEEK_API_KEY: 'deepseek_api_key', VITE_GEMINI_API_KEY: 'gemini_api_key', VITE_CLAUDE_API_KEY: 'claude_api_key' }
+
+// Async, DB-aware replacement for the old synchronous `!import.meta.env[m.envKey]`
+// check pages used for greying out a model card — a key saved via Settings →
+// AI / LLM Keys wouldn't show up in import.meta.env, so that check alone would
+// wrongly still say "missing" even once a DB key is configured.
+export async function isModelUsable(modelDef) {
+  if (!modelDef.envKey) return true // e.g. Ollama — no key required
+  const apiKey = await resolveApiKey(modelDef.envKey, DB_FIELD_BY_ENV_KEY[modelDef.envKey])
+  return Boolean(apiKey && !apiKey.startsWith('your-'))
+}
+
 // ── Main entry point ─────────────────────────────────────────
-export async function analyzeRequirements(sessionId, modelId = 'deepseek-v3', ollamaModel = '', onProgress = null) {
+export async function analyzeRequirements(sessionId, modelId = 'deepseek-v3', ollamaModel = '', onProgress = null, userId = null) {
   const modelDef = getModel(modelId)
 
   const { data: session, error } = await supabase
@@ -68,16 +112,26 @@ export async function analyzeRequirements(sessionId, modelId = 'deepseek-v3', ol
 
   const isLocal = modelDef.id === 'ollama-local'
   const prompt = buildPrompt(session.document_text || '', session.document_name || 'document', isLocal)
+  const provider = PROVIDER_BY_MODEL_ID[modelDef.id] || modelDef.id
+  const actualModel = isLocal ? (ollamaModel || modelDef.model) : modelDef.model
+  const start = Date.now()
 
-  let rawText
-  if (modelDef.id === 'gemini-2.5-pro') {
-    rawText = await callGemini(prompt, modelDef)
-  } else if (modelDef.id === 'ollama-local') {
-    rawText = await callOllama(prompt, ollamaModel || modelDef.model, onProgress)
-  } else {
-    rawText = await callDeepSeek(prompt, modelDef)
+  let result
+  try {
+    if (modelDef.id === 'gemini-2.5-pro') {
+      result = await callGemini(prompt, modelDef)
+    } else if (modelDef.id === 'ollama-local') {
+      result = await callOllama(prompt, ollamaModel || modelDef.model, onProgress)
+    } else {
+      result = await callDeepSeek(prompt, modelDef)
+    }
+    await logLLMUsage({ userId, source: 'neo_task_ai', provider, model: actualModel, question: session.document_name, usage: result.usage, latencyMs: Date.now() - start, success: true })
+  } catch (err) {
+    await logLLMUsage({ userId, source: 'neo_task_ai', provider, model: actualModel, question: session.document_name, latencyMs: Date.now() - start, success: false, errorMessage: err?.message })
+    throw err
   }
 
+  const rawText = result.text
   if (!rawText) throw new Error('LLM returned empty response')
 
   const parsed = parseJSON(rawText)
@@ -86,8 +140,8 @@ export async function analyzeRequirements(sessionId, modelId = 'deepseek-v3', ol
 
 // ── DeepSeek API call ────────────────────────────────────────
 async function callDeepSeek(prompt, modelDef) {
-  const apiKey = import.meta.env.VITE_DEEPSEEK_API_KEY
-  if (!apiKey || apiKey === 'your-deepseek-api-key-here') throw new Error('VITE_DEEPSEEK_API_KEY not set in .env')
+  const apiKey = await resolveApiKey('VITE_DEEPSEEK_API_KEY', 'deepseek_api_key')
+  if (!apiKey || apiKey === 'your-deepseek-api-key-here') throw new Error('DeepSeek API key not set — add it in Settings → AI / LLM Keys, or VITE_DEEPSEEK_API_KEY in .env')
 
   const res = await fetch('https://api.deepseek.com/chat/completions', {
     method: 'POST',
@@ -113,13 +167,16 @@ async function callDeepSeek(prompt, modelDef) {
   }
 
   const data = await res.json()
-  return data.choices?.[0]?.message?.content || ''
+  return {
+    text: data.choices?.[0]?.message?.content || '',
+    usage: { promptTokens: data.usage?.prompt_tokens, completionTokens: data.usage?.completion_tokens, totalTokens: data.usage?.total_tokens },
+  }
 }
 
 // ── Gemini 2.5 Pro API call ──────────────────────────────────
 async function callGemini(prompt, modelDef) {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY
-  if (!apiKey || apiKey === 'your-gemini-api-key-here') throw new Error('VITE_GEMINI_API_KEY not set in .env')
+  const apiKey = await resolveApiKey('VITE_GEMINI_API_KEY', 'gemini_api_key')
+  if (!apiKey || apiKey === 'your-gemini-api-key-here') throw new Error('Gemini API key not set — add it in Settings → AI / LLM Keys, or VITE_GEMINI_API_KEY in .env')
 
   // Use Google's OpenAI-compatible endpoint for consistency
   const res = await fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
@@ -146,12 +203,15 @@ async function callGemini(prompt, modelDef) {
   }
 
   const data = await res.json()
-  return data.choices?.[0]?.message?.content || ''
+  return {
+    text: data.choices?.[0]?.message?.content || '',
+    usage: { promptTokens: data.usage?.prompt_tokens, completionTokens: data.usage?.completion_tokens, totalTokens: data.usage?.total_tokens },
+  }
 }
 
 // ── Ollama local API call (native /api/chat endpoint) ────────
 async function callOllama(prompt, model, onProgress) {
-  const baseUrl = (import.meta.env.VITE_OLLAMA_URL || 'http://localhost:11434').replace(/\/$/, '')
+  const baseUrl = await resolveOllamaUrl()
 
   let res
   try {
@@ -165,7 +225,10 @@ async function callOllama(prompt, model, onProgress) {
           { role: 'user', content: prompt },
         ],
         stream: true,
-        options: { temperature: 0.3, num_predict: 6000 },
+        // num_ctx: Ollama silently defaults unset context to 2048 tokens
+        // regardless of what the model actually supports, truncating large
+        // uploaded documents without any error — raise it explicitly.
+        options: { temperature: 0.3, num_predict: 6000, num_ctx: 8192 },
       }),
     })
   } catch {
@@ -184,6 +247,7 @@ async function callOllama(prompt, model, onProgress) {
   let fullContent = ''
   let tokenCount = 0
   let buf = ''
+  let usage = null
 
   while (true) {
     const { done, value } = await reader.read()
@@ -203,13 +267,307 @@ async function callOllama(prompt, model, onProgress) {
           tokenCount++
           if (onProgress) onProgress({ tokens: tokenCount, preview: fullContent.slice(-100) })
         }
-        if (chunk.done) break
+        if (chunk.done) {
+          usage = { promptTokens: chunk.prompt_eval_count, completionTokens: chunk.eval_count }
+          break
+        }
       } catch {}
     }
   }
 
   if (!fullContent) throw new Error('Ollama returned empty response. Try a different model.')
-  return fullContent
+  return { text: fullContent, usage }
+}
+
+// ── Data Assistant: plain prose chat, grounded on a precomputed data index ──
+// Unlike callDeepSeek/callGemini/callOllama above (hardcoded requirements-analysis
+// SYSTEM_PROMPT, forced JSON response_format), these take an arbitrary system
+// prompt and return free text — for answering typed questions against a data
+// snapshot rather than analyzing an uploaded document. Each accepts an optional
+// onToken(deltaText) callback: when passed, the request streams and onToken
+// fires per chunk as it arrives (Claude.ai-style live typing in the chat UI);
+// when omitted, falls back to a single non-streaming request/response.
+
+// Reads a fetch Response body as a byte stream, decodes it, and calls
+// onLine(line) for each complete line as it arrives — the shared low-level
+// mechanism behind every provider's streaming parser below (each provider
+// wraps its lines differently: OpenAI-style `data: {...}` SSE, Claude's
+// `event:`/`data:` SSE pairs, or Ollama's raw NDJSON — this helper only
+// handles the byte-stream-to-lines part).
+async function readLines(res, onLine) {
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop()
+    for (const line of lines) onLine(line)
+  }
+  if (buf) onLine(buf)
+}
+
+async function callDeepSeekChat(systemPrompt, userPrompt, modelDef, onToken) {
+  const apiKey = await resolveApiKey('VITE_DEEPSEEK_API_KEY', 'deepseek_api_key')
+  if (!apiKey || apiKey === 'your-deepseek-api-key-here') throw new Error('DeepSeek API key not set — add it in Settings → AI / LLM Keys, or VITE_DEEPSEEK_API_KEY in .env')
+
+  const res = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: modelDef.model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      max_tokens: 700,
+      temperature: 0.2,
+      ...(onToken ? { stream: true, stream_options: { include_usage: true } } : {}),
+    }),
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`DeepSeek API error ${res.status}: ${err}`)
+  }
+
+  if (!onToken) {
+    const data = await res.json()
+    return {
+      text: data.choices?.[0]?.message?.content || '',
+      usage: { promptTokens: data.usage?.prompt_tokens, completionTokens: data.usage?.completion_tokens, totalTokens: data.usage?.total_tokens },
+    }
+  }
+
+  let fullText = ''
+  let usage = null
+  await readLines(res, line => {
+    if (!line.startsWith('data: ')) return
+    const payload = line.slice(6)
+    if (payload === '[DONE]') return
+    try {
+      const chunk = JSON.parse(payload)
+      const delta = chunk.choices?.[0]?.delta?.content
+      if (delta) { fullText += delta; onToken(delta) }
+      if (chunk.usage) usage = { promptTokens: chunk.usage.prompt_tokens, completionTokens: chunk.usage.completion_tokens, totalTokens: chunk.usage.total_tokens }
+    } catch {}
+  })
+  return { text: fullText, usage }
+}
+
+async function callGeminiChat(systemPrompt, userPrompt, modelDef, onToken) {
+  const apiKey = await resolveApiKey('VITE_GEMINI_API_KEY', 'gemini_api_key')
+  if (!apiKey || apiKey === 'your-gemini-api-key-here') throw new Error('Gemini API key not set — add it in Settings → AI / LLM Keys, or VITE_GEMINI_API_KEY in .env')
+
+  const res = await fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: modelDef.model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      max_tokens: 700,
+      temperature: 0.2,
+      ...(onToken ? { stream: true, stream_options: { include_usage: true } } : {}),
+    }),
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Gemini API error ${res.status}: ${err}`)
+  }
+
+  if (!onToken) {
+    const data = await res.json()
+    return {
+      text: data.choices?.[0]?.message?.content || '',
+      usage: { promptTokens: data.usage?.prompt_tokens, completionTokens: data.usage?.completion_tokens, totalTokens: data.usage?.total_tokens },
+    }
+  }
+
+  let fullText = ''
+  let usage = null
+  await readLines(res, line => {
+    if (!line.startsWith('data: ')) return
+    const payload = line.slice(6)
+    if (payload === '[DONE]') return
+    try {
+      const chunk = JSON.parse(payload)
+      const delta = chunk.choices?.[0]?.delta?.content
+      if (delta) { fullText += delta; onToken(delta) }
+      if (chunk.usage) usage = { promptTokens: chunk.usage.prompt_tokens, completionTokens: chunk.usage.completion_tokens, totalTokens: chunk.usage.total_tokens }
+    } catch {}
+  })
+  return { text: fullText, usage }
+}
+
+async function callOllamaChat(systemPrompt, userPrompt, model, onToken) {
+  const baseUrl = await resolveOllamaUrl()
+
+  let res
+  try {
+    res = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        stream: !!onToken,
+        // Same num_ctx fix as callOllama above — without it Ollama's 2048-token
+        // default silently truncates the data snapshot before the model ever
+        // sees most of it, which is why local models were "missing data".
+        options: { temperature: 0.2, num_predict: 700, num_ctx: 8192 },
+      }),
+    })
+  } catch {
+    throw new Error('Cannot reach Ollama. Make sure it is running: ollama serve')
+  }
+
+  if (!res.ok) {
+    const err = await res.text()
+    let msg
+    try { msg = JSON.parse(err).error || err } catch { msg = err }
+    throw new Error(`Ollama: ${msg}`)
+  }
+
+  if (!onToken) {
+    const data = await res.json()
+    return {
+      text: data.message?.content || '',
+      usage: { promptTokens: data.prompt_eval_count, completionTokens: data.eval_count },
+    }
+  }
+
+  let fullText = ''
+  let usage = null
+  await readLines(res, line => {
+    if (!line.trim()) return
+    try {
+      const chunk = JSON.parse(line)
+      const delta = chunk.message?.content
+      if (delta) { fullText += delta; onToken(delta) }
+      if (chunk.done) usage = { promptTokens: chunk.prompt_eval_count, completionTokens: chunk.eval_count }
+    } catch {}
+  })
+  return { text: fullText, usage }
+}
+
+// Anthropic's native Messages API — a different shape from the OpenAI-compatible
+// endpoints above: auth is x-api-key + anthropic-version (not Authorization:
+// Bearer), system prompt is a top-level field (not a messages[] entry), and
+// temperature/top_p/top_k are rejected outright on claude-opus-5 (steer via
+// prompting instead). Thinking is on by default on this model; effort:"low"
+// keeps it fast/cheap for a quick data-assistant answer without disabling
+// thinking outright (disabling it can leak stray <thinking> tags into output).
+// anthropic-dangerous-direct-browser-access is required to call this API from
+// browser JS at all — without it the request is blocked before CORS headers
+// are even considered, since the API isn't intended to be called client-side.
+async function callClaudeChat(systemPrompt, userPrompt, modelDef, onToken) {
+  const apiKey = await resolveApiKey('VITE_CLAUDE_API_KEY', 'claude_api_key')
+  if (!apiKey || apiKey === 'your-claude-api-key-here') throw new Error('Claude API key not set — add it in Settings → AI / LLM Keys, or VITE_CLAUDE_API_KEY in .env')
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: modelDef.model,
+      max_tokens: 1024,
+      system: systemPrompt,
+      output_config: { effort: 'low' },
+      messages: [{ role: 'user', content: userPrompt }],
+      ...(onToken ? { stream: true } : {}),
+    }),
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Claude API error ${res.status}: ${err}`)
+  }
+
+  if (!onToken) {
+    const data = await res.json()
+    if (data.stop_reason === 'refusal') throw new Error('Claude declined to answer this question.')
+    const textBlock = (data.content || []).find(b => b.type === 'text')
+    return {
+      text: textBlock?.text || '',
+      usage: { promptTokens: data.usage?.input_tokens, completionTokens: data.usage?.output_tokens },
+    }
+  }
+
+  // Anthropic's streaming events carry their own `type` in the data payload,
+  // so we don't need to separately track the paired `event:` line — only
+  // `data:` lines matter here.
+  let fullText = ''
+  let promptTokens, completionTokens, stopReason
+  await readLines(res, line => {
+    if (!line.startsWith('data: ')) return
+    try {
+      const chunk = JSON.parse(line.slice(6))
+      if (chunk.type === 'message_start') {
+        promptTokens = chunk.message?.usage?.input_tokens
+      } else if (chunk.type === 'content_block_delta' && chunk.delta?.type === 'text_delta') {
+        fullText += chunk.delta.text
+        onToken(chunk.delta.text)
+      } else if (chunk.type === 'message_delta') {
+        completionTokens = chunk.usage?.output_tokens
+        stopReason = chunk.delta?.stop_reason
+      }
+    } catch {}
+  })
+  if (stopReason === 'refusal') throw new Error('Claude declined to answer this question.')
+  return { text: fullText, usage: { promptTokens, completionTokens } }
+}
+
+const ASSISTANT_SYSTEM_PROMPT = `You are a data assistant embedded in an ERP application called ThingsAlive NeoX.
+You answer questions about the company's operational data using ONLY the JSON data snapshot provided below.
+
+Rules:
+- Answer only from the JSON snapshot. Never invent numbers, names, or facts not present in it.
+- If the answer isn't in the snapshot, say so honestly (e.g. "I don't have that in the current data") instead of guessing.
+- Be concise: 2-4 sentences unless the question asks for a list, in which case use short bullet points.
+- Currency values in the snapshot are already formatted (e.g. "₹1,20,000") — reuse them as-is, don't reformat.
+- Don't mention the word "JSON", "snapshot", or "index" in your answer — just answer naturally, like a knowledgeable colleague.`
+
+// modelId: 'deepseek-v3' | 'gemini-2.5-pro' | 'ollama-local' | 'claude-opus-5'. Single-turn — no
+// conversation memory, each question is answered fresh against the current index.
+// onToken(deltaText), if passed, streams the answer live (Claude.ai-style typing)
+// instead of returning it all at once — see the call*Chat functions above.
+export async function askDataAssistant(question, dataIndex, modelId = 'deepseek-v3', ollamaModel = '', userId = null, onToken = null) {
+  const modelDef = getModel(modelId)
+  const userPrompt = `Data snapshot (as of ${dataIndex.generatedAt}):\n${JSON.stringify(dataIndex)}\n\nQuestion: ${question}`
+  const provider = PROVIDER_BY_MODEL_ID[modelDef.id] || modelDef.id
+  const actualModel = modelDef.id === 'ollama-local' ? (ollamaModel || modelDef.model) : modelDef.model
+  const start = Date.now()
+
+  try {
+    let result
+    if (modelDef.id === 'ollama-local') {
+      result = await callOllamaChat(ASSISTANT_SYSTEM_PROMPT, userPrompt, ollamaModel || modelDef.model, onToken)
+    } else if (modelDef.id === 'gemini-2.5-pro') {
+      result = await callGeminiChat(ASSISTANT_SYSTEM_PROMPT, userPrompt, modelDef, onToken)
+    } else if (modelDef.id === 'claude-opus-5') {
+      result = await callClaudeChat(ASSISTANT_SYSTEM_PROMPT, userPrompt, modelDef, onToken)
+    } else {
+      result = await callDeepSeekChat(ASSISTANT_SYSTEM_PROMPT, userPrompt, modelDef, onToken)
+    }
+    await logLLMUsage({ userId, source: 'data_assistant', provider, model: actualModel, question, usage: result.usage, latencyMs: Date.now() - start, success: true })
+    return result.text.trim()
+  } catch (err) {
+    await logLLMUsage({ userId, source: 'data_assistant', provider, model: actualModel, question, latencyMs: Date.now() - start, success: false, errorMessage: err?.message })
+    throw err
+  }
 }
 
 // ── JSON parser (robust) ─────────────────────────────────────

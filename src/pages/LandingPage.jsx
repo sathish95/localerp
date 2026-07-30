@@ -69,7 +69,6 @@ export default function LandingPage() {
   const [awards,        setAwards]        = useState([])
   const [news,          setNews]          = useState([])
   const [hackathon,     setHackathon]     = useState([])
-  const [activeAnn,     setActiveAnn]     = useState(0)
   const [activeTab,     setActiveTab]     = useState('announcements')
   const [comment,       setComment]       = useState('')
   const [commentTopic,  setCommentTopic]  = useState(null)
@@ -80,9 +79,8 @@ export default function LandingPage() {
   useEffect(() => {
     window.addEventListener('scroll', () => setScrolled(window.scrollY > 40))
     loadAll()
-    const timer = setInterval(() => setActiveAnn(a => (a+1) % Math.max(1, announcements.length)), 4000)
-    return () => { window.removeEventListener('scroll', () => {}); clearInterval(timer) }
-  }, [announcements.length])
+    return () => { window.removeEventListener('scroll', () => {}) }
+  }, [])
 
   async function loadAll() {
     const [ann, awd, nws, hack] = await Promise.all([
@@ -114,8 +112,6 @@ export default function LandingPage() {
 
   const ANN_COLORS = { info:'#3b82f6', success:'#10b981', warning:'#f59e0b', event:'#ec4899' }
   const DIFF_COLORS = { easy:'#10b981', medium:'#f59e0b', hard:'#ef4444', expert:'#8b5cf6' }
-
-  const curAnn = announcements[activeAnn]
 
   return (
     <div style={{ fontFamily:"'Plus Jakarta Sans',sans-serif", background:'#060612', minHeight:'100vh', color:'#fff', overflowX:'hidden' }}>
@@ -191,7 +187,7 @@ export default function LandingPage() {
 
       {/* ── STATS ── */}
       <section style={{ padding:'80px 24px', borderTop:'1px solid rgba(255,255,255,.06)', borderBottom:'1px solid rgba(255,255,255,.06)' }}>
-        <div style={{ maxWidth:900, margin:'0 auto', display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(180px,1fr))', gap:40 }}>
+        <div style={{ maxWidth:900, margin:'0 auto', display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))', gap:40 }}>
           <StatNum n="15" suffix="+" label="Modules Integrated"/>
           <StatNum n="6"  suffix=" Roles" label="Role-based Access"/>
           <StatNum n="100" suffix="%" label="Real-time Data"/>
@@ -209,7 +205,7 @@ export default function LandingPage() {
               <div style={{ fontSize:16, color:'rgba(255,255,255,.5)', maxWidth:520, margin:'0 auto' }}>One login. Every workflow. Complete control over your operations.</div>
             </div>
           </FadeSection>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:20 }}>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(280px,1fr))', gap:20 }}>
             {[
               { icon:'🧾', title:'Expense Management',    desc:'Multi-step role-based approval flows with budget tracking and receipt uploads.',          color:'#6366f1', delay:0 },
               { icon:'✈️', title:'Travel Requests',      desc:'Submit and approve travel requests with cost estimates linked to project budgets.',         color:'#ec4899', delay:.05 },
@@ -255,7 +251,7 @@ export default function LandingPage() {
 
           {/* Announcements */}
           {activeTab==='announcements' && (
-            <FadeSection style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))', gap:16 }}>
+            <FadeSection style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))', gap:16 }}>
               {announcements.length===0 ? (
                 <div style={{ gridColumn:'1/-1', textAlign:'center', color:'rgba(255,255,255,.3)', padding:'60px 0', fontSize:15 }}>No announcements yet</div>
               ) : announcements.map((a,i)=>{
@@ -277,7 +273,7 @@ export default function LandingPage() {
 
           {/* Awards */}
           {activeTab==='awards' && (
-            <FadeSection style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))', gap:16 }}>
+            <FadeSection style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))', gap:16 }}>
               {awards.length===0 ? (
                 <div style={{ gridColumn:'1/-1', textAlign:'center', color:'rgba(255,255,255,.3)', padding:'60px 0', fontSize:15 }}>No awards yet — admin can add them from Settings</div>
               ) : awards.map(a=>(
@@ -296,7 +292,7 @@ export default function LandingPage() {
 
           {/* News */}
           {activeTab==='news' && (
-            <FadeSection style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))', gap:20 }}>
+            <FadeSection style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))', gap:20 }}>
               {news.length===0 ? (
                 <div style={{ gridColumn:'1/-1', textAlign:'center', color:'rgba(255,255,255,.3)', padding:'60px 0', fontSize:15 }}>No news posts yet — admin can publish from Settings</div>
               ) : news.map(post=>(
@@ -393,7 +389,7 @@ export default function LandingPage() {
             <Pill color="#ec4899">How It Works</Pill>
             <div style={{ fontFamily:"'Playfair Display',serif", fontSize:'clamp(26px,4vw,44px)', fontWeight:800, marginTop:16, marginBottom:60 }}>Simple. Powerful. Complete.</div>
           </FadeSection>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))', gap:24 }}>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))', gap:24 }}>
             {[
               { n:'01', icon:'👤', title:'Sign Up', desc:'Create your account and get assigned to your role.' },
               { n:'02', icon:'📤', title:'Submit', desc:'File expenses, travel requests, or purchase requisitions.' },

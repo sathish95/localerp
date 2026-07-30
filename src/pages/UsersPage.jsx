@@ -1,28 +1,61 @@
 import { useState, useEffect } from 'react'
-import { supabase, rupee, dateFmt } from '../lib/supabase'
+import { supabase, rupee, dateFmt, adminCreateUser } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { SearchBox, Empty, Modal, Loader, Confirm } from '../components/ui'
+import ExcelImport from '../components/ui/ExcelImport'
+import { recomputeFullWindowForEmployee } from '../lib/capacity'
+import { listRoles, colorForRole } from '../lib/roles'
+
+// Last-resort fallback if the `roles` table can't be read for any reason
+// (RLS misconfiguration, migration not yet run, network hiccup) — so the
+// Role dropdown is never simply empty with no explanation. Matches
+// STEP42's seeded system roles + STEP61's sales_lead addition.
+const FALLBACK_ROLES = [
+  { role_key: 'admin', label: 'Administrator', is_system: true }, { role_key: 'ceo', label: 'CEO', is_system: true },
+  { role_key: 'manager', label: 'Manager', is_system: true }, { role_key: 'department_head', label: 'Department Head', is_system: true },
+  { role_key: 'finance', label: 'Finance', is_system: true }, { role_key: 'hr', label: 'HR', is_system: true },
+  { role_key: 'employee', label: 'Employee', is_system: true }, { role_key: 'procurement_lead', label: 'Procurement Lead', is_system: true },
+  { role_key: 'pm', label: 'PM', is_system: true }, { role_key: 'cto', label: 'CTO', is_system: true },
+  { role_key: 'field_technician', label: 'Field Technician', is_system: true }, { role_key: 'sales_lead', label: 'Sales Lead', is_system: true },
+]
+
+function genTempPassword() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$'
+  let out = ''
+  for (let i = 0; i < 14; i++) out += chars[Math.floor(Math.random() * chars.length)]
+  return out
+}
 import {
   Users, Shield, Crown, Briefcase, Calculator, User, Building2,
   BadgeCheck, Plus, Edit2, Trash2, Eye, ArrowLeft, ChevronRight,
   Clock, DollarSign, Calendar, TrendingUp, CheckCircle, XCircle,
-  ToggleLeft, ToggleRight
+  ToggleLeft, ToggleRight, Upload
 } from 'lucide-react'
 
-const ROLE_CFG = {
-  admin:           { label:'Admin',       icon:Shield,    grad:['#7c3aed','#a855f7'], light:'#ede9fe', dark:'#6d28d9' },
-  ceo:             { label:'CEO',         icon:Crown,     grad:['#dc2626','#f97316'], light:'#fee2e2', dark:'#991b1b' },
-  manager:         { label:'Manager',     icon:Briefcase, grad:['#0284c7','#06b6d4'], light:'#dbeafe', dark:'#1d4ed8' },
-  finance:         { label:'Finance',     icon:Calculator,grad:['#059669','#34d399'], light:'#d1fae5', dark:'#065f46' },
-  hr:              { label:'HR',          icon:Users,     grad:['#0891b2','#22d3ee'], light:'#cffafe', dark:'#155e75' },
-  employee:        { label:'Employee',    icon:User,      grad:['#d97706','#fbbf24'], light:'#fef3c7', dark:'#92400e' },
-  department_head: { label:'Dept. Head',  icon:Building2, grad:['#7c3aed','#6366f1'], light:'#ede9fe', dark:'#4c1d95' },
+// Known icons for the original built-in roles — any role beyond these
+// (including every custom role created via Settings -> Roles & Modules)
+// falls back to a generic Shield icon with a deterministic color from
+// colorForRole(), so the UI never breaks when a new role shows up.
+const ROLE_ICONS = {
+  admin: Shield, ceo: Crown, manager: Briefcase, finance: Calculator, hr: Users,
+  employee: User, department_head: Building2, procurement_lead: Briefcase, pm: Briefcase, cto: Crown, field_technician: User,
 }
-const ALL_ROLES = ['admin','ceo','manager','finance','hr','employee']
+// Builds the same {label, icon, grad, light, dark} shape the rest of this
+// file's JSX already expects, from a `roles` table row instead of a
+// hardcoded literal.
+function roleCfgFrom(role) {
+  const base = colorForRole(role.color || role.role_key)
+  return {
+    label: role.label, icon: ROLE_ICONS[role.role_key] || Shield,
+    grad: [base, base], light: `${base}18`, dark: base,
+  }
+}
+const FALLBACK_ROLE_CFG = { label: 'Unknown', icon: Shield, grad: ['#64748b', '#94a3b8'], light: '#f1f5f9', dark: '#475569' }
 const fmt = d => d ? new Date(d).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}) : '—'
 
 const initForm = () => ({
-  full_name:'', email:'', role:'employee', designation:'', phone:'', department_id:'', is_active:true
+  full_name:'', email:'', role:'employee', designation:'', phone:'', department_id:'', is_active:true,
+  reporting_manager_id:'', employment_type:'FTE', default_weekly_capacity_hours:40, date_joined:''
 })
 
 export default function UsersPage() {
@@ -32,6 +65,7 @@ export default function UsersPage() {
 
   const [users,    setUsers]    = useState([])
   const [depts,    setDepts]    = useState([])
+  const [roles,    setRoles]    = useState([])
   const [loading,  setLoading]  = useState(true)
   const [search,   setSearch]   = useState('')
   const [roleFilter, setRoleF]  = useState('all')
@@ -44,6 +78,9 @@ export default function UsersPage() {
   const [submitting, setSub]    = useState(false)
   const [delUser,  setDelUser]  = useState(null)
   const [err,      setErr]      = useState('')
+  const [rolesErr, setRolesErr] = useState('')
+  const [showImport, setShowImport] = useState(false)
+  const [createdUser, setCreatedUser] = useState(null)
 
   useEffect(() => { load() }, [])
 
@@ -55,8 +92,19 @@ export default function UsersPage() {
     ])
     setUsers(u.data || [])
     setDepts(d.data || [])
+    try {
+      const r = await listRoles()
+      setRoles(r.length ? r : FALLBACK_ROLES)
+      if (!r.length) setRolesErr('No roles found in the roles table — showing built-in roles only. Check Settings → Roles & Modules.')
+    } catch (e) {
+      setRoles(FALLBACK_ROLES)
+      setRolesErr(`Couldn't load roles (${e.message}) — showing built-in roles only.`)
+    }
     setLoading(false)
   }
+
+  const ROLE_CFG = Object.fromEntries(roles.map(r => [r.role_key, roleCfgFrom(r)]))
+  const ALL_ROLES = roles.map(r => r.role_key)
 
   async function openDetail(user) {
     setDetail(user); setDL(true); setDD(null)
@@ -97,27 +145,36 @@ export default function UsersPage() {
         phone: form.phone || null,
         department_id: form.department_id || null,
         is_active: form.is_active,
+        reporting_manager_id: form.reporting_manager_id || null,
+        employment_type: form.employment_type || null,
+        default_weekly_capacity_hours: form.default_weekly_capacity_hours || 40,
+        date_joined: form.date_joined || null,
       }
       if (editing) {
         const { error } = await supabase.from('profiles').update(payload).eq('id', editing.id)
         if (error) throw error
         if (detail?.id === editing.id) setDetail(prev => ({ ...prev, ...payload }))
-      } else {
-        // Create via Supabase auth signup
-        const { data: authData, error: authErr } = await supabase.auth.admin?.createUser?.({
-          email: form.email, email_confirm: true,
-          user_metadata: { full_name: form.full_name, role: form.role }
-        })
-        if (authErr) {
-          // Fallback: just insert into profiles if admin API not available
-          const { error } = await supabase.from('profiles').insert({
-            ...payload, email: form.email,
-            id: crypto.randomUUID()
-          })
-          if (error) throw new Error('To create users, use Supabase Auth → Add user. Then update their role here.')
+        if (Number(editing.default_weekly_capacity_hours) !== Number(payload.default_weekly_capacity_hours)) {
+          recomputeFullWindowForEmployee(editing.id)
         }
+        setShowM(false); setForm(initForm()); load()
+      } else {
+        // Real account creation — same supabase.auth.signUp() the public
+        // signup page uses (this app only has the anon key, never a
+        // service-role key, so there's no admin.createUser API available).
+        // adminCreateUser() runs it on an isolated client so it can't
+        // replace the admin's own session with the new user's session.
+        if (!form.email.trim()) throw new Error('Email is required')
+        const tempPassword = genTempPassword()
+        const { user } = await adminCreateUser(form.email, tempPassword, { full_name: form.full_name, role: form.role })
+        if (!user?.id) throw new Error('User creation did not return an account — check Supabase Auth settings.')
+        // The signup trigger only knows full_name/role/email; fill in
+        // everything else the admin set on this form.
+        const { error: updErr } = await supabase.from('profiles').update(payload).eq('id', user.id)
+        if (updErr) throw updErr
+        setCreatedUser({ email: form.email, password: tempPassword, needsConfirmation: !user.confirmed_at && !user.email_confirmed_at })
+        setForm(initForm()); load()
       }
-      setShowM(false); setForm(initForm()); load()
     } catch(e) { setErr(e.message) }
     finally { setSub(false) }
   }
@@ -144,7 +201,7 @@ export default function UsersPage() {
 
   /* ── DETAIL VIEW ── */
   if (detail) {
-    const rc = ROLE_CFG[detail.role] || ROLE_CFG.employee
+    const rc = ROLE_CFG[detail.role] || FALLBACK_ROLE_CFG
     const Icon = rc.icon
     const initials = (detail.full_name||'U').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()
     const dd = detailData
@@ -162,7 +219,7 @@ export default function UsersPage() {
               <button className="btn btn-outline btn-sm" onClick={()=>toggleActive(detail)}>
                 {detail.is_active ? <><ToggleRight size={13}/> Deactivate</> : <><ToggleLeft size={13}/> Activate</>}
               </button>
-              <button className="btn btn-outline btn-sm" onClick={()=>{setEditing(detail);setForm({full_name:detail.full_name||'',email:detail.email||'',role:detail.role||'employee',designation:detail.designation||'',phone:detail.phone||'',department_id:detail.department_id||'',is_active:detail.is_active!==false});setErr('');setShowM(true)}}>
+              <button className="btn btn-outline btn-sm" onClick={()=>{setEditing(detail);setForm({full_name:detail.full_name||'',email:detail.email||'',role:detail.role||'employee',designation:detail.designation||'',phone:detail.phone||'',department_id:detail.department_id||'',is_active:detail.is_active!==false,reporting_manager_id:detail.reporting_manager_id||'',employment_type:detail.employment_type||'FTE',default_weekly_capacity_hours:detail.default_weekly_capacity_hours||40,date_joined:detail.date_joined||''});setErr('');setCreatedUser(null);setShowM(true)}}>
                 <Edit2 size={13}/> Edit
               </button>
               <button className="btn btn-ghost btn-sm" style={{color:'#ef4444'}} onClick={()=>setDelUser(detail.id)}>
@@ -184,7 +241,7 @@ export default function UsersPage() {
                 <span style={{ padding:'4px 12px', borderRadius:999, background:'rgba(255,255,255,.2)', fontSize:12, fontWeight:700, display:'flex', alignItems:'center', gap:5 }}>
                   <Icon size={12}/> {rc.label}
                 </span>
-                {detail.department?.name && <span style={{ padding:'4px 12px', borderRadius:999, background:'rgba(255,255,255,.15)', fontSize:12 }}>{detail.department.name}</span>}
+                {detail.department?.name && <span style={{ padding:'4px 12px', borderRadius:999, background:'rgba(255,255,255,.15)', fontSize:12, fontWeight:700 }}>{detail.department.name}</span>}
                 <span style={{ padding:'4px 12px', borderRadius:999, background: detail.is_active!==false?'rgba(16,185,129,.3)':'rgba(239,68,68,.3)', fontSize:12, fontWeight:700 }}>
                   {detail.is_active!==false?'✓ Active':'✗ Inactive'}
                 </span>
@@ -198,7 +255,7 @@ export default function UsersPage() {
           <div style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:60 }}><div className="spinner"/></div>
         ) : dd && (
           <>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))', gap:12, marginBottom:20 }}>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:12, marginBottom:20 }}>
               {[
                 { l:'Monthly Rate', v: dd.rate ? rupee(dd.rate.monthly_salary) : '—', c:'#6366f1', icon:<DollarSign size={16}/> },
                 { l:'Hourly Rate', v: dd.rate ? `₹${dd.rate.hourly_rate?.toFixed(0)}/hr` : '—', c:'#0891b2', icon:<Clock size={16}/> },
@@ -209,7 +266,7 @@ export default function UsersPage() {
               ].map(s=>(
                 <div key={s.l} style={{ background:'#fff', borderRadius:14, padding:'14px 16px', border:`1.5px solid ${s.c}20`, borderTop:`4px solid ${s.c}` }}>
                   <div style={{ color:s.c, marginBottom:6 }}>{s.icon}</div>
-                  <div style={{ fontSize:18, fontWeight:800, color:s.c, lineHeight:1 }}>{s.v}</div>
+                  <div style={{ fontSize:20, fontWeight:800, color:s.c, lineHeight:1 }}>{s.v}</div>
                   <div style={{ fontSize:11, color:'#64748b', fontWeight:600, marginTop:4 }}>{s.l}</div>
                 </div>
               ))}
@@ -273,7 +330,7 @@ export default function UsersPage() {
             {dd.leaves.length > 0 && (
               <div style={{ background:'#fff', borderRadius:14, border:'1.5px solid #e2e8f0', overflow:'hidden', marginTop:16 }}>
                 <div style={{ padding:'14px 20px', borderBottom:'1px solid #f1f5f9', fontWeight:700, fontSize:14 }}>📅 Leave History</div>
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))', gap:10, padding:16 }}>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))', gap:10, padding:16 }}>
                   {dd.leaves.map((l,i)=>{
                     const isPerm = l.leave_type==='permission'
                     const days = isPerm ? null : l.to_date && l.from_date ? Math.ceil((new Date(l.to_date)-new Date(l.from_date))/86400000)+1 : 1
@@ -298,12 +355,12 @@ export default function UsersPage() {
         )}
 
         {/* Edit Modal */}
-        <Modal open={showModal} onClose={()=>{setShowM(false);setErr('')}} title={editing?'Edit User':'Add User'} size="lg"
-          footer={<>
+        <Modal open={showModal} onClose={()=>{setShowM(false);setErr('');setCreatedUser(null)}} title={createdUser?'User Created':editing?'Edit User':'Add User'} size="lg"
+          footer={createdUser ? <button className="btn btn-primary" onClick={()=>{setShowM(false);setCreatedUser(null)}}>Done</button> : <>
             <button className="btn btn-ghost" onClick={()=>setShowM(false)}>Cancel</button>
             <button className="btn btn-primary" onClick={handleSave} disabled={submitting}>{submitting?'Saving…':editing?'Update':'Create'}</button>
           </>}>
-          <UserForm form={form} setForm={setForm} depts={depts} editing={!!editing} err={err} />
+          {createdUser ? <CreatedUserPanel createdUser={createdUser} /> : <UserForm form={form} setForm={setForm} depts={depts} users={users} roles={roles} rolesErr={rolesErr} editingId={editing?.id} editing={!!editing} err={err} />}
         </Modal>
         <Confirm open={!!delUser} message="Delete this user? This cannot be undone." danger onConfirm={()=>deleteUser(delUser)} onCancel={()=>setDelUser(null)} />
       </div>
@@ -319,16 +376,21 @@ export default function UsersPage() {
           <div className="page-subtitle">{users.length} users — ThingsaliveWork</div>
         </div>
         {canEdit && (
-          <button className="btn btn-primary" onClick={()=>{setEditing(null);setForm(initForm());setErr('');setShowM(true)}}>
-            <Plus size={15}/> Add User
-          </button>
+          <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-outline" onClick={()=>setShowImport(true)}>
+              <Upload size={14}/> Import Employees
+            </button>
+            <button className="btn btn-primary" onClick={()=>{setEditing(null);setForm(initForm());setErr('');setCreatedUser(null);setShowM(true)}}>
+              <Plus size={15}/> Add User
+            </button>
+          </div>
         )}
       </div>
 
       {/* Role filter cards */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(130px,1fr))', gap:10, marginBottom:20 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))', gap:10, marginBottom:20 }}>
         <div onClick={()=>setRoleF('all')} style={{ background:roleFilter==='all'?'#1e293b':'#fff', borderRadius:14, padding:'14px 16px', border:'1.5px solid #e2e8f0', cursor:'pointer' }}>
-          <div style={{ fontSize:26, fontWeight:800, color:roleFilter==='all'?'#fff':'#1e293b', lineHeight:1 }}>{users.length}</div>
+          <div style={{ fontSize:20, fontWeight:800, color:roleFilter==='all'?'#fff':'#1e293b', lineHeight:1 }}>{users.length}</div>
           <div style={{ fontSize:11, fontWeight:600, color:roleFilter==='all'?'#94a3b8':'#64748b', marginTop:4 }}>All Users</div>
         </div>
         {ALL_ROLES.map(r=>{
@@ -338,7 +400,7 @@ export default function UsersPage() {
               style={{ borderRadius:14, padding:'14px 16px', border:`1.5px solid ${active?rc.dark:'#e2e8f0'}`, cursor:'pointer',
                 background:active?`linear-gradient(135deg,${rc.grad[0]},${rc.grad[1]})`:'#fff' }}>
               <div style={{ marginBottom:6 }}><Icon size={14} style={{ color:active?'rgba(255,255,255,.8)':rc.dark }}/></div>
-              <div style={{ fontSize:24, fontWeight:800, color:active?'#fff':rc.dark, lineHeight:1 }}>{roleCounts[r]||0}</div>
+              <div style={{ fontSize:20, fontWeight:800, color:active?'#fff':rc.dark, lineHeight:1 }}>{roleCounts[r]||0}</div>
               <div style={{ fontSize:11, fontWeight:600, color:active?'rgba(255,255,255,.75)':'#64748b', marginTop:4 }}>{rc.label}s</div>
             </div>
           )
@@ -359,9 +421,9 @@ export default function UsersPage() {
       {filtered.length===0 ? (
         <div style={{ background:'#fff', borderRadius:14, border:'1.5px solid #e2e8f0' }}><Empty icon={<Users size={44}/>} title="No users found" desc="Try a different search or filter"/></div>
       ) : (
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))', gap:14 }}>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(260px,1fr))', gap:14 }}>
           {filtered.map(user=>{
-            const rc = ROLE_CFG[user.role]||ROLE_CFG.employee
+            const rc = ROLE_CFG[user.role]||FALLBACK_ROLE_CFG
             const Icon = rc.icon
             const initials = (user.full_name||user.email||'U').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()
             const inactive = user.is_active===false
@@ -390,7 +452,7 @@ export default function UsersPage() {
                       <Eye size={13}/> Details
                     </button>
                     {canEdit && <>
-                      <button className="btn btn-ghost btn-sm btn-icon" onClick={()=>{setEditing(user);setForm({full_name:user.full_name||'',email:user.email||'',role:user.role||'employee',designation:user.designation||'',phone:user.phone||'',department_id:user.department_id||'',is_active:user.is_active!==false});setErr('');setShowM(true)}}><Edit2 size={13}/></button>
+                      <button className="btn btn-ghost btn-sm btn-icon" onClick={()=>{setEditing(user);setForm({full_name:user.full_name||'',email:user.email||'',role:user.role||'employee',designation:user.designation||'',phone:user.phone||'',department_id:user.department_id||'',is_active:user.is_active!==false,reporting_manager_id:user.reporting_manager_id||'',employment_type:user.employment_type||'FTE',default_weekly_capacity_hours:user.default_weekly_capacity_hours||40,date_joined:user.date_joined||''});setErr('');setCreatedUser(null);setShowM(true)}}><Edit2 size={13}/></button>
                       <button className="btn btn-ghost btn-sm btn-icon" onClick={()=>toggleActive(user)} title={user.is_active!==false?'Deactivate':'Activate'}>
                         {user.is_active!==false ? <ToggleRight size={13} style={{color:'#10b981'}}/> : <ToggleLeft size={13} style={{color:'#ef4444'}}/>}
                       </button>
@@ -404,22 +466,55 @@ export default function UsersPage() {
         </div>
       )}
 
-      <Modal open={showModal} onClose={()=>{setShowM(false);setErr('')}} title={editing?'Edit User':'Add User'} size="lg"
-        footer={<>
+      <Modal open={showModal} onClose={()=>{setShowM(false);setErr('');setCreatedUser(null)}} title={createdUser?'User Created':editing?'Edit User':'Add User'} size="lg"
+        footer={createdUser ? <button className="btn btn-primary" onClick={()=>{setShowM(false);setCreatedUser(null)}}>Done</button> : <>
           <button className="btn btn-ghost" onClick={()=>setShowM(false)}>Cancel</button>
           <button className="btn btn-primary" onClick={handleSave} disabled={submitting}>{submitting?'Saving…':editing?'Update':'Create'}</button>
         </>}>
-        <UserForm form={form} setForm={setForm} depts={depts} editing={!!editing} err={err} />
+        {createdUser ? <CreatedUserPanel createdUser={createdUser} /> : <UserForm form={form} setForm={setForm} depts={depts} users={users} roles={roles} rolesErr={rolesErr} editingId={editing?.id} editing={!!editing} err={err} />}
       </Modal>
       <Confirm open={!!delUser} message="Delete this user?" danger onConfirm={()=>deleteUser(delUser)} onCancel={()=>setDelUser(null)} />
+
+      <Modal open={showImport} onClose={()=>setShowImport(false)} title="Import Employees" size="xl">
+        <ExcelImport type="employees" lookups={{ users, departments: depts }}
+          onSuccess={()=>{load()}} onClose={()=>setShowImport(false)}/>
+      </Modal>
     </div>
   )
 }
 
-function UserForm({ form, setForm, depts, editing, err }) {
+function CreatedUserPanel({ createdUser }) {
+  return (
+    <div>
+      <div style={{ padding:'10px 14px', borderRadius:8, background:'#dcfce7', color:'#15803d', fontSize:13, fontWeight:600, marginBottom:16 }}>
+        Account created for {createdUser.email}.
+      </div>
+      <div className="form-group">
+        <label className="form-label">Temporary Password</label>
+        <input className="form-input" readOnly value={createdUser.password} style={{ fontFamily:'monospace', fontWeight:700 }} onFocus={e=>e.target.select()} />
+        <div style={{ fontSize:11, color:'#94a3b8', marginTop:4 }}>Share this with the user directly — it isn't shown again. They should change it after first login.</div>
+      </div>
+      {createdUser.needsConfirmation && (
+        <div style={{ fontSize:12, color:'#b45309', background:'#fffbeb', border:'1px solid #fde68a', borderRadius:8, padding:'8px 12px', marginTop:10 }}>
+          This Supabase project requires email confirmation — the user must confirm via the email sent to them before they can sign in with the password above.
+        </div>
+      )}
+    </div>
+  )
+}
+
+function UserForm({ form, setForm, depts, users, roles, rolesErr, editingId, editing, err }) {
+  const managerOptions = (users||[]).filter(u=>u.id!==editingId)
+  // Defensive: if the user's current role somehow isn't in the fetched
+  // roles list (deleted/renamed role, or the fetch partially failed),
+  // still show it as an option so editing never silently drops it.
+  const roleOptions = (form.role && !(roles||[]).some(r=>r.role_key===form.role))
+    ? [...(roles||[]), { role_key: form.role, label: form.role, is_system: false }]
+    : (roles||[])
   return (
     <>
       {err && <div className="alert alert-danger" style={{ marginBottom:14 }}>{err}</div>}
+      {rolesErr && <div className="alert alert-danger" style={{ marginBottom:14 }}>{rolesErr}</div>}
       <div className="form-row">
         <div className="form-group">
           <label className="form-label">Full Name *</label>
@@ -435,8 +530,8 @@ function UserForm({ form, setForm, depts, editing, err }) {
         <div className="form-group">
           <label className="form-label">Role *</label>
           <select className="form-select" value={form.role} onChange={e=>setForm(f=>({...f,role:e.target.value}))}>
-            {Object.entries({ admin:'Admin', ceo:'CEO', manager:'Manager', finance:'Finance', hr:'HR', employee:'Employee' }).map(([k,v])=>(
-              <option key={k} value={k}>{v}</option>
+            {roleOptions.map(r=>(
+              <option key={r.role_key} value={r.role_key}>{r.label}{!r.is_system ? ' (custom)' : ''}</option>
             ))}
           </select>
         </div>
@@ -456,6 +551,32 @@ function UserForm({ form, setForm, depts, editing, err }) {
         <div className="form-group">
           <label className="form-label">Phone</label>
           <input className="form-input" value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))} placeholder="+91 98765 43210"/>
+        </div>
+      </div>
+      <div className="form-row">
+        <div className="form-group">
+          <label className="form-label">Reporting Manager</label>
+          <select className="form-select" value={form.reporting_manager_id} onChange={e=>setForm(f=>({...f,reporting_manager_id:e.target.value}))}>
+            <option value="">No manager set</option>
+            {managerOptions.map(u=><option key={u.id} value={u.id}>{u.full_name} ({u.role})</option>)}
+          </select>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:3}}>Used to route allocation & leave approvals to this employee's manager</div>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Employment Type</label>
+          <select className="form-select" value={form.employment_type} onChange={e=>setForm(f=>({...f,employment_type:e.target.value}))}>
+            {['FTE','Contractor','Intern'].map(t=><option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+      </div>
+      <div className="form-row">
+        <div className="form-group">
+          <label className="form-label">Default Weekly Capacity (hrs)</label>
+          <input className="form-input" type="number" min={0} max={168} value={form.default_weekly_capacity_hours} onChange={e=>setForm(f=>({...f,default_weekly_capacity_hours:parseFloat(e.target.value)||0}))}/>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Date Joined</label>
+          <input className="form-input" type="date" value={form.date_joined} onChange={e=>setForm(f=>({...f,date_joined:e.target.value}))}/>
         </div>
       </div>
       <label style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer', fontSize:13, fontWeight:600 }}>

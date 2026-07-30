@@ -157,10 +157,10 @@ export default function VendorsPage() {
                 {v.category && <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 99, background: `${c.accent}20`, color: c.accent, fontWeight: 600 }}>{v.category}</span>}
 
                 <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {v.contact_name && <div style={{ display: 'flex', gap: 8, fontSize: 12.5, color: 'var(--ink-soft)', alignItems: 'center' }}><Building size={12} style={{ color: c.accent }} />{v.contact_name}</div>}
-                  {v.phone && <div style={{ display: 'flex', gap: 8, fontSize: 12.5, color: 'var(--ink-soft)', alignItems: 'center' }}><Phone size={12} style={{ color: c.accent }} />{v.phone}</div>}
-                  {v.email && <div style={{ display: 'flex', gap: 8, fontSize: 12.5, color: 'var(--ink-soft)', alignItems: 'center' }}><Mail size={12} style={{ color: c.accent }} />{v.email}</div>}
-                  {v.city && <div style={{ display: 'flex', gap: 8, fontSize: 12.5, color: 'var(--ink-soft)', alignItems: 'center' }}><MapPin size={12} style={{ color: c.accent }} />{v.city}</div>}
+                  {v.contact_name && <div style={{ display: 'flex', gap: 8, fontSize: 12, color: 'var(--ink-soft)', alignItems: 'center' }}><Building size={12} style={{ color: c.accent }} />{v.contact_name}</div>}
+                  {v.phone && <div style={{ display: 'flex', gap: 8, fontSize: 12, color: 'var(--ink-soft)', alignItems: 'center' }}><Phone size={12} style={{ color: c.accent }} />{v.phone}</div>}
+                  {v.email && <div style={{ display: 'flex', gap: 8, fontSize: 12, color: 'var(--ink-soft)', alignItems: 'center' }}><Mail size={12} style={{ color: c.accent }} />{v.email}</div>}
+                  {v.city && <div style={{ display: 'flex', gap: 8, fontSize: 12, color: 'var(--ink-soft)', alignItems: 'center' }}><MapPin size={12} style={{ color: c.accent }} />{v.city}</div>}
                 </div>
 
                 {v.gst_number && (
@@ -212,7 +212,7 @@ export default function VendorsPage() {
         </>}
       >
         <form onSubmit={handleSubmit}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--c1)', marginBottom: 12, marginTop: 4 }}>Basic Information</div>
+          <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--c1)', marginBottom: 12, marginTop: 4 }}>Basic Information</div>
           <div className="form-row">
             <div className="form-group"><label className="form-label">Vendor Name *</label><input className="form-input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} required /></div>
             <div className="form-group"><label className="form-label">Category</label>
@@ -229,7 +229,7 @@ export default function VendorsPage() {
           </div>
           <div className="form-group"><label className="form-label">Address</label><textarea className="form-textarea" style={{ minHeight: 60 }} value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} /></div>
 
-          <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--c1)', marginBottom: 12, marginTop: 16 }}>Tax & Banking</div>
+          <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--c1)', marginBottom: 12, marginTop: 16 }}>Tax & Banking</div>
           <div className="form-row">
             <div className="form-group"><label className="form-label">GST Number</label><input className="form-input" value={form.gst_number} onChange={e => setForm(f => ({ ...f, gst_number: e.target.value }))} placeholder="22AAAAA0000A1Z5" /></div>
             <div className="form-group"><label className="form-label">Payment Terms (days)</label><input className="form-input" type="number" value={form.payment_terms} onChange={e => setForm(f => ({ ...f, payment_terms: parseInt(e.target.value) }))} /></div>

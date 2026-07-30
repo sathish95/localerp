@@ -1,8 +1,14 @@
 import { useState, useEffect, useMemo } from 'react'
+import { useSearchParams, useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase, rupee, dateFmt } from '../lib/supabase'
-import { Modal, Loader, Empty, Confirm, SearchBox } from '../components/ui'
-import { Plus, Edit2, Trash2, FolderOpen, Eye, ArrowLeft, ChevronRight } from 'lucide-react'
+import { Modal, Loader, Empty, Confirm, SearchBox, StatusBadge } from '../components/ui'
+import AllocationGantt from '../components/AllocationGantt'
+import { recomputeForProject, getActualCostSnapshot, getBurnRate } from '../lib/actualCost'
+import { MARGIN_VISIBLE_ROLES, recomputeMargin, getMargin } from '../lib/profitMargin'
+import { getFindings } from '../lib/spendAnalyzer'
+import { getWarrantyCostSummaryForProject } from '../lib/warrantyCost'
+import { Plus, Edit2, Trash2, FolderOpen, Eye, ArrowLeft, RefreshCw, AlertTriangle, TrendingDown, Percent, Radar } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 
 /* ─── constants ─────────────────────────────────────── */
@@ -16,7 +22,7 @@ const SUP0 = ['device_logger','support_expense','maintenance','other']
 const PI   = {critical:'🔴',high:'🟠',medium:'🔵',low:'🟢'}
 const PRIOS= ['critical','high','medium','low']
 const CR_ST= ['draft','submitted','under_review','approved','rejected','implemented']
-const iP   = ()=>({name:'',description:'',budget:'',reserved_budget:'',start_date:'',end_date:'',status:'active'})
+const iP   = ()=>({name:'',description:'',budget:'',reserved_budget:'',start_date:'',end_date:'',status:'active',customer_id:'',department_id:'',project_type:''})
 const iMS  = ()=>({title:'',description:'',start_date:'',due_date:'',actual_start:'',actual_end:'',budget:'',status:'pending'})
 const iCR  = ()=>({title:'',description:'',reason:'',priority:'medium',status:'draft',estimated_hours:'',actual_hours:'',estimated_cost:'',actual_cost:''})
 
@@ -25,11 +31,33 @@ const Pill=(({s,map=SC})=>{const c=map[s]||'#94a3b8';return <span style={{paddin
 const TH=({c,s={}})=><th style={{padding:'8px 14px',textAlign:'left',fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'.05em',color:'var(--text-muted)',borderBottom:'1px solid var(--border)',whiteSpace:'nowrap',...s}}>{c}</th>
 const TD=({c,s={}})=><td style={{padding:'8px 14px',borderBottom:'1px solid var(--border)',verticalAlign:'middle',...s}}>{c}</td>
 const MTD=({v,color='var(--text)'})=><td style={{padding:'8px 14px',borderBottom:'1px solid var(--border)',fontFamily:'var(--font-mono)',fontWeight:700,color}}>{rupee(v||0)}</td>
-const SCard=({label,value,color})=>(
-  <div style={{padding:'10px 14px',borderRadius:8,background:`${color}0d`,border:`1px solid ${color}25`,minWidth:120}}>
-    <div style={{fontSize:9,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase',letterSpacing:'.05em'}}>{label}</div>
-    <div style={{fontFamily:'var(--font-mono)',fontWeight:800,fontSize:16,color,marginTop:3}}>{value}</div>
-  </div>
+const SCard=({label,value,color})=>{
+  const [hover,setHover]=useState(false)
+  return (
+    <div onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)}
+      style={{padding:'11px 16px',borderRadius:10,background:`${color}0d`,border:`1px solid ${color}25`,minWidth:130,
+        boxShadow:hover?'0 6px 16px rgba(0,0,0,.08)':'none',transform:hover?'translateY(-2px)':'none',transition:'transform .15s, box-shadow .15s'}}>
+      <div style={{fontSize:9,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase',letterSpacing:'.05em'}}>{label}</div>
+      <div style={{fontFamily:'var(--font-mono)',fontWeight:800,fontSize:16,color,marginTop:3,overflowWrap:'break-word',wordBreak:'break-word'}}>{value}</div>
+    </div>
+  )
+}
+const MiniKpi=({label,value,color})=>{
+  const [hover,setHover]=useState(false)
+  return (
+    <div onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)}
+      style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:10,borderTop:`3px solid ${color}`,padding:'10px 14px',minWidth:0,overflow:'hidden',
+        boxShadow:hover?'var(--shadow-md)':'var(--shadow-sm)',transform:hover?'translateY(-2px)':'none',transition:'transform .15s, box-shadow .15s'}}>
+      <div style={{fontFamily:'var(--font-mono)',fontWeight:800,fontSize:16,color,lineHeight:1,marginBottom:3,overflowWrap:'break-word',wordBreak:'break-word'}}>{value}</div>
+      <div style={{fontSize:9,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase',letterSpacing:'.05em'}}>{label}</div>
+    </div>
+  )
+}
+const EmptyRow=({colSpan,icon,text})=>(
+  <tr><td colSpan={colSpan} style={{padding:'44px 20px',textAlign:'center'}}>
+    <div style={{fontSize:30,marginBottom:8,opacity:.45}}>{icon}</div>
+    <div style={{color:'var(--text-muted)',fontSize:13,fontWeight:600}}>{text}</div>
+  </td></tr>
 )
 
 /* ─── KPI engine ────────────────────────────────────── */
@@ -43,7 +71,8 @@ function computeKPIs(dd) {
   const totalHrs=timelogs.reduce((s,l)=>s+(l.hours_worked||0),0)
   const avgRate=rates.length>0?rates.reduce((s,r)=>s+(r.hourly_rate||r.monthly_salary/(22*8)),0)/rates.length:0
   const hrCost=rates.reduce((s,r)=>{const eh=timelogs.filter(l=>l.employee?.id===r.employee_id).reduce((a,l)=>a+(l.hours_worked||0),0);return s+eh*(r.hourly_rate||r.monthly_salary/(22*8))},0)
-  const totalCo=hrCost+swCo+hwCo+spCo+expOk,totalCl=swCl+hwCl+spCl,totalPr=swPr+hwPr+spPr
+  const wtyCo=dd.warranty?.totalWarrantyCost||0,wtyClaimCount=dd.warranty?.claimCount||0
+  const totalCo=hrCost+swCo+hwCo+spCo+expOk+wtyCo,totalCl=swCl+hwCl+spCl,totalPr=swPr+hwPr+spPr
   const msBudget=milestones.reduce((s,m)=>s+(m.budget||0),0)
   const msSpent=milestones.reduce((s,m)=>{
     const msHrs=m.start_date&&m.due_date?timelogs.filter(l=>l.work_date>=m.start_date&&l.work_date<=m.due_date).reduce((a,l)=>a+(l.hours_worked||0),0):0
@@ -52,7 +81,7 @@ function computeKPIs(dd) {
   const msByHrs=milestones.map(m=>({id:m.id,title:m.title,budget:m.budget||0,logged:m.start_date&&m.due_date?timelogs.filter(l=>l.work_date>=m.start_date&&l.work_date<=m.due_date).reduce((s,l)=>s+(l.hours_worked||0),0):0,allocated:ra.filter(r=>r.milestone_id===m.id).reduce((s,r)=>s+(r.allocated_hours||0),0)}))
   const expByMonth=MOS.map((mn,mi)=>({month:mn,expenses:expenses.filter(e=>new Date(e.expense_date||e.created_at).getMonth()===mi).reduce((s,e)=>s+(e.total_amount||e.amount||0),0),hrCost:timelogs.filter(l=>new Date(l.work_date).getMonth()===mi).reduce((s,l)=>s+(l.hours_worked||0),0)*avgRate}))
   const crCount=changereqs.length,crHrs=changereqs.reduce((s,r)=>s+(r.actual_hours||0),0),crCost=changereqs.reduce((s,r)=>s+(r.actual_cost||0),0)
-  return {swCo,swCl,swPr,hwCo,hwCl,hwPr,spCo,spCl,spPr,expOk,totalHrs,hrCost,totalCo,totalCl,totalPr,msBudget,msSpent,msByHrs,expByMonth,crCount,crHrs,crCost}
+  return {swCo,swCl,swPr,hwCo,hwCl,hwPr,spCo,spCl,spPr,expOk,wtyCo,wtyClaimCount,totalHrs,hrCost,totalCo,totalCl,totalPr,msBudget,msSpent,msByHrs,expByMonth,crCount,crHrs,crCost}
 }
 
 /* ─── category manager widget ───────────────────────── */
@@ -129,7 +158,7 @@ function BudgetPanel({detail,kpi,dd}) {
   function save(){localStorage.setItem(key,JSON.stringify(cfg));setSaved(true);setTimeout(()=>setSaved(false),2500)}
   return (
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
-      <div className="card"><div className="card-header"><span className="card-title">⚙️ Markup Config</span></div>
+      <div className="card hover-lift"><div className="card-header"><span className="card-title">⚙️ Markup Config</span></div>
         <div className="card-body">
           <div className="form-group"><label className="form-label">Client Markup (%)</label><div style={{display:'flex',alignItems:'center',gap:10}}><input className="form-input" type="number" min="0" value={cfg.cm} onChange={e=>setCfg(c=>({...c,cm:parseFloat(e.target.value)||0}))} style={{width:90}}/><span style={{fontSize:11,color:'var(--text-muted)'}}>× {((cfg.cm||0)/100+1).toFixed(2)}</span></div></div>
           <div className="form-group"><label className="form-label">Proposal Markup (%)</label><div style={{display:'flex',alignItems:'center',gap:10}}><input className="form-input" type="number" min="0" value={cfg.pm} onChange={e=>setCfg(c=>({...c,pm:parseFloat(e.target.value)||0}))} style={{width:90}}/><span style={{fontSize:11,color:'var(--text-muted)'}}>× {((cfg.pm||0)/100+1).toFixed(2)}</span></div></div>
@@ -142,7 +171,7 @@ function BudgetPanel({detail,kpi,dd}) {
           <button className="btn btn-primary" style={{marginTop:12,width:'100%'}} onClick={save}>Save Config</button>
         </div>
       </div>
-      <div className="card"><div className="card-header"><span className="card-title">📊 Totals</span></div>
+      <div className="card hover-lift"><div className="card-header"><span className="card-title">📊 Totals</span></div>
         {[{l:'Base (Cost to Co.)',v:base,c:'#e11d48'},{l:`Client (+${cfg.cm}%)`,v:cl,c:'#059669'},{l:`Proposal (+${cfg.pm}%)`,v:prop,c:'#7c3aed'},{l:'Gross Profit',v:cl-base,c:'#059669'}].map((r,i)=>(
           <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'12px 16px',borderBottom:'1px solid var(--border)',background:i===3?'var(--bg-3)':'transparent'}}>
             <span style={{fontWeight:i===3?700:500,fontSize:13}}>{r.l}</span>
@@ -156,10 +185,17 @@ function BudgetPanel({detail,kpi,dd}) {
 }
 
 /* ─── project form ──────────────────────────────────── */
-function ProjForm({form,setForm}) {
+function ProjForm({form,setForm,customers=[],departments=[]}) {
   const avail=Math.max(0,(parseFloat(form.budget)||0)-(parseFloat(form.reserved_budget)||0))
   return (<>
-    <div className="form-group"><label className="form-label">Project Name *</label><input className="form-input" value={form.name||''} onChange={e=>setForm(f=>({...f,name:e.target.value}))} required/></div>
+    <div className="form-row">
+      <div className="form-group"><label className="form-label">Project Name *</label><input className="form-input" value={form.name||''} onChange={e=>setForm(f=>({...f,name:e.target.value}))} required/></div>
+      <div className="form-group"><label className="form-label">Customer</label><select className="form-select" value={form.customer_id||''} onChange={e=>setForm(f=>({...f,customer_id:e.target.value}))}><option value="">No customer</option>{customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+    </div>
+    <div className="form-row">
+      <div className="form-group"><label className="form-label">Department</label><select className="form-select" value={form.department_id||''} onChange={e=>setForm(f=>({...f,department_id:e.target.value}))}><option value="">Unassigned</option>{departments.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select><div style={{fontSize:10,color:'var(--text-muted)',marginTop:3}}>Powers company-wide Spend Analyzer department rollups</div></div>
+      <div className="form-group"><label className="form-label">Project Type</label><input className="form-input" list="project-types" value={form.project_type||''} onChange={e=>setForm(f=>({...f,project_type:e.target.value}))} placeholder="e.g. IoT Deployment, Internal Tool"/><div style={{fontSize:10,color:'var(--text-muted)',marginTop:3}}>Used to compare similar projects in Benchmarking</div></div>
+    </div>
     <div className="form-row">
       <div className="form-group"><label className="form-label">Status</label><select className="form-select" value={form.status||'active'} onChange={e=>setForm(f=>({...f,status:e.target.value}))}>{['active','on_hold','completed','cancelled'].map(s=><option key={s} value={s}>{s.replace(/_/g,' ')}</option>)}</select></div>
       <div className="form-group"><label className="form-label">Total Budget (₹)</label><input className="form-input" type="number" value={form.budget||''} onChange={e=>setForm(f=>({...f,budget:e.target.value}))} placeholder="0"/></div>
@@ -173,6 +209,7 @@ function ProjForm({form,setForm}) {
       <div className="form-group"><label className="form-label">End Date</label><input className="form-input" type="date" value={form.end_date||''} min={form.start_date} onChange={e=>setForm(f=>({...f,end_date:e.target.value}))}/></div>
     </div>
     <div className="form-group"><label className="form-label">Description</label><textarea className="form-textarea" value={form.description||''} onChange={e=>setForm(f=>({...f,description:e.target.value}))} placeholder="Goals and scope…"/></div>
+    <datalist id="project-types"><option value="IoT Deployment"/><option value="Internal Tool"/><option value="Client Services"/><option value="R&D"/></datalist>
   </>)
 }
 
@@ -181,9 +218,14 @@ export default function ProjectsPage() {
   const { profile } = useAuth()
   const role    = profile?.role||'employee'
   const canEdit = ['admin','ceo','manager','finance','department_head'].includes(role)
+  const canBill = ['admin','ceo','finance'].includes(role)
+  const navigate = useNavigate()
 
   // list
   const [projects,setProjects]=useState([]);const [loading,setLoading]=useState(true)
+  const [customers,setCustomers]=useState([])
+  const [departments,setDepartments]=useState([])
+  const [companyContext,setCompanyContext]=useState(null)
   const [search,setSearch]=useState('');const [statusF,setStatusF]=useState('')
   const [dateRange,setDateRange]=useState({from:'',to:''})
   const [showPM,setShowPM]=useState(false);const [editP,setEditP]=useState(null)
@@ -192,7 +234,12 @@ export default function ProjectsPage() {
 
   // detail
   const [detail,setDetail]=useState(null);const [dd,setDD]=useState(null)
-  const [ddLoad,setDDLoad]=useState(false);const [tab,setTab]=useState('overview')
+  const [ddLoad,setDDLoad]=useState(false)
+  const [searchParams,setSearchParams]=useSearchParams()
+  const tab=searchParams.get('view')||'overview'
+  const [ganttWindow,setGanttWindow]=useState(()=>new Date())
+  const [financeLoading,setFinanceLoading]=useState(false)
+  const [financeLoaded,setFinanceLoaded]=useState(false)
 
   // MS
   const [showMS,setShowMS]=useState(false);const [editMS,setEditMS]=useState(null)
@@ -213,14 +260,19 @@ export default function ProjectsPage() {
 
   async function loadList() {
     setLoading(true)
-    const{data}=await supabase.from('projects').select('*').order('created_at',{ascending:false})
-    setProjects(data||[]);setLoading(false)
+    const[{data},{data:custData},{data:deptData}]=await Promise.all([
+      supabase.from('projects').select('*').order('created_at',{ascending:false}),
+      supabase.from('customers').select('id,name').eq('status','active').order('name'),
+      supabase.from('departments').select('id,name').order('name'),
+    ])
+    setProjects(data||[]);setCustomers(custData||[]);setDepartments(deptData||[]);setLoading(false)
   }
 
   async function openDetail(proj) {
-    setDetail(proj);setDDLoad(true);setDD(null);setTab('overview')
+    setDetail(proj);setDDLoad(true);setDD(null);setFinanceLoaded(false)
+    setSearchParams(prev=>{const p=new URLSearchParams(prev);p.set('pname',proj.name);p.set('pid',proj.id);if(!p.get('view'))p.set('view','overview');return p},{replace:true})
     try {
-      const[eR,lR,mR,swR,hwR,suR,raR,rtR,emR,crR]=await Promise.all([
+      const[eR,lR,mR,swR,hwR,suR,raR,rtR,emR,crR,alR,invR,warrantySummary]=await Promise.all([
         supabase.from('expense_requests').select('amount,total_amount,status,expense_date,category,requester:profiles!requested_by(full_name)').eq('project_id',proj.id),
         supabase.from('time_logs').select('hours_worked,work_date,employee:profiles!employee_id(id,full_name)').eq('project_id',proj.id),
         supabase.from('project_milestones').select('*').eq('project_id',proj.id).order('due_date'),
@@ -231,16 +283,50 @@ export default function ProjectsPage() {
         supabase.from('resource_rates').select('*'),
         supabase.from('profiles').select('id,full_name,role').order('full_name'),
         supabase.from('change_requests').select('*,requester:profiles!requested_by(full_name)').eq('project_id',proj.id).order('created_at',{ascending:false}),
+        supabase.from('allocations').select('*,employee:profiles!employee_id(full_name,role)').eq('project_id',proj.id).order('start_date'),
+        supabase.from('invoices').select('*,vendor:vendors(name)').eq('project_id',proj.id).order('created_at',{ascending:false}),
+        getWarrantyCostSummaryForProject(proj.id).catch(()=>null),
       ])
-      setDD({expenses:eR.data||[],timelogs:lR.data||[],milestones:mR.data||[],sw:swR.data||[],hw:hwR.data||[],sup:suR.data||[],ra:raR.data||[],rates:rtR.data||[],employees:emR.data||[],changereqs:crR.data||[]})
+      setDD({expenses:eR.data||[],timelogs:lR.data||[],milestones:mR.data||[],sw:swR.data||[],hw:hwR.data||[],sup:suR.data||[],ra:raR.data||[],rates:rtR.data||[],employees:emR.data||[],changereqs:crR.data||[],allocations:alR.data||[],invoices:invR.data||[],warranty:warrantySummary})
     }catch(e){console.error(e)}
     setDDLoad(false)
   }
 
+  async function loadFinance(projectId, forceRecompute) {
+    setFinanceLoading(true)
+    try {
+      if (forceRecompute || !financeLoaded) await recomputeForProject(projectId)
+      const canViewMargin = MARGIN_VISIBLE_ROLES.includes(role)
+      if (canViewMargin && (forceRecompute || !financeLoaded)) await recomputeMargin(projectId, profile.id)
+      const [snap, burn, margin, allFindings, warranty] = await Promise.all([
+        getActualCostSnapshot(projectId), getBurnRate(projectId),
+        canViewMargin ? getMargin(projectId) : Promise.resolve(null),
+        getFindings().catch(() => []),
+        getWarrantyCostSummaryForProject(projectId).catch(() => null),
+      ])
+      const projectFindings = (allFindings || []).filter(f => (f.related_project_ids || []).includes(projectId) && f.status !== 'dismissed')
+      setDD(prev => prev && ({ ...prev, actualCost: snap, burnRate: burn, margin, warranty }))
+      setCompanyContext({ findings: projectFindings })
+      setFinanceLoaded(true)
+    } catch (e) { console.error(e) } finally { setFinanceLoading(false) }
+  }
+
+  useEffect(() => {
+    if (tab === 'finance' && detail?.id && !financeLoaded && !financeLoading) loadFinance(detail.id)
+  }, [tab, detail?.id])
+
+  // Sidebar "Switch Project" sets ?pid=<id> — open that project once it's available
+  useEffect(()=>{
+    const pid=searchParams.get('pid')
+    if(!pid||pid===detail?.id||projects.length===0)return
+    const proj=projects.find(p=>p.id===pid)
+    if(proj)openDetail(proj)
+  },[searchParams,projects])
+
   async function saveProject(e) {
     e.preventDefault();setSubP(true)
     try {
-      const p={name:pForm.name,description:pForm.description||null,budget:parseFloat(pForm.budget)||0,reserved_budget:parseFloat(pForm.reserved_budget)||0,start_date:pForm.start_date||null,end_date:pForm.end_date||null,status:pForm.status}
+      const p={name:pForm.name,description:pForm.description||null,budget:parseFloat(pForm.budget)||0,reserved_budget:parseFloat(pForm.reserved_budget)||0,start_date:pForm.start_date||null,end_date:pForm.end_date||null,status:pForm.status,customer_id:pForm.customer_id||null,department_id:pForm.department_id||null,project_type:pForm.project_type||null}
       if(editP){await supabase.from('projects').update(p).eq('id',editP.id);if(detail?.id===editP.id)setDetail(d=>({...d,...p}))}
       else await supabase.from('projects').insert({...p,code:'PRJ-'+Date.now().toString().slice(-6),created_by:profile.id})
       setShowPM(false);loadList()
@@ -293,38 +379,40 @@ export default function ProjectsPage() {
     const realSpent=kpi.totalCo||0
     const realPct=detail.budget>0?Math.min(100,Math.round((realSpent/detail.budget)*100)):0
     const avail=Math.max(0,(detail.budget||0)-(detail.reserved_budget||0)-realSpent)
-    const tabs=[
-      {id:'overview',  e:'📊', l:'Overview'},
-      {id:'milestones',e:'🏁', l:`Milestones (${ms.length})`},
-      {id:'resources', e:'👥', l:`Resources (${dd?.ra?.length||0})`},
-      {id:'software',  e:'💻', l:`Software (${dd?.sw?.length||0})`},
-      {id:'hardware',  e:'🔧', l:`Hardware (${dd?.hw?.length||0})`},
-      {id:'support',   e:'🛠', l:`Support (${dd?.sup?.length||0})`},
-      {id:'expenses',  e:'🧾', l:`Expenses (${dd?.expenses?.length||0})`},
-      {id:'changes',   e:'🔄', l:`Changes (${dd?.changereqs?.length||0})`},
-      {id:'budget',    e:'⚙️', l:'Budget Config'},
-    ]
 
     return (
       <div>
-        {/* ── BACK BAR ── */}
-        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16,flexWrap:'wrap'}}>
-          <button className="btn btn-ghost btn-sm" onClick={()=>setDetail(null)} style={{display:'flex',alignItems:'center',gap:6}}><ArrowLeft size={14}/> Projects</button>
-          <ChevronRight size={13} style={{color:'var(--text-muted)'}}/>
-          <span style={{fontFamily:'var(--font-head)',fontWeight:800,fontSize:16}}>{detail.name}</span>
-          <span style={{fontFamily:'var(--font-mono)',fontSize:10,color:'var(--text-muted)'}}>{detail.code}</span>
-          <Pill s={detail.status} map={SC}/>
-          {canEdit&&<div style={{marginLeft:'auto',display:'flex',gap:8}}>
-            <button className="btn btn-outline btn-sm" onClick={()=>{setEditP(detail);setPForm({name:detail.name,description:detail.description||'',budget:detail.budget||'',reserved_budget:detail.reserved_budget||'',start_date:detail.start_date||'',end_date:detail.end_date||'',status:detail.status});setShowPM(true)}}><Edit2 size={12}/> Edit</button>
-            <button className="btn btn-primary btn-sm" onClick={()=>{setEditMS(null);setMsForm(iMS());setShowMS(true)}}><Plus size={12}/> Milestone</button>
-          </div>}
+        {/* ── PROJECT HEADER ── */}
+        <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderTop:`4px solid ${SC[detail.status]||'#94a3b8'}`,borderRadius:16,padding:'18px 22px',marginBottom:16,boxShadow:'var(--shadow-sm)'}}>
+          <div style={{display:'flex',alignItems:'flex-start',gap:16,flexWrap:'wrap'}}>
+            <div style={{flex:1,minWidth:220}}>
+              <button className="btn btn-ghost btn-sm" onClick={()=>{setDetail(null);setSearchParams(prev=>{const p=new URLSearchParams(prev);p.delete('pname');p.delete('pid');p.delete('view');return p},{replace:true})}}
+                style={{display:'flex',alignItems:'center',gap:5,padding:'2px 0',marginBottom:10,color:'var(--text-muted)',fontSize:12}}>
+                <ArrowLeft size={13}/> All Projects
+              </button>
+              <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                <span style={{fontFamily:'var(--font-head)',fontWeight:800,fontSize:24,lineHeight:1.2}}>{detail.name}</span>
+                <Pill s={detail.status} map={SC}/>
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',marginTop:8,fontSize:12,color:'var(--text-muted)'}}>
+                <span style={{fontFamily:'var(--font-mono)'}}>{detail.code}</span>
+                {detail.customer_id&&<span style={{padding:'2px 10px',borderRadius:20,background:'var(--c1-soft)',color:'var(--c1)',fontWeight:700,fontSize:11}}>🏢 {customers.find(c=>c.id===detail.customer_id)?.name||'Customer'}</span>}
+                {(detail.start_date||detail.end_date)&&<span>📅 {dateFmt(detail.start_date)||'—'} → {dateFmt(detail.end_date)||'—'}</span>}
+              </div>
+              {detail.description&&<div style={{marginTop:12,fontSize:13,color:'var(--text-soft)',maxWidth:680,lineHeight:1.5}}>{detail.description}</div>}
+            </div>
+            {canEdit&&<div style={{display:'flex',gap:8,flexShrink:0}}>
+              <button className="btn btn-outline btn-sm" onClick={()=>{setEditP(detail);setPForm({name:detail.name,description:detail.description||'',budget:detail.budget||'',reserved_budget:detail.reserved_budget||'',start_date:detail.start_date||'',end_date:detail.end_date||'',status:detail.status,customer_id:detail.customer_id||'',department_id:detail.department_id||'',project_type:detail.project_type||''});setShowPM(true)}}><Edit2 size={12}/> Edit</button>
+              <button className="btn btn-primary btn-sm" onClick={()=>{setEditMS(null);setMsForm(iMS());setShowMS(true)}}><Plus size={12}/> Milestone</button>
+            </div>}
+          </div>
         </div>
 
-        {/* ── TWO BUDGET CARDS ── */}
-        {dd&&(
+        {/* ── TWO BUDGET CARDS (Overview only) ── */}
+        {dd&&tab==='overview'&&(
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,marginBottom:16}}>
             {/* Card 1: Allocated vs Spent */}
-            <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:14,padding:20,boxShadow:'var(--shadow-sm)'}}>
+            <div className="hover-lift" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:14,padding:20,boxShadow:'var(--shadow-sm)'}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:14}}>
                 <div><div style={{fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',color:'var(--text-muted)'}}>ALLOCATED</div><div style={{fontFamily:'var(--font-mono)',fontWeight:800,fontSize:26,color:'var(--c1)',lineHeight:1.1,marginTop:4}}>{rupee(detail.budget)}</div></div>
                 <div style={{textAlign:'right'}}><div style={{fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',color:'var(--text-muted)'}}>SPENT</div><div style={{fontFamily:'var(--font-mono)',fontWeight:800,fontSize:26,color:realPct>100?'var(--rose)':'var(--amber)',lineHeight:1.1,marginTop:4}}>{rupee(realSpent)}</div></div>
@@ -343,7 +431,7 @@ export default function ProjectsPage() {
               </div>
             </div>
             {/* Card 2: Milestone */}
-            <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:14,padding:20,boxShadow:'var(--shadow-sm)'}}>
+            <div className="hover-lift" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:14,padding:20,boxShadow:'var(--shadow-sm)'}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:14}}>
                 <div><div style={{fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',color:'var(--text-muted)'}}>MS BUDGET</div><div style={{fontFamily:'var(--font-mono)',fontWeight:800,fontSize:26,color:'#7c3aed',lineHeight:1.1,marginTop:4}}>{rupee(kpi.msBudget||0)}</div></div>
                 <div style={{textAlign:'right'}}><div style={{fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',color:'var(--text-muted)'}}>MS SPENT</div><div style={{fontFamily:'var(--font-mono)',fontWeight:800,fontSize:26,color:'var(--amber)',lineHeight:1.1,marginTop:4}}>{rupee(kpi.msSpent||0)}</div></div>
@@ -366,46 +454,102 @@ export default function ProjectsPage() {
           </div>
         )}
 
-        {/* ── 13 KPI STRIP ── */}
-        {dd&&(
-          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(115px,1fr))',gap:10,marginBottom:16}}>
-            {[
+        {/* ── TAB-SCOPED KPI STRIP ── */}
+        {dd&&(()=>{
+          const msDone=ms.filter(m=>m.status==='completed').length
+          const msDelayed=ms.filter(m=>m.status==='delayed').length
+          const msActive=ms.filter(m=>m.status==='in_progress').length
+          const expList=dd.expenses||[]
+          const expApproved=expList.filter(e=>e.status==='approved').length
+          const expPending=expList.filter(e=>!['approved','rejected','closed'].includes(e.status)).length
+          const expTotalAmt=expList.reduce((s,e)=>s+(e.total_amount||e.amount||0),0)
+          const crList=dd.changereqs||[]
+          const crDone=crList.filter(c=>['approved','implemented'].includes(c.status)).length
+          const crPending=crList.filter(c=>['draft','submitted','under_review'].includes(c.status)).length
+          const raList=dd.ra||[]
+          const raEmployees=new Set(raList.map(r=>r.employee_id||r.employee?.id)).size
+
+          const KPI_SETS={
+            overview:[
               {l:'Hours Logged',   v:`${Math.round(kpi.totalHrs||0)}h`,c:'#3b82f6'},
-              {l:'Hour Cost',      v:rupee(kpi.hrCost||0),             c:'#8b5cf6'},
-              {l:'Approved Exp.',  v:rupee(kpi.expOk||0),              c:'#e11d48'},
               {l:'Cost to Co.',    v:rupee(kpi.totalCo||0),            c:'var(--rose)'},
               {l:'Cost to Client', v:rupee(kpi.totalCl||0),            c:'var(--emerald)'},
               {l:'Proposal',       v:rupee(kpi.totalPr||0),            c:'#7c3aed'},
-              {l:'HW Cost',        v:rupee(kpi.hwCo||0),               c:'#f59e0b'},
-              {l:'SW Cost',        v:rupee(kpi.swCo||0),               c:'#7c3aed'},
-              {l:'Support',        v:rupee(kpi.spCo||0),               c:'#14b8a6'},
               {l:'Available',      v:rupee(avail),                      c:avail>0?'var(--emerald)':'var(--rose)'},
+              {l:'Utilization',    v:`${realPct}%`,                    c:realPct>100?'var(--rose)':'var(--c1)'},
+            ],
+            milestones:[
+              {l:'Total',          v:ms.length,                        c:'#6366f1'},
+              {l:'Completed',      v:msDone,                           c:'#059669'},
+              {l:'In Progress',    v:msActive,                         c:'#d97706'},
+              {l:'Delayed',        v:msDelayed,                        c:'#e11d48'},
+              {l:'MS Budget',      v:rupee(kpi.msBudget||0),           c:'#7c3aed'},
+              {l:'MS Spent',       v:rupee(kpi.msSpent||0),            c:'var(--amber)'},
+            ],
+            resources:[
+              {l:'Hours Logged',   v:`${Math.round(kpi.totalHrs||0)}h`,c:'#3b82f6'},
+              {l:'Hour Cost',      v:rupee(kpi.hrCost||0),             c:'#8b5cf6'},
+              {l:'Allocations',    v:raList.length,                    c:'#0891b2'},
+              {l:'Employees',      v:raEmployees,                      c:'#6366f1'},
+            ],
+            resourcing:[
+              {l:'Active Team',    v:(dd.allocations||[]).filter(a=>['approved','active'].includes(a.status)).length, c:'#6366f1'},
+              {l:'Requested',      v:(dd.allocations||[]).filter(a=>a.status==='requested').length, c:'#f59e0b'},
+              {l:'Wk Cost Run-Rate', v:rupee((dd.allocations||[]).filter(a=>['approved','active'].includes(a.status)).reduce((s,a)=>{const rt=(dd.rates||[]).find(x=>x.employee_id===a.employee_id);const hr=rt?(rt.hourly_rate||rt.monthly_salary/(22*8)):0;return s+(a.allocation_hours_per_week||0)*hr},0)), c:'var(--rose)'},
+            ],
+            software:[
+              {l:'SW Items',       v:(dd.sw||[]).length,               c:'#7c3aed'},
+              {l:'Cost to Co.',    v:rupee(kpi.swCo||0),               c:'var(--rose)'},
+              {l:'Cost to Client', v:rupee(kpi.swCl||0),               c:'var(--emerald)'},
+              {l:'Proposal',       v:rupee(kpi.swPr||0),               c:'#7c3aed'},
+            ],
+            hardware:[
+              {l:'HW Items',       v:(dd.hw||[]).length,               c:'#f59e0b'},
+              {l:'Cost to Co.',    v:rupee(kpi.hwCo||0),               c:'var(--rose)'},
+              {l:'Cost to Client', v:rupee(kpi.hwCl||0),               c:'var(--emerald)'},
+              {l:'Proposal',       v:rupee(kpi.hwPr||0),               c:'#7c3aed'},
+            ],
+            support:[
+              {l:'Support Items',  v:(dd.sup||[]).length,              c:'#14b8a6'},
+              {l:'Cost to Co.',    v:rupee(kpi.spCo||0),               c:'var(--rose)'},
+              {l:'Cost to Client', v:rupee(kpi.spCl||0),               c:'var(--emerald)'},
+              {l:'Proposal',       v:rupee(kpi.spPr||0),               c:'#7c3aed'},
+            ],
+            expenses:[
+              {l:'Total',          v:expList.length,                   c:'#6366f1'},
+              {l:'Approved',       v:expApproved,                      c:'#10b981'},
+              {l:'Pending',        v:expPending,                       c:'#f59e0b'},
+              {l:'Approved Amt.',  v:rupee(kpi.expOk||0),              c:'var(--rose)'},
+              {l:'Total Amt.',     v:rupee(expTotalAmt),               c:'#3b82f6'},
+            ],
+            changes:[
               {l:'CR Count',       v:kpi.crCount||0,                   c:'#f59e0b'},
-              {l:'CR Hours',       v:`${kpi.crHrs||0}h`,               c:'#f59e0b'},
+              {l:'Approved/Impl.', v:crDone,                           c:'#10b981'},
+              {l:'In Review',      v:crPending,                        c:'#3b82f6'},
+              {l:'CR Hours',       v:`${kpi.crHrs||0}h`,               c:'#8b5cf6'},
               {l:'CR Cost',        v:rupee(kpi.crCost||0),             c:'var(--rose)'},
-            ].map(s=>(
-              <div key={s.l} style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:10,borderTop:`3px solid ${s.c}`,padding:'9px 12px',boxShadow:'var(--shadow-sm)'}}>
-                <div style={{fontFamily:'var(--font-mono)',fontWeight:800,fontSize:15,color:s.c,lineHeight:1,marginBottom:3}}>{s.v}</div>
-                <div style={{fontSize:9,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase',letterSpacing:'.05em'}}>{s.l}</div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* ── TABS ── */}
-        <div style={{display:'flex',gap:5,marginBottom:18,flexWrap:'wrap'}}>
-          {tabs.map(t=>{
-            const active=tab===t.id
-            return <button key={t.id} onClick={()=>setTab(t.id)}
-              style={{display:'flex',alignItems:'center',gap:5,padding:'7px 13px',borderRadius:8,
-                border:`1.5px solid ${active?'var(--c1)':'var(--border)'}`,cursor:'pointer',
-                fontFamily:'inherit',fontWeight:active?700:500,fontSize:12,
-                background:active?'var(--c1)':'var(--surface)',
-                color:active?'#fff':'var(--text-soft)',transition:'all .15s',whiteSpace:'nowrap'}}>
-              <span>{t.e}</span>{t.l}
-            </button>
-          })}
-        </div>
+            ],
+            budget:[
+              {l:'Allocated',      v:rupee(detail.budget||0),          c:'#3b82f6'},
+              {l:'Reserved',       v:rupee(detail.reserved_budget||0), c:'#8b5cf6'},
+              {l:'Spent',          v:rupee(realSpent),                 c:realPct>100?'var(--rose)':'var(--amber)'},
+              {l:'Available',      v:rupee(avail),                      c:avail>0?'var(--emerald)':'var(--rose)'},
+              {l:'Utilization',    v:`${realPct}%`,                    c:realPct>100?'var(--rose)':'var(--c1)'},
+            ],
+            finance:[
+              {l:'People Cost',    v:rupee(dd.actualCost?.people_cost||0),   c:'#8b5cf6'},
+              {l:'Hardware Cost',  v:rupee(dd.actualCost?.hardware_cost||0), c:'#f59e0b'},
+              {l:'Total Actual',   v:rupee(dd.actualCost?.total_actual_cost||0), c:'var(--rose)'},
+              {l:'Spend vs Budget',v:dd.burnRate?.budgetAllocated>0?`${dd.burnRate.spendPct}%`:'—', c:(dd.burnRate?.willExceedBudget)?'var(--rose)':'var(--c1)'},
+            ],
+          }
+          const activeKpis=KPI_SETS[tab]||KPI_SETS.overview
+          return (
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))',gap:10,marginBottom:16}}>
+              {activeKpis.map(s=><MiniKpi key={s.l} label={s.l} value={s.v} color={s.c}/>)}
+            </div>
+          )
+        })()}
 
         {ddLoad&&<div style={{display:'flex',justifyContent:'center',padding:50}}><div className="spinner"/></div>}
 
@@ -438,13 +582,16 @@ export default function ProjectsPage() {
                   {[{cat:'⏱ HR Cost',n:`${Math.round(kpi.totalHrs||0)}h`,co:kpi.hrCost,cl:kpi.hrCost,pr:kpi.hrCost},
                     {cat:'💻 Software',n:dd.sw?.length||0,co:kpi.swCo,cl:kpi.swCl,pr:kpi.swPr},
                     {cat:'🔧 Hardware',n:dd.hw?.length||0,co:kpi.hwCo,cl:kpi.hwCl,pr:kpi.hwPr},
+                    {cat:'🛡 Warranty',n:kpi.wtyClaimCount||0,co:kpi.wtyCo,cl:null,pr:null},
                     {cat:'🛠 Support', n:dd.sup?.length||0,co:kpi.spCo,cl:kpi.spCl,pr:kpi.spPr},
                     {cat:'🧾 Expenses',n:dd.expenses?.filter(e=>e.status==='approved').length||0,co:kpi.expOk,cl:kpi.expOk,pr:kpi.expOk},
                   ].map((r,i)=>(
                     <tr key={i} onMouseEnter={e=>e.currentTarget.style.background='var(--bg-3)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
                       <TD c={<span style={{fontWeight:600}}>{r.cat}</span>}/>
                       <TD c={<span style={{color:'var(--text-muted)',fontFamily:'var(--font-mono)',fontSize:11}}>{r.n}</span>}/>
-                      <MTD v={r.co} color="#e11d48"/><MTD v={r.cl} color="#059669"/><MTD v={r.pr} color="#7c3aed"/>
+                      <MTD v={r.co} color="#e11d48"/>
+                      {r.cl===null ? <TD c={<span style={{color:'var(--text-muted)'}}>—</span>}/> : <MTD v={r.cl} color="#059669"/>}
+                      {r.pr===null ? <TD c={<span style={{color:'var(--text-muted)'}}>—</span>}/> : <MTD v={r.pr} color="#7c3aed"/>}
                     </tr>
                   ))}
                   <tr style={{background:'var(--bg-3)',borderTop:'2px solid var(--border)'}}>
@@ -467,20 +614,32 @@ export default function ProjectsPage() {
             </div>
             {ms.length===0?<Empty icon="🏁" title="No milestones" desc="Add a milestone to track project phases"/>
               :ms.map(m=>{const mc=MSC[m.status]||'#94a3b8';const mh=(kpi.msByHrs||[]).find(x=>x.id===m.id)
-                return (<div key={m.id} style={{background:'var(--surface)',border:`1px solid ${mc}25`,borderLeft:`4px solid ${mc}`,borderRadius:10,padding:'14px 18px',marginBottom:10}}>
+                const hrsPct=mh&&mh.allocated>0?Math.min(100,Math.round((mh.logged/mh.allocated)*100)):null
+                return (<div key={m.id} className="hover-lift" style={{background:'var(--surface)',border:`1px solid ${mc}25`,borderLeft:`4px solid ${mc}`,borderRadius:10,padding:'14px 18px',marginBottom:10,boxShadow:'var(--shadow-sm)'}}>
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12,flexWrap:'wrap'}}>
-                    <div style={{flex:1}}>
+                    <div style={{flex:1,minWidth:220}}>
                       <div style={{fontWeight:700,fontSize:14,marginBottom:5}}>{m.title}</div>
                       {m.description&&<div style={{fontSize:12,color:'var(--text-muted)',marginBottom:7}}>{m.description}</div>}
                       <div style={{display:'flex',gap:14,fontSize:11,color:'var(--text-muted)',flexWrap:'wrap'}}>
                         {(m.start_date||m.due_date)&&<span>📅 {dateFmt(m.start_date)||'—'} → {dateFmt(m.due_date)||'—'}</span>}
                         {m.actual_start&&<span style={{color:'var(--emerald)'}}>✓ {dateFmt(m.actual_start)}{m.actual_end?` → ${dateFmt(m.actual_end)}`:''}</span>}
                         {m.budget>0&&<span style={{color:'var(--c1)',fontFamily:'var(--font-mono)',fontWeight:700}}>{rupee(m.budget)}</span>}
-                        {mh&&<span style={{color:'#3b82f6',fontWeight:700,fontFamily:'var(--font-mono)'}}>{mh.logged.toFixed(1)}h / {mh.allocated}h alloc</span>}
                       </div>
+                      {mh&&mh.allocated>0&&(
+                        <div style={{marginTop:9,maxWidth:260}}>
+                          <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'var(--text-muted)',marginBottom:3}}>
+                            <span>Hours logged</span><span style={{fontFamily:'var(--font-mono)',fontWeight:700,color:hrsPct>100?'var(--rose)':'var(--text)'}}>{mh.logged.toFixed(1)}h / {mh.allocated}h</span>
+                          </div>
+                          <div style={{height:5,borderRadius:99,background:'var(--bg-3)',overflow:'hidden'}}>
+                            <div style={{height:'100%',width:`${hrsPct}%`,background:hrsPct>100?'var(--rose)':'#3b82f6',borderRadius:99,transition:'width .3s'}}/>
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <div style={{display:'flex',alignItems:'center',gap:7,flexShrink:0}}>
                       <Pill s={m.status} map={MSC}/>
+                      {m.billing_status&&m.billing_status!=='not_invoiced'&&<span style={{padding:'2px 8px',borderRadius:999,fontSize:10,fontWeight:700,background:'#ede9fe',color:'#6d28d9',textTransform:'capitalize'}}>{m.billing_status.replace('_',' ')}</span>}
+                      {canBill&&(!m.billing_status||m.billing_status==='not_invoiced')&&<button className="btn btn-outline btn-sm" onClick={()=>navigate(`/customer-invoices?project_id=${detail.id}&milestone_id=${m.id}`)}>💰 Bill</button>}
                       {canEdit&&<><EBtn onClick={()=>{setEditMS(m);setMsForm({title:m.title,description:m.description||'',start_date:m.start_date||'',due_date:m.due_date||'',actual_start:m.actual_start||'',actual_end:m.actual_end||'',budget:m.budget||'',status:m.status||'pending'});setShowMS(true)}}/><DBtn t="project_milestones" id={m.id}/></>}
                     </div>
                   </div>
@@ -499,7 +658,7 @@ export default function ProjectsPage() {
             <div className="table-wrap"><table>
               <thead><tr><TH c="Employee"/><TH c="Milestone"/><TH c="Alloc.Hrs"/><TH c="Idle Hrs"/><TH c="Est.Cost"/><TH c="Month"/>{canEdit&&<TH c=""/>}</tr></thead>
               <tbody>
-                {(dd?.ra||[]).length===0?<tr><td colSpan={7} style={{padding:'30px',textAlign:'center',color:'var(--text-muted)',fontSize:12}}>No allocations</td></tr>
+                {(dd?.ra||[]).length===0?<EmptyRow colSpan={7} icon="👥" text="No resource allocations yet"/>
                   :(dd?.ra||[]).map(r=>{const rt=(dd?.rates||[]).find(x=>x.employee_id===r.employee_id);const hr=rt?rt.hourly_rate||rt.monthly_salary/(22*8):0
                     return <tr key={r.id}>
                       <TD c={<div><div style={{fontWeight:600}}>{r.employee?.full_name||'—'}</div><div style={{fontSize:10,color:'var(--text-muted)',textTransform:'capitalize'}}>{r.employee?.role}</div></div>}/>
@@ -517,6 +676,36 @@ export default function ProjectsPage() {
           </div>
         )}
 
+        {/* ── RESOURCING (Phase 1 allocations table — staffing %/dates/approval; distinct from legacy Resources above) ── */}
+        {!ddLoad&&tab==='resourcing'&&(()=>{
+          const activeAllocs=(dd?.allocations||[]).filter(a=>['approved','active'].includes(a.status))
+          const ganttRows=activeAllocs.map(a=>({id:a.id,label:a.employee?.full_name||'—',segments:[{start:a.start_date,end:a.end_date,color:'#6366f1',label:`${a.allocation_percent}%${a.role_on_project?' '+a.role_on_project:''}`}]}))
+          return (
+            <div style={{display:'flex',flexDirection:'column',gap:14}}>
+              <AllocationGantt rows={ganttRows} windowStart={ganttWindow} weeks={10}
+                onShiftWindow={delta=>setGanttWindow(w=>{const n=new Date(w);n.setDate(n.getDate()+delta*7);return n})}/>
+              <div className="table-wrap"><table>
+                <thead><tr><TH c="Employee"/><TH c="Role"/><TH c="%"/><TH c="Hrs/Wk"/><TH c="Start"/><TH c="End"/><TH c="Status"/></tr></thead>
+                <tbody>
+                  {(dd?.allocations||[]).length===0?<EmptyRow colSpan={7} icon="📅" text="No allocations for this project yet — request one from the Allocations page"/>
+                    :(dd?.allocations||[]).map(a=>(
+                      <tr key={a.id}>
+                        <TD c={<div><div style={{fontWeight:600}}>{a.employee?.full_name||'—'}</div><div style={{fontSize:10,color:'var(--text-muted)',textTransform:'capitalize'}}>{a.employee?.role}</div></div>}/>
+                        <TD c={a.role_on_project||'—'}/>
+                        <TD c={<span style={{fontFamily:'var(--font-mono)',fontWeight:700,color:'var(--c1)'}}>{a.allocation_percent}%</span>}/>
+                        <TD c={<span style={{fontFamily:'var(--font-mono)'}}>{a.allocation_hours_per_week??'—'}h</span>}/>
+                        <TD c={dateFmt(a.start_date)}/>
+                        <TD c={a.end_date?dateFmt(a.end_date):'Ongoing'}/>
+                        <TD c={<StatusBadge status={a.status}/>}/>
+                      </tr>
+                    ))}
+                </tbody>
+              </table></div>
+              <div style={{fontSize:11,color:'var(--text-muted)'}}>Weekly cost run-rate reflects the current active team only — it is a snapshot, not an accumulated to-date cost.</div>
+            </div>
+          )
+        })()}
+
         {/* ── SOFTWARE ── */}
         {!ddLoad&&tab==='software'&&(
           <div>
@@ -526,7 +715,7 @@ export default function ProjectsPage() {
             </div>
             <div className="table-wrap"><table>
               <thead><tr><TH c="Name"/><TH c="Cat"/><TH c="Qty"/><TH c="Unit"/><TH c="Cost(Co.)"/><TH c="Cost(Cl.)"/><TH c="Proposal"/><TH c="Billing"/><TH c="Milestone"/>{canEdit&&<TH c=""/>}</tr></thead>
-              <tbody>{(dd?.sw||[]).length===0?<tr><td colSpan={10} style={{padding:'30px',textAlign:'center',color:'var(--text-muted)',fontSize:12}}>No software costs</td></tr>:(dd?.sw||[]).map(r=><tr key={r.id}><TD c={<span style={{fontWeight:600}}>{r.name}</span>}/><TD c={<span className="badge badge-info" style={{fontSize:10}}>{r.category}</span>}/><TD c={<span style={{fontFamily:'var(--font-mono)'}}>{r.qty||1}</span>}/><TD c={<span style={{fontFamily:'var(--font-mono)'}}>{rupee(r.unit_price||0)}</span>}/><MTD v={r.cost_company} color="#e11d48"/><MTD v={r.cost_client} color="#059669"/><MTD v={r.proposal_cost} color="#7c3aed"/><TD c={<span style={{fontSize:10,color:'var(--text-muted)'}}>{r.billing_cycle?.replace(/_/g,' ')}</span>}/><TD c={<span style={{fontSize:10,color:'var(--text-muted)'}}>{ms.find(m=>m.id===r.milestone_id)?.title||'—'}</span>}/>{canEdit&&<TD c={<div style={{display:'flex',gap:3}}><EBtn onClick={()=>{setEditSW(r);setSwForm({name:r.name,category:r.category,qty:r.qty||1,unit_price:r.unit_price||'',cost_company:r.cost_company||'',cost_client:r.cost_client||'',proposal_cost:r.proposal_cost||'',billing_cycle:r.billing_cycle||'monthly',notes:r.notes||'',milestone_id:r.milestone_id||''});setShowSW(true)}}/><DBtn t="project_software_costs" id={r.id}/></div>}/>}</tr>)}</tbody>
+              <tbody>{(dd?.sw||[]).length===0?<EmptyRow colSpan={10} icon="💻" text="No software costs recorded"/>:(dd?.sw||[]).map(r=><tr key={r.id}><TD c={<span style={{fontWeight:600}}>{r.name}</span>}/><TD c={<span className="badge badge-info" style={{fontSize:10}}>{r.category}</span>}/><TD c={<span style={{fontFamily:'var(--font-mono)'}}>{r.qty||1}</span>}/><TD c={<span style={{fontFamily:'var(--font-mono)'}}>{rupee(r.unit_price||0)}</span>}/><MTD v={r.cost_company} color="#e11d48"/><MTD v={r.cost_client} color="#059669"/><MTD v={r.proposal_cost} color="#7c3aed"/><TD c={<span style={{fontSize:10,color:'var(--text-muted)'}}>{r.billing_cycle?.replace(/_/g,' ')}</span>}/><TD c={<span style={{fontSize:10,color:'var(--text-muted)'}}>{ms.find(m=>m.id===r.milestone_id)?.title||'—'}</span>}/>{canEdit&&<TD c={<div style={{display:'flex',gap:3}}><EBtn onClick={()=>{setEditSW(r);setSwForm({name:r.name,category:r.category,qty:r.qty||1,unit_price:r.unit_price||'',cost_company:r.cost_company||'',cost_client:r.cost_client||'',proposal_cost:r.proposal_cost||'',billing_cycle:r.billing_cycle||'monthly',notes:r.notes||'',milestone_id:r.milestone_id||''});setShowSW(true)}}/><DBtn t="project_software_costs" id={r.id}/></div>}/>}</tr>)}</tbody>
             </table></div>
           </div>
         )}
@@ -540,7 +729,7 @@ export default function ProjectsPage() {
             </div>
             <div className="table-wrap"><table>
               <thead><tr><TH c="Name"/><TH c="Type"/><TH c="Qty"/><TH c="Unit"/><TH c="Total"/><TH c="Cost(Co.)"/><TH c="Cost(Cl.)"/><TH c="Proposal"/><TH c="Vendor"/>{canEdit&&<TH c=""/>}</tr></thead>
-              <tbody>{(dd?.hw||[]).length===0?<tr><td colSpan={10} style={{padding:'30px',textAlign:'center',color:'var(--text-muted)',fontSize:12}}>No hardware costs</td></tr>:(dd?.hw||[]).map(r=><tr key={r.id}><TD c={<span style={{fontWeight:600}}>{r.name}</span>}/><TD c={<span className="badge badge-warning" style={{fontSize:10}}>{r.category}</span>}/><TD c={<span style={{fontFamily:'var(--font-mono)'}}>{r.qty}</span>}/><MTD v={r.unit_price}/><MTD v={r.total_price} color="var(--amber)"/><MTD v={r.cost_company} color="#e11d48"/><MTD v={r.cost_client} color="#059669"/><MTD v={r.proposal_cost} color="#7c3aed"/><TD c={<span style={{fontSize:11,color:'var(--text-muted)'}}>{r.vendor||'—'}</span>}/>{canEdit&&<TD c={<div style={{display:'flex',gap:3}}><EBtn onClick={()=>{setEditHW(r);setHwForm({name:r.name,category:r.category,qty:r.qty||'1',unit_price:r.unit_price||'',cost_company:r.cost_company||'',cost_client:r.cost_client||'',proposal_cost:r.proposal_cost||'',vendor:r.vendor||'',notes:r.notes||'',milestone_id:r.milestone_id||''});setShowHW(true)}}/><DBtn t="project_hardware_costs" id={r.id}/></div>}/>}</tr>)}</tbody>
+              <tbody>{(dd?.hw||[]).length===0?<EmptyRow colSpan={10} icon="🔧" text="No hardware costs recorded"/>:(dd?.hw||[]).map(r=><tr key={r.id}><TD c={<span style={{fontWeight:600}}>{r.name}</span>}/><TD c={<span className="badge badge-warning" style={{fontSize:10}}>{r.category}</span>}/><TD c={<span style={{fontFamily:'var(--font-mono)'}}>{r.qty}</span>}/><MTD v={r.unit_price}/><MTD v={r.total_price} color="var(--amber)"/><MTD v={r.cost_company} color="#e11d48"/><MTD v={r.cost_client} color="#059669"/><MTD v={r.proposal_cost} color="#7c3aed"/><TD c={<span style={{fontSize:11,color:'var(--text-muted)'}}>{r.vendor||'—'}</span>}/>{canEdit&&<TD c={<div style={{display:'flex',gap:3}}><EBtn onClick={()=>{setEditHW(r);setHwForm({name:r.name,category:r.category,qty:r.qty||'1',unit_price:r.unit_price||'',cost_company:r.cost_company||'',cost_client:r.cost_client||'',proposal_cost:r.proposal_cost||'',vendor:r.vendor||'',notes:r.notes||'',milestone_id:r.milestone_id||''});setShowHW(true)}}/><DBtn t="project_hardware_costs" id={r.id}/></div>}/>}</tr>)}</tbody>
             </table></div>
           </div>
         )}
@@ -554,7 +743,7 @@ export default function ProjectsPage() {
             </div>
             <div className="table-wrap"><table>
               <thead><tr><TH c="Name"/><TH c="Category"/><TH c="Cost(Co.)"/><TH c="Cost(Cl.)"/><TH c="Proposal"/><TH c="Date"/><TH c="Milestone"/>{canEdit&&<TH c=""/>}</tr></thead>
-              <tbody>{(dd?.sup||[]).length===0?<tr><td colSpan={8} style={{padding:'30px',textAlign:'center',color:'var(--text-muted)',fontSize:12}}>No support costs</td></tr>:(dd?.sup||[]).map(r=><tr key={r.id}><TD c={<span style={{fontWeight:600}}>{r.name}</span>}/><TD c={<span className="badge badge-teal" style={{fontSize:10}}>{r.category?.replace(/_/g,' ')}</span>}/><MTD v={r.cost_company} color="#e11d48"/><MTD v={r.cost_client} color="#059669"/><MTD v={r.proposal_cost} color="#7c3aed"/><TD c={<span style={{fontSize:11,color:'var(--text-muted)'}}>{dateFmt(r.date)}</span>}/><TD c={<span style={{fontSize:11,color:'var(--text-muted)'}}>{ms.find(m=>m.id===r.milestone_id)?.title||'—'}</span>}/>{canEdit&&<TD c={<div style={{display:'flex',gap:3}}><EBtn onClick={()=>{setEditSup(r);setSupForm({name:r.name,category:r.category,cost_company:r.cost_company||'',cost_client:r.cost_client||'',proposal_cost:r.proposal_cost||'',date:r.date||'',notes:r.notes||'',milestone_id:r.milestone_id||''});setShowSup(true)}}/><DBtn t="project_support_costs" id={r.id}/></div>}/>}</tr>)}</tbody>
+              <tbody>{(dd?.sup||[]).length===0?<EmptyRow colSpan={8} icon="🛠" text="No support costs recorded"/>:(dd?.sup||[]).map(r=><tr key={r.id}><TD c={<span style={{fontWeight:600}}>{r.name}</span>}/><TD c={<span className="badge badge-teal" style={{fontSize:10}}>{r.category?.replace(/_/g,' ')}</span>}/><MTD v={r.cost_company} color="#e11d48"/><MTD v={r.cost_client} color="#059669"/><MTD v={r.proposal_cost} color="#7c3aed"/><TD c={<span style={{fontSize:11,color:'var(--text-muted)'}}>{dateFmt(r.date)}</span>}/><TD c={<span style={{fontSize:11,color:'var(--text-muted)'}}>{ms.find(m=>m.id===r.milestone_id)?.title||'—'}</span>}/>{canEdit&&<TD c={<div style={{display:'flex',gap:3}}><EBtn onClick={()=>{setEditSup(r);setSupForm({name:r.name,category:r.category,cost_company:r.cost_company||'',cost_client:r.cost_client||'',proposal_cost:r.proposal_cost||'',date:r.date||'',notes:r.notes||'',milestone_id:r.milestone_id||''});setShowSup(true)}}/><DBtn t="project_support_costs" id={r.id}/></div>}/>}</tr>)}</tbody>
             </table></div>
           </div>
         )}
@@ -563,7 +752,7 @@ export default function ProjectsPage() {
         {!ddLoad&&tab==='expenses'&&(
           <div className="table-wrap"><table>
             <thead><tr><TH c="Requester"/><TH c="Category"/><TH c="Amount"/><TH c="Status"/><TH c="Date"/></tr></thead>
-            <tbody>{(dd?.expenses||[]).length===0?<tr><td colSpan={5} style={{padding:'30px',textAlign:'center',color:'var(--text-muted)',fontSize:12}}>No linked expenses</td></tr>:(dd?.expenses||[]).map((e,i)=><tr key={i}><TD c={<span style={{fontWeight:600}}>{e.requester?.full_name||'—'}</span>}/><TD c={<span className="badge badge-info">{e.category}</span>}/><MTD v={e.total_amount||e.amount} color="var(--c1)"/><TD c={<span style={{padding:'2px 8px',borderRadius:4,fontSize:10,fontWeight:700,textTransform:'uppercase',background:e.status==='approved'?'#dcfce7':e.status==='rejected'?'#fee2e2':'#fef3c7',color:e.status==='approved'?'#15803d':e.status==='rejected'?'#b91c1c':'#92400e'}}>{e.status}</span>}/><TD c={<span style={{fontSize:12,color:'var(--text-muted)'}}>{dateFmt(e.expense_date)}</span>}/></tr>)}</tbody>
+            <tbody>{(dd?.expenses||[]).length===0?<EmptyRow colSpan={5} icon="🧾" text="No linked expenses"/>:(dd?.expenses||[]).map((e,i)=><tr key={i}><TD c={<span style={{fontWeight:600}}>{e.requester?.full_name||'—'}</span>}/><TD c={<span className="badge badge-info">{e.category}</span>}/><MTD v={e.total_amount||e.amount} color="var(--c1)"/><TD c={<span style={{padding:'2px 8px',borderRadius:4,fontSize:10,fontWeight:700,textTransform:'uppercase',background:e.status==='approved'?'#dcfce7':e.status==='rejected'?'#fee2e2':'#fef3c7',color:e.status==='approved'?'#15803d':e.status==='rejected'?'#b91c1c':'#92400e'}}>{e.status}</span>}/><TD c={<span style={{fontSize:12,color:'var(--text-muted)'}}>{dateFmt(e.expense_date)}</span>}/></tr>)}</tbody>
           </table></div>
         )}
 
@@ -572,13 +761,10 @@ export default function ProjectsPage() {
           <div>
             {/* CR KPI strip */}
             {(()=>{const crs=dd.changereqs||[];const crApp=crs.filter(r=>['approved','implemented'].includes(r.status)).length;const crHrs=crs.reduce((s,r)=>s+(r.actual_hours||0),0);const crCost=crs.reduce((s,r)=>s+(r.actual_cost||0),0)
-              return <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(120px,1fr))',gap:10,marginBottom:16}}>
-                {[{l:'Total CRs',v:crs.length,c:'#f59e0b'},{l:'Approved',v:crApp,c:'var(--emerald)'},{l:'Pending',v:crs.filter(r=>['draft','submitted','under_review'].includes(r.status)).length,c:'var(--amber)'},{l:'Rejected',v:crs.filter(r=>r.status==='rejected').length,c:'var(--rose)'},{l:'CR Hours',v:`${crHrs}h`,c:'#8b5cf6'},{l:'CR Cost',v:rupee(crCost),c:'var(--rose)'}].map(s=>(
-                  <div key={s.l} style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:10,borderTop:`3px solid ${s.c}`,padding:'9px 12px'}}>
-                    <div style={{fontFamily:'var(--font-mono)',fontWeight:800,fontSize:15,color:s.c,lineHeight:1,marginBottom:3}}>{s.v}</div>
-                    <div style={{fontSize:9,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase',letterSpacing:'.05em'}}>{s.l}</div>
-                  </div>
-                ))}
+              return <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:10,marginBottom:16}}>
+                {[{l:'Total CRs',v:crs.length,c:'#f59e0b'},{l:'Approved',v:crApp,c:'var(--emerald)'},{l:'Pending',v:crs.filter(r=>['draft','submitted','under_review'].includes(r.status)).length,c:'var(--amber)'},{l:'Rejected',v:crs.filter(r=>r.status==='rejected').length,c:'var(--rose)'},{l:'CR Hours',v:`${crHrs}h`,c:'#8b5cf6'},{l:'CR Cost',v:rupee(crCost),c:'var(--rose)'}].map(s=>
+                  <MiniKpi key={s.l} label={s.l} value={s.v} color={s.c}/>
+                )}
               </div>
             })()}
             <div style={{display:'flex',justifyContent:'flex-end',marginBottom:12}}>
@@ -586,7 +772,7 @@ export default function ProjectsPage() {
             </div>
             <div className="table-wrap"><table>
               <thead><tr><TH c="CR ID"/><TH c="Title"/><TH c="Priority"/><TH c="Status"/><TH c="Est.Hrs"/><TH c="Act.Hrs"/><TH c="Est.Cost"/><TH c="Act.Cost"/><TH c="By"/>{canEdit&&<TH c=""/>}</tr></thead>
-              <tbody>{(dd?.changereqs||[]).length===0?<tr><td colSpan={10} style={{padding:'30px',textAlign:'center',color:'var(--text-muted)',fontSize:12}}>No change requests yet</td></tr>:(dd?.changereqs||[]).map(r=>{
+              <tbody>{(dd?.changereqs||[]).length===0?<EmptyRow colSpan={10} icon="🔄" text="No change requests yet"/>:(dd?.changereqs||[]).map(r=>{
                 const stclr={draft:'#64748b',submitted:'#3b82f6',under_review:'#f59e0b',approved:'#10b981',rejected:'#e11d48',implemented:'#8b5cf6'}[r.status]||'#64748b'
                 return <tr key={r.id}>
                   <TD c={<span style={{fontFamily:'var(--font-mono)',fontSize:11,color:'#f59e0b',fontWeight:700}}>{r.cr_id||'—'}</span>}/>
@@ -607,6 +793,112 @@ export default function ProjectsPage() {
 
         {/* ── BUDGET CONFIG ── */}
         {!ddLoad&&tab==='budget'&&<BudgetPanel detail={detail} kpi={kpi} dd={dd}/>}
+
+        {/* ── FINANCE (Actual Cost rollup + Burn Rate) ── */}
+        {!ddLoad&&tab==='finance'&&(()=>{
+          const ac = dd.actualCost, br = dd.burnRate
+          const openInvoices = (dd.invoices||[]).filter(i=>!['paid','rejected'].includes(i.status))
+          return (
+            <div style={{display:'flex',flexDirection:'column',gap:16}}>
+              <div style={{display:'flex',justifyContent:'flex-end'}}>
+                <button className="btn btn-outline btn-sm" disabled={financeLoading} onClick={()=>loadFinance(detail.id,true)}>
+                  <RefreshCw size={13} style={{marginRight:5}}/> {financeLoading?'Recomputing…':'Recompute Now'}
+                </button>
+              </div>
+
+              <div className="card">
+                <div className="card-header"><span className="card-title">💰 Budget vs Actual</span></div>
+                <div className="card-body">
+                  {!ac ? <div style={{textAlign:'center',padding:'20px 0',color:'var(--text-muted)',fontSize:12}}>{financeLoading?'Computing…':'No data yet — click Recompute Now'}</div> : (
+                    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:14}}>
+                      <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase'}}>Budget Allocated</div><div style={{fontSize:20,fontWeight:800,color:'#3b82f6'}}>{rupee(br?.budgetAllocated||0)}</div></div>
+                      <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase'}}>People Cost</div><div style={{fontSize:20,fontWeight:800,color:'#8b5cf6'}}>{rupee(ac.people_cost)}</div></div>
+                      <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase'}}>Hardware Cost</div><div style={{fontSize:20,fontWeight:800,color:'#f59e0b'}}>{rupee(ac.hardware_cost)}</div></div>
+                      <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase'}}>Warranty Cost</div><div style={{fontSize:20,fontWeight:800,color:'#e11d48'}}>{rupee(ac.warranty_cost)}</div></div>
+                      <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase'}}>Total Actual Cost</div><div style={{fontSize:20,fontWeight:800,color:'var(--rose)'}}>{rupee(ac.total_actual_cost)}</div></div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {br && br.elapsedPct!=null && (
+                <div className="card">
+                  <div className="card-header"><span className="card-title">🔥 Burn Rate</span></div>
+                  <div className="card-body">
+                    <div style={{display:'flex',gap:24,flexWrap:'wrap',marginBottom:12}}>
+                      <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase'}}>Time Elapsed</div><div style={{fontSize:18,fontWeight:800}}>{br.elapsedPct}%</div></div>
+                      <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase'}}>Budget Spent</div><div style={{fontSize:18,fontWeight:800,color:br.willExceedBudget?'var(--rose)':'inherit'}}>{br.spendPct}%</div></div>
+                      <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase'}}>Daily Burn</div><div style={{fontSize:18,fontWeight:800}}>{rupee(br.dailyBurnRate)}/day</div></div>
+                      <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase'}}>Projected Exhaustion</div><div style={{fontSize:14,fontWeight:700}}>{br.projectedExhaustionDate?dateFmt(br.projectedExhaustionDate):'—'}</div></div>
+                    </div>
+                    {br.willExceedBudget && <div style={{display:'flex',alignItems:'center',gap:6,padding:'8px 12px',borderRadius:8,background:'#fef2f2',color:'#dc2626',fontSize:12,fontWeight:600,marginBottom:6}}><AlertTriangle size={14}/> Spending faster than the project timeline pace — over-burning risk.</div>}
+                    {br.willExceedTimeline && <div style={{display:'flex',alignItems:'center',gap:6,padding:'8px 12px',borderRadius:8,background:'#fef2f2',color:'#dc2626',fontSize:12,fontWeight:600}}><TrendingDown size={14}/> Projected to exhaust budget before the project's scheduled end date.</div>}
+                  </div>
+                </div>
+              )}
+
+              {MARGIN_VISIBLE_ROLES.includes(role) && dd.margin && (
+                <div className="card">
+                  <div className="card-header"><span className="card-title"><Percent size={14} style={{verticalAlign:'-2px',marginRight:4}}/> Profit Margin</span></div>
+                  <div className="card-body">
+                    <div style={{display:'flex',gap:24,flexWrap:'wrap'}}>
+                      <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase'}}>Revenue Recognized</div><div style={{fontSize:18,fontWeight:800,color:'#3b82f6'}}>{rupee(dd.margin.revenue_recognized)}</div></div>
+                      <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase'}}>Gross Margin</div><div style={{fontSize:18,fontWeight:800,color:dd.margin.gross_margin>=0?'var(--emerald)':'var(--rose)'}}>{rupee(dd.margin.gross_margin)}</div></div>
+                      <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase'}}>Margin %</div><div style={{fontSize:18,fontWeight:800,color:dd.margin.margin_percent>=0?'var(--emerald)':'var(--rose)'}}>{dd.margin.margin_percent}%</div></div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="card">
+                <div className="card-header"><span className="card-title">🧾 Open Invoices</span></div>
+                <div className="card-body">
+                  {openInvoices.length===0 ? <div style={{textAlign:'center',padding:'16px 0',color:'var(--text-muted)',fontSize:12}}>No open vendor invoices</div> : (
+                    <div className="table-wrap"><table>
+                      <thead><tr><TH c="Invoice #"/><TH c="Vendor"/><TH c="Amount"/><TH c="Due"/><TH c="Status"/></tr></thead>
+                      <tbody>{openInvoices.map(i=>(
+                        <tr key={i.id}>
+                          <TD c={<span style={{fontFamily:'var(--font-mono)',fontWeight:700,color:'var(--c1)'}}>{i.invoice_number}</span>}/>
+                          <TD c={i.vendor?.name||i.vendor_name||'—'}/>
+                          <TD c={<span style={{fontWeight:700}}>{rupee(i.total_amount)}</span>}/>
+                          <TD c={dateFmt(i.due_date)}/>
+                          <TD c={<StatusBadge status={i.status}/>}/>
+                        </tr>
+                      ))}</tbody>
+                    </table></div>
+                  )}
+                </div>
+              </div>
+
+              {/* Project-scoped mirror of the enterprise Spend Analyzer — same
+                  findings engine (src/lib/spendAnalyzer.js), filtered to this
+                  project, so a PM sees "where does MY project stand" without
+                  needing access to the company-wide page. */}
+              {['admin','ceo','finance','manager','department_head'].includes(role) && (
+                <div className="card">
+                  <div className="card-header"><span className="card-title"><Radar size={14} style={{verticalAlign:'-2px',marginRight:4}}/> Company Context</span></div>
+                  <div className="card-body">
+                    {!companyContext ? (
+                      <div style={{textAlign:'center',padding:'16px 0',color:'var(--text-muted)',fontSize:12}}>Loading…</div>
+                    ) : companyContext.findings.length===0 ? (
+                      <div style={{textAlign:'center',padding:'16px 0',color:'var(--text-muted)',fontSize:12}}>No open enterprise-level findings flag this project</div>
+                    ) : (
+                      <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:10}}>
+                        {companyContext.findings.map(f=>(
+                          <div key={f.id} style={{padding:'8px 12px',borderRadius:8,background:'var(--surface-2)',border:'1px solid var(--border)'}}>
+                            <div style={{fontSize:12,fontWeight:700,marginBottom:2}}>{f.title}</div>
+                            <div style={{fontSize:11,color:'var(--text-muted)'}}>{f.description}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <Link to="/spend-analyzer?view=benchmark" style={{fontSize:12,fontWeight:700,color:'var(--c1)',textDecoration:'none'}}>See how this project's type benchmarks company-wide →</Link>
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })()}
 
         {/* ════ ALL MODALS ════ */}
         {/* Milestone */}
@@ -661,7 +953,7 @@ export default function ProjectsPage() {
         {/* Project edit */}
         <Modal open={showPM} onClose={()=>setShowPM(false)} title={editP?'Edit Project':'New Project'}
           footer={<><button className="btn btn-ghost" onClick={()=>setShowPM(false)}>Cancel</button><button className="btn btn-primary" onClick={saveProject} disabled={subP}>{subP?'Saving…':editP?'Update':'Create'}</button></>}>
-          <ProjForm form={pForm} setForm={setPForm}/>
+          <ProjForm form={pForm} setForm={setPForm} customers={customers} departments={departments}/>
         </Modal>
         <Confirm open={!!delItem} message="Delete this item permanently?" danger
           onConfirm={async()=>{if(!delItem)return;await supabase.from(delItem.table).delete().eq('id',delItem.id);setDelItem(null);openDetail(detail)}}
@@ -679,9 +971,9 @@ export default function ProjectsPage() {
         {canEdit&&<button className="btn btn-primary" onClick={()=>{setEditP(null);setPForm(iP());setShowPM(true)}}><Plus size={14}/> New Project</button>}
       </div>
       {/* Stats */}
-      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:10,marginBottom:20}}>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:10,marginBottom:20}}>
         {[{l:'Total',v:filtered.length,c:'var(--c1)',sub:`${projects.length} projects`},{l:'Active',v:projects.filter(p=>p.status==='active').length,c:'var(--emerald)',sub:'running'},{l:'Total Budget',v:rupee(filtered.reduce((s,p)=>s+(p.budget||0),0)),c:'var(--sky)',sub:'allocated'},{l:'On Hold',v:projects.filter(p=>p.status==='on_hold').length,c:'#f59e0b',sub:'paused'},{l:'Completed',v:projects.filter(p=>p.status==='completed').length,c:'#3b82f6',sub:'done'},{l:'Over Budget',v:projects.filter(p=>p.budget>0&&(p.spent||0)>p.budget).length,c:'var(--rose)',sub:'exceeded'}].map(s=>(
-          <div key={s.l} className="stat-card" style={{borderTopColor:s.c}}><div className="stat-value" style={{color:s.c,fontSize:20}}>{s.v}</div><div className="stat-label">{s.l}</div><div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>{s.sub}</div></div>
+          <div key={s.l} className="stat-card" style={{borderTopColor:s.c}}><div className="stat-value" style={{color:s.c}}>{s.v}</div><div className="stat-label">{s.l}</div><div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>{s.sub}</div></div>
         ))}
       </div>
       {/* Filters */}
@@ -699,7 +991,7 @@ export default function ProjectsPage() {
       </div>
       {/* Project cards */}
       {filtered.length===0?<Empty icon="📁" title="No projects" desc={search||statusF?'No matches':'Create your first project'}/>
-        :<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',gap:16}}>
+        :<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))',gap:16}}>
           {filtered.map((p,idx)=>{
             const color=CCLR[idx%CCLR.length],pct=p.budget>0?Math.min(100,Math.round(((p.spent||0)/p.budget)*100)):0,over=p.budget>0&&(p.spent||0)>p.budget,avail2=Math.max(0,(p.budget||0)-(p.reserved_budget||0)-(p.spent||0))
             return (
@@ -751,7 +1043,7 @@ export default function ProjectsPage() {
       {/* Modals */}
       <Modal open={showPM} onClose={()=>setShowPM(false)} title={editP?'Edit Project':'New Project'}
         footer={<><button className="btn btn-ghost" onClick={()=>setShowPM(false)}>Cancel</button><button className="btn btn-primary" onClick={saveProject} disabled={subP}>{subP?'Saving…':editP?'Update':'Create Project'}</button></>}>
-        <ProjForm form={pForm} setForm={setPForm}/>
+        <ProjForm form={pForm} setForm={setPForm} customers={customers} departments={departments}/>
       </Modal>
       <Confirm open={!!delP} message="Delete this project and all linked milestones, costs and tasks? Expenses and timelogs will be retained." danger
         onConfirm={async()=>{try{const{error}=await supabase.from('projects').delete().eq('id',delP);if(error)throw error;setDelP(null);loadList()}catch(e){setDelP(null);alert('Delete failed: '+e.message+'\n\nRun STEP19-task-fixes.sql in Supabase SQL Editor.')}}}

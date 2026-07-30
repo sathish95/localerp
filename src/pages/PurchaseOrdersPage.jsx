@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { getPOItems } from '../lib/purchaseOrders'
+import { createAndReceiveGRN, getReceivedQtyByPOItem } from '../lib/grn'
 import { StatusBadge, SearchBox, Empty, Modal, Loader } from '../components/ui'
-import { ShoppingCart, Eye, Building2, Calendar, Package, TrendingUp, Clock, CheckCircle, X } from 'lucide-react'
+import { ShoppingCart, Eye, Building2, Calendar, Package, TrendingUp, Clock, CheckCircle, X, ClipboardCheck, Send } from 'lucide-react'
 
 const rupee = v => v != null ? '₹' + Number(v).toLocaleString('en-IN') : '—'
 const fmt = d => d ? new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
@@ -17,11 +19,24 @@ const STATUS_META = {
 }
 
 export default function PurchaseOrdersPage() {
+  const { profile } = useAuth()
+  const role = profile?.role || 'employee'
+  const canCreateGRN = ['admin', 'ceo', 'manager', 'department_head', 'finance', 'procurement_lead'].includes(role)
+
   const [pos, setPOs] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [selected, setSelected] = useState(null)
+  const [selectedItems, setSelectedItems] = useState([])
+
+  const [showCreateGRN, setShowCreateGRN] = useState(null)
+  const [grnItems, setGrnItems] = useState([])
+  const [grnDate, setGrnDate] = useState('')
+  const [grnRemarks, setGrnRemarks] = useState('')
+  const [grnSubmitting, setGrnSubmitting] = useState(false)
+  const [grnErr, setGrnErr] = useState('')
+  const [markingSent, setMarkingSent] = useState(false)
 
   useEffect(() => { load() }, [])
 
@@ -45,6 +60,50 @@ export default function PurchaseOrdersPage() {
   const totalValue = pos.reduce((s, p) => s + (p.total_amount || 0), 0)
   const counts = Object.fromEntries(Object.keys(STATUS_META).map(k => [k, pos.filter(p => p.status === k).length]))
 
+  async function openDetail(po) {
+    setSelected(po)
+    setSelectedItems(await getPOItems(po.id))
+  }
+
+  function openCreateGRN(po) {
+    setShowCreateGRN(po)
+    setGrnErr(''); setGrnRemarks(''); setGrnDate(new Date().toISOString().slice(0, 10))
+    Promise.all([getPOItems(po.id), getReceivedQtyByPOItem(po.id)]).then(([items, received]) => {
+      setGrnItems(items.map(i => {
+        const alreadyReceived = received[i.id] || 0
+        const outstanding = Math.max(0, Number(i.quantity) - alreadyReceived)
+        return {
+          po_item_id: i.id, part_number: i.part_number, description: i.description,
+          quantity_ordered: i.quantity, quantity_received: outstanding, unit_cost: i.unit_cost,
+          already_received: alreadyReceived,
+        }
+      }))
+    })
+  }
+
+  function updateGrnQty(idx, qty) {
+    setGrnItems(prev => prev.map((it, i) => i === idx ? { ...it, quantity_received: qty } : it))
+  }
+
+  async function markSent(po) {
+    setMarkingSent(true)
+    try {
+      await supabase.from('purchase_orders').update({ status: 'sent' }).eq('id', po.id)
+      await load()
+      setSelected(sel => sel?.id === po.id ? { ...sel, status: 'sent' } : sel)
+    } finally { setMarkingSent(false) }
+  }
+
+  async function handleReceiveGRN() {
+    setGrnSubmitting(true); setGrnErr('')
+    try {
+      await createAndReceiveGRN({ poId: showCreateGRN.id, receivedDate: grnDate, items: grnItems, remarks: grnRemarks, userId: profile.id })
+      setShowCreateGRN(null)
+      if (selected?.id === showCreateGRN.id) openDetail(selected)
+    } catch (e) { setGrnErr(e.message) }
+    finally { setGrnSubmitting(false) }
+  }
+
   if (loading) return <Loader />
 
   return (
@@ -58,7 +117,7 @@ export default function PurchaseOrdersPage() {
       </div>
 
       {/* KPI Strip */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
         {[
           { label: 'Total POs', value: pos.length, icon: <ShoppingCart size={18} />, color: '#6366f1' },
           { label: 'Total Value', value: rupee(totalValue), icon: <TrendingUp size={18} />, color: '#0891b2' },
@@ -140,9 +199,21 @@ export default function PurchaseOrdersPage() {
                       </span>
                     </td>
                     <td>
-                      <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setSelected(po)} title="View details">
-                        <Eye size={14} />
-                      </button>
+                      <div style={{ display: 'flex', gap: 5 }}>
+                        <button className="btn btn-ghost btn-sm btn-icon" onClick={() => openDetail(po)} title="View details">
+                          <Eye size={14} />
+                        </button>
+                        {canCreateGRN && po.status === 'draft' && (
+                          <button className="btn btn-ghost btn-sm btn-icon" onClick={() => markSent(po)} disabled={markingSent} title="Mark as Sent to vendor">
+                            <Send size={14} />
+                          </button>
+                        )}
+                        {canCreateGRN && !['closed', 'cancelled'].includes(po.status) && (
+                          <button className="btn btn-ghost btn-sm btn-icon" onClick={() => openCreateGRN(po)} title="Create GRN">
+                            <ClipboardCheck size={14} />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 )
@@ -155,7 +226,15 @@ export default function PurchaseOrdersPage() {
       {/* Detail Modal */}
       {selected && (
         <Modal open title={`Purchase Order — ${selected.po_number}`} onClose={() => setSelected(null)} size="lg"
-          footer={<button className="btn btn-ghost" onClick={() => setSelected(null)}>Close</button>}>
+          footer={<>
+            {canCreateGRN && selected.status === 'draft' && (
+              <button className="btn btn-outline btn-sm" onClick={() => markSent(selected)} disabled={markingSent}><Send size={13} /> Mark as Sent</button>
+            )}
+            {canCreateGRN && !['closed', 'cancelled'].includes(selected.status) && (
+              <button className="btn btn-primary btn-sm" onClick={() => { openCreateGRN(selected) }}><ClipboardCheck size={13} /> Create GRN</button>
+            )}
+            <button className="btn btn-ghost" onClick={() => setSelected(null)}>Close</button>
+          </>}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24, paddingBottom: 16, borderBottom: '1px solid #f1f5f9' }}>
             <div>
               <div style={{ fontFamily: 'monospace', fontSize: 22, fontWeight: 800, color: '#6366f1' }}>{selected.po_number}</div>
@@ -178,7 +257,7 @@ export default function PurchaseOrdersPage() {
               ['GST Amount', rupee(selected.gst_amount)],
             ].map(([k, v]) => (
               <div key={k} style={{ padding: '10px 14px', borderRadius: 10, background: '#f8fafc', border: '1px solid #f1f5f9' }}>
-                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: '#94a3b8', marginBottom: 3 }}>{k}</div>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', color: '#94a3b8', marginBottom: 3 }}>{k}</div>
                 <div style={{ fontWeight: 600, fontSize: 14 }}>{v || '—'}</div>
               </div>
             ))}
@@ -186,21 +265,79 @@ export default function PurchaseOrdersPage() {
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#6366f1', marginBottom: 4 }}>Total Amount</div>
               <div style={{ fontSize: 26, fontWeight: 800, color: '#6366f1' }}>{rupee(selected.total_amount)}</div>
             </div>
+            {selectedItems.length > 0 && (
+              <div style={{ gridColumn: '1/-1' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#94a3b8', marginBottom: 8 }}>Line Items</div>
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>Part #</th><th>Description</th><th>Qty</th><th>Unit Cost</th><th>Line Total</th></tr></thead>
+                    <tbody>{selectedItems.map(li => (
+                      <tr key={li.id}>
+                        <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{li.part_number || '—'}</td>
+                        <td>{li.description}</td><td>{li.quantity}</td><td>{rupee(li.unit_cost)}</td>
+                        <td style={{ fontWeight: 700 }}>{rupee(li.line_total)}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              </div>
+            )}
             {selected.terms && (
               <div style={{ gridColumn: '1/-1', padding: '10px 14px', borderRadius: 10, background: '#f8fafc' }}>
-                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: '#94a3b8', marginBottom: 3 }}>Terms</div>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#94a3b8', marginBottom: 3 }}>Terms</div>
                 <div style={{ fontSize: 13 }}>{selected.terms}</div>
               </div>
             )}
             {selected.notes && (
               <div style={{ gridColumn: '1/-1', padding: '10px 14px', borderRadius: 10, background: '#f8fafc' }}>
-                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: '#94a3b8', marginBottom: 3 }}>Notes</div>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#94a3b8', marginBottom: 3 }}>Notes</div>
                 <div style={{ fontSize: 13 }}>{selected.notes}</div>
               </div>
             )}
           </div>
         </Modal>
       )}
+
+      {/* Create GRN Modal */}
+      <Modal open={!!showCreateGRN} onClose={() => setShowCreateGRN(null)} title={showCreateGRN ? `Create GRN — ${showCreateGRN.po_number}` : ''} size="lg"
+        footer={<>
+          <button className="btn btn-ghost" onClick={() => setShowCreateGRN(null)}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleReceiveGRN} disabled={grnSubmitting || !grnItems.length}>{grnSubmitting ? 'Receiving…' : 'Receive GRN'}</button>
+        </>}>
+        {showCreateGRN && (
+          <div>
+            {grnErr && <div className="alert alert-danger" style={{ marginBottom: 12 }}>{grnErr}</div>}
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Received Date</label>
+                <input className="form-input" type="date" value={grnDate} onChange={e => setGrnDate(e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Remarks</label>
+                <input className="form-input" value={grnRemarks} onChange={e => setGrnRemarks(e.target.value)} placeholder="Optional" />
+              </div>
+            </div>
+            <div className="table-wrap" style={{ marginBottom: 8 }}>
+              <table>
+                <thead><tr><th>Part #</th><th>Description</th><th>Ordered</th><th>Already Received</th><th>Receiving Now</th><th>Unit Cost</th></tr></thead>
+                <tbody>
+                  {grnItems.map((it, i) => (
+                    <tr key={i}>
+                      <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{it.part_number || '—'}</td>
+                      <td>{it.description}</td>
+                      <td>{it.quantity_ordered}</td>
+                      <td style={{ color: '#64748b' }}>{it.already_received || 0}</td>
+                      <td><input className="form-input" style={{ width: 90 }} type="number" min="0" step="0.01" value={it.quantity_received} onChange={e => updateGrnQty(i, e.target.value)} /></td>
+                      <td>{rupee(it.unit_cost)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ fontSize: 11, color: '#94a3b8' }}>Receiving less than ordered marks the GRN "Partial" — raise another GRN against this PO later for the remainder. Non-serialized parts post straight into Inventory; serialized parts still need their units registered in Devices.</div>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

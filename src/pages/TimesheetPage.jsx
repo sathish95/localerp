@@ -181,7 +181,7 @@ export default function TimesheetPage() {
 
       {/* User summary cards (manager view) */}
       {isMgr && Object.keys(byUser).length > 0 && (
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))', gap:12, marginBottom:20 }}>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))', gap:12, marginBottom:20 }}>
           {Object.entries(byUser).map(([uid, u])=>{
             const pay = calcPay(uid)
             const rate = getRate(uid)
@@ -199,11 +199,11 @@ export default function TimesheetPage() {
                 <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
                   <div style={{ padding:'8px', borderRadius:8, background:'#f8fafc' }}>
                     <div style={{ fontSize:10, color:'#94a3b8', fontWeight:600 }}>Hours</div>
-                    <div style={{ fontSize:18, fontWeight:800, color:'#6366f1' }}>{u.hours.toFixed(1)}h</div>
+                    <div style={{ fontSize:16, fontWeight:800, color:'#6366f1' }}>{u.hours.toFixed(1)}h</div>
                   </div>
                   <div style={{ padding:'8px', borderRadius:8, background:'#f8fafc' }}>
                     <div style={{ fontSize:10, color:'#94a3b8', fontWeight:600 }}>Days</div>
-                    <div style={{ fontSize:18, fontWeight:800, color:'#10b981' }}>{u.days.size}</div>
+                    <div style={{ fontSize:16, fontWeight:800, color:'#10b981' }}>{u.days.size}</div>
                   </div>
                 </div>
                 {pay ? (

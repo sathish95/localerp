@@ -1,30 +1,36 @@
 import { useState, useEffect } from 'react'
 import CheckInWidget from '../CheckInWidget'
 import NotificationBell from '../NotificationBell'
+import AskBubble from '../AskBubble'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { useTabVisibility } from '../../context/TabVisibilityContext'
 import { supabase } from '../../lib/supabase'
 import {
   LayoutDashboard, Receipt, Users, FolderOpen, PieChart, Box, CheckSquare,
-  FileText, TrendingUp, Settings, LogOut, Menu, X, ChevronLeft,
+  FileText, TrendingUp, Settings, LogOut, Menu, X, ChevronLeft, ChevronDown, ChevronRight,
   Truck, Plane, ShoppingCart, Briefcase, CreditCard, Building2, Package, BarChart2,
   Calendar, Clock, FileSpreadsheet, Megaphone, ClipboardList, FileClock,
-  MessageSquare, Activity, Sparkles
+  MessageSquare, Activity, Sparkles, Cpu, GraduationCap, CalendarRange, Gauge,
+  DollarSign, FileCheck, Wallet, History, Percent, Radar, ShieldCheck, Coins, BookOpen, Boxes, Warehouse,
+  Target, Award, UserCheck, Scale, LineChart
 } from 'lucide-react'
 
 const roleColor = {
   admin: '#7c3aed', ceo: '#dc2626', manager: '#0284c7',
-  finance: '#16a34a', employee: '#d97706', department_head: '#0284c7'
+  finance: '#16a34a', employee: '#d97706', department_head: '#0284c7',
+  procurement_lead: '#0891b2', pm: '#7c3aed', cto: '#be123c',
 }
 const roleLabel = {
   admin: 'Administrator', ceo: 'Chief Executive', manager: 'Manager',
-  finance: 'Finance', employee: 'Employee', department_head: 'Dept. Head'
+  finance: 'Finance', employee: 'Employee', department_head: 'Dept. Head',
+  procurement_lead: 'Procurement Lead', pm: 'Project Manager', cto: 'CTO',
 }
 
 const ALL_NAV = [
   { section: 'Overview', items: [
     { to: '/', tab: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { to: '/knowledge-base', tab: 'knowledge-base', label: 'Knowledge Base', icon: BookOpen },
   ]},
   { section: 'Expenses & Travel', items: [
     { to: '/expenses', tab: 'expenses', label: 'Expenses', icon: Receipt },
@@ -32,19 +38,86 @@ const ALL_NAV = [
     { to: '/approvals', tab: 'approvals', label: 'Approvals', icon: CheckSquare, roles: ['admin','ceo','manager','department_head','hr'] },
   ]},
   { section: 'Operations', items: [
-    { to: '/projects', tab: 'projects', label: 'Projects', icon: FolderOpen },
-    { to: '/tasks', tab: 'tasks', label: 'Task Management', icon: ClipboardList },
+    { to: '/projects', tab: 'projects', label: 'Projects', icon: FolderOpen, subTabs: [
+      { id: 'overview', label: 'Overview', icon: '📊' },
+      { id: 'milestones', label: 'Milestones', icon: '🏁' },
+      { id: 'resources', label: 'Resources', icon: '👥' },
+      { id: 'resourcing', label: 'Resourcing', icon: '📈' },
+      { id: 'software', label: 'Software', icon: '💻' },
+      { id: 'hardware', label: 'Hardware', icon: '🔧' },
+      { id: 'support', label: 'Support', icon: '🛠' },
+      { id: 'expenses', label: 'Expenses', icon: '🧾' },
+      { id: 'changes', label: 'Changes', icon: '🔄' },
+      { id: 'budget', label: 'Budget Config', icon: '⚙️' },
+      { id: 'finance', label: 'Finance', icon: '💰' },
+    ]},
+    { to: '/tasks', tab: 'tasks', label: 'Task Management', icon: ClipboardList, subTabs: [
+      { id: 'kanban', label: 'Kanban', icon: '⊞' },
+      { id: 'list', label: 'List', icon: '☰' },
+      { id: 'stories', label: 'Stories', icon: '◎' },
+      { id: 'sprints', label: 'Sprints', icon: '⚡' },
+      { id: 'reports', label: 'Reports', icon: '📊' },
+      { id: 'dashboards', label: 'Dashboards', icon: '🧩' },
+    ]},
     { to: '/neo-task-ai', tab: 'neo-task-ai', label: 'Neo Task AI', icon: Sparkles },
     { to: '/budget', tab: 'budget', label: 'Budget', icon: PieChart },
     { to: '/assets', tab: 'assets', label: 'Assets', icon: Box },
   ]},
-  { section: 'Procurement', items: [
-    { to: '/vendors', tab: 'vendors', label: 'Vendors', icon: Truck, roles: ['admin','ceo','manager','finance','department_head'] },
-    { to: '/procurement', tab: 'procurement', label: 'Purchase Req.', icon: ShoppingCart, roles: ['admin','ceo','manager','department_head','hr'] },
-    { to: '/invoices', tab: 'invoices', label: 'Invoices', icon: FileText, roles: ['admin','ceo','manager','finance'] },
-    { to: '/fundflow', tab: 'fundflow', label: 'Fund Flow', icon: TrendingUp, roles: ['admin','ceo','finance'] },
-    { to: '/pos', tab: 'pos', label: 'Purchase Orders', icon: Package, roles: ['admin','ceo','manager','finance'] },
+  { section: 'Resourcing', items: [
+    { to: '/skill-matrix', tab: 'skill-matrix', label: 'Skill Matrix', icon: GraduationCap },
+    { to: '/allocations',  tab: 'allocations',  label: 'Allocations',  icon: CalendarRange },
+    { to: '/capacity',     tab: 'capacity',     label: 'Capacity',     icon: Gauge },
+  ]},
+  { section: 'Pre-Sales', items: [
+    { to: '/proposals', tab: 'proposals', label: 'Proposals', icon: FileText, roles: ['admin','ceo','finance','cto','sales_lead'] },
+  ]},
+  { section: 'Performance', items: [
+    { to: '/performance-cycles', tab: 'performance-cycles', label: 'Review Cycles', icon: Target, roles: ['admin','ceo','hr'] },
+    { to: '/my-performance', tab: 'my-performance', label: 'My Performance', icon: Award },
+    { to: '/team-reviews', tab: 'team-reviews', label: 'Team Reviews', icon: UserCheck, roles: ['admin','ceo','hr','manager','department_head'] },
+    { to: '/calibration', tab: 'calibration', label: 'Calibration', icon: Scale, roles: ['admin','ceo','hr'] },
+    { to: '/performance-dashboard', tab: 'performance-dashboard', label: 'Performance Dashboard', icon: LineChart, roles: ['admin','ceo','hr','manager','department_head','cto'] },
+  ]},
+  { section: 'Inventory Management', items: [
+    { to: '/products', tab: 'products', label: 'Product', icon: Package, roles: ['admin','ceo','manager','department_head','finance','procurement_lead','pm'] },
+    { to: '/bom', tab: 'bom', label: 'BOM', icon: Boxes, roles: ['admin','ceo','manager','department_head','finance','procurement_lead','pm'] },
+    { to: '/inventory?view=components', tab: 'inventory', label: 'Component', icon: Warehouse, roles: ['admin','ceo','manager','department_head','finance','procurement_lead','pm'], subTabs: [
+      { id: 'components', label: 'Components', icon: '🧩' },
+      { id: 'overview', label: 'Stock Overview', icon: '📊' },
+    ]},
+    { to: '/devices', tab: 'devices', label: 'Devices', icon: Cpu, roles: ['admin','ceo','manager','department_head','procurement_lead','pm'] },
+    { to: '/procurement', tab: 'procurement', label: 'Purchase Request', icon: ShoppingCart, roles: ['admin','ceo','manager','department_head','hr','finance','procurement_lead','pm','cto'] },
+    { to: '/warranty', tab: 'warranty', label: 'Warranty', icon: ShieldCheck, roles: ['admin','ceo','manager','department_head','finance','procurement_lead','pm','cto','field_technician'] },
+    { to: '/pos', tab: 'pos', label: 'PO', icon: Package, roles: ['admin','ceo','manager','finance'] },
+    { to: '/invoices', tab: 'invoices', label: 'Invoice', icon: FileText, roles: ['admin','ceo','manager','finance'] },
     { to: '/grn', tab: 'grn', label: 'GRN', icon: Briefcase, roles: ['admin','ceo','manager','finance'] },
+  ]},
+  { section: 'Vendors & Partners', items: [
+    { to: '/customers', tab: 'customers', label: 'Customers', icon: Building2, roles: ['admin','ceo','manager','department_head','finance','procurement_lead','pm'] },
+    { to: '/vendors', tab: 'vendors', label: 'Vendors', icon: Truck, roles: ['admin','ceo','manager','finance','department_head','procurement_lead'] },
+    { to: '/fundflow', tab: 'fundflow', label: 'Fund Flow', icon: TrendingUp, roles: ['admin','ceo','finance'] },
+  ]},
+  { section: 'Finance', items: [
+    { to: '/role-rates', tab: 'role-rates', label: 'Role Rates', icon: DollarSign, roles: ['admin','ceo','finance','hr'] },
+    { to: '/customer-invoices', tab: 'customer-invoices', label: 'Customer Invoices', icon: FileCheck, roles: ['admin','ceo','finance'] },
+    { to: '/payments', tab: 'payments', label: 'Payments', icon: Wallet, roles: ['admin','ceo','finance'] },
+    { to: '/aging-report', tab: 'aging-report', label: 'Aging Report', icon: History, roles: ['admin','ceo','finance'] },
+    { to: '/profit-margins', tab: 'profit-margins', label: 'Profit Margins', icon: Percent, roles: ['admin','ceo','finance'] },
+    { to: '/spend-analyzer', tab: 'spend-analyzer', label: 'Spend Analyzer', icon: Radar, roles: ['admin','ceo','finance','manager','department_head'], subTabs: [
+      { id: 'overview', label: 'Overview', icon: '📊' },
+      { id: 'fundflow', label: 'Fund Flow', icon: '💸' },
+      { id: 'resource', label: 'Resource Flow', icon: '👥' },
+      { id: 'category', label: 'By Category', icon: '📦' },
+      { id: 'department', label: 'By Department', icon: '🏢' },
+      { id: 'project', label: 'By Project', icon: '📁' },
+      { id: 'vendor', label: 'By Vendor', icon: '🚚' },
+      { id: 'product', label: 'By Product', icon: '📱' },
+      { id: 'component', label: 'By Component', icon: '🧩' },
+      { id: 'device', label: 'By Device', icon: '📟' },
+      { id: 'findings', label: 'Findings', icon: '💡' },
+      { id: 'forecast', label: 'Forecast', icon: '🔮' },
+      { id: 'benchmark', label: 'Benchmark', icon: '⚖️' },
+    ]},
   ]},
   { section: 'HR & Resources', items: [
     { to: '/leave', tab: 'leave', label: 'Leave Management', icon: Calendar },
@@ -52,6 +125,7 @@ const ALL_NAV = [
     { to: '/timesheet', tab: 'timesheet', label: 'Timesheet', icon: FileSpreadsheet },
     { to: '/timesheet-approvals', tab: 'timesheet-approvals', label: 'Timesheet Approvals', icon: FileClock },
     { to: '/chat', tab: 'chat', label: 'Chat', icon: MessageSquare },
+    { to: '/data-assistant', tab: 'data-assistant', label: 'Data Assistant', icon: Sparkles },
   ]},
   { section: 'Admin', items: [
     { to: '/users', tab: 'users', label: 'Users', icon: Users, roles: ['admin','ceo','manager','finance'] },
@@ -59,6 +133,7 @@ const ALL_NAV = [
     { to: '/settings', tab: 'settings', label: 'Settings', icon: Settings, roles: ['admin','ceo'] },
     { to: '/content', tab: 'content', label: 'Landing Content', icon: Megaphone, roles: ['admin','ceo'] },
     { to: '/app-monitor', tab: 'app-monitor', label: 'App Monitor', icon: Activity, roles: ['admin','ceo'] },
+    { to: '/llm-monitor', tab: 'llm-monitor', label: 'LLM Usage Monitor', icon: Coins, roles: ['admin','ceo'] },
   ]},
 ]
 
@@ -68,6 +143,18 @@ const SESSION_ID = Math.random().toString(36).slice(2)
 export default function Layout({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
+  const [expandedNav, setExpandedNav] = useState({})
+  const toggleNavExpand = (to) => setExpandedNav(prev => ({ ...prev, [to]: !(prev[to] ?? true) }))
+
+  // Section fold state — persisted so a collapsed section stays collapsed
+  // across page loads instead of resetting every navigation.
+  const [collapsedSections, setCollapsedSections] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('nav-collapsed-sections') || '{}') } catch { return {} }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('nav-collapsed-sections', JSON.stringify(collapsedSections)) } catch {}
+  }, [collapsedSections])
+  const toggleSection = (name) => setCollapsedSections(prev => ({ ...prev, [name]: !prev[name] }))
   const { profile, signOut } = useAuth()
   const { isTabVisible } = useTabVisibility()
   const navigate = useNavigate()
@@ -77,7 +164,7 @@ export default function Layout({ children }) {
   const initials = (profile?.full_name || 'U').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
 
   // Close sidebar on mobile nav
-  useEffect(() => { setSidebarOpen(false) }, [location.pathname])
+  useEffect(() => { setSidebarOpen(false) }, [location.pathname, location.search])
 
   // Track page views for app monitor
   useEffect(() => {
@@ -89,6 +176,13 @@ export default function Layout({ children }) {
       session_id: SESSION_ID,
     }).then(() => {})
   }, [location.pathname, profile?.id])
+
+  // Lightweight project list for the sidebar's "Switch Project" picker
+  const [sidebarProjects, setSidebarProjects] = useState([])
+  useEffect(() => {
+    if (location.pathname !== '/projects') return
+    supabase.from('projects').select('id,name').order('name').then(({ data }) => setSidebarProjects(data || []))
+  }, [location.pathname])
 
   async function handleSignOut() { await signOut(); navigate('/login') }
 
@@ -105,14 +199,19 @@ export default function Layout({ children }) {
   })).filter(s => s.items.length > 0)
 
   const pageMap = {
-    '/': 'Dashboard', '/expenses': 'Expenses', '/travel': 'Travel Requests',
+    '/': 'Dashboard', '/knowledge-base': 'Knowledge Base', '/expenses': 'Expenses', '/travel': 'Travel Requests',
     '/approvals': 'Approvals', '/vendors': 'Vendors', '/projects': 'Projects',
     '/tasks': 'Task Management',
     '/budget': 'Budget', '/assets': 'Assets', '/procurement': 'Procurement',
     '/invoices': 'Invoices', '/fundflow': 'Fund Flow', '/pos': 'Purchase Orders',
     '/grn': 'GRN', '/users': 'Users', '/settings': 'Settings', '/reports': 'Reports',
     '/timesheet': 'Timesheet', '/timesheet-approvals': 'Timesheet Approvals', '/content': 'Landing Content',
-    '/chat': 'Chat', '/app-monitor': 'App Monitor', '/neo-task-ai': 'Neo Task AI',
+    '/chat': 'Chat', '/app-monitor': 'App Monitor', '/llm-monitor': 'LLM Usage Monitor', '/neo-task-ai': 'Neo Task AI', '/data-assistant': 'Data Assistant',
+    '/customers': 'Customers', '/products': 'Products', '/bom': 'BOM Management', '/inventory': 'Inventory Management', '/devices': 'Device Instances', '/warranty': 'Warranty Management',
+    '/proposals': 'Proposals',
+    '/skill-matrix': 'Skill Matrix', '/allocations': 'Allocations', '/capacity': 'Capacity',
+    '/role-rates': 'Role Rates', '/customer-invoices': 'Customer Invoices', '/payments': 'Payments',
+    '/aging-report': 'Aging Report', '/profit-margins': 'Profit Margins', '/spend-analyzer': 'Spend Analyzer',
   }
   const pageTitle = pageMap[location.pathname] || 'ThingsAlive NeoX'
 
@@ -143,22 +242,135 @@ export default function Layout({ children }) {
 
       {/* Nav */}
       <nav className="sidebar-nav">
-        {visibleNav.map(section => (
+        {visibleNav.map(section => {
+          const sectionCollapsed = !collapsed && !!collapsedSections[section.section]
+          return (
           <div key={section.section} className="nav-section">
-            {!collapsed && <div className="nav-section-label">{section.section}</div>}
-            {section.items.map(item => {
+            {!collapsed && (
+              <button onClick={() => toggleSection(section.section)}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%',
+                  background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: '8px 10px 4px',
+                }}>
+                <span className="nav-section-label" style={{ padding: 0 }}>{section.section}</span>
+                <ChevronDown size={12} style={{ color: 'var(--ink-muted)', flexShrink: 0, transition: 'transform .18s', transform: sectionCollapsed ? 'rotate(-90deg)' : 'none' }} />
+              </button>
+            )}
+            {!sectionCollapsed && section.items.map(item => {
               const Icon = item.icon
+              const itemPath = item.to.split('?')[0]
+              const isActiveRoute = location.pathname === itemPath
+              const searchParams = new URLSearchParams(location.search)
+              const activeSub = searchParams.get('view') || item.subTabs?.[0]?.id
+              const isProjects = item.to === '/projects'
+              const selectedName = isProjects ? searchParams.get('pname') : null
+              const currentPid = isProjects ? searchParams.get('pid') : null
+              // Non-Projects items (e.g. Task Management): chevron lives on the main row.
+              const isExpanded = expandedNav[item.to] ?? true
+              // Projects: chevron lives on the "📁 Project Name" row instead.
+              const tabsKey = `${item.to}:tabs`
+              const tabsExpanded = expandedNav[tabsKey] ?? true
+
+              const SubTabButtons = () => (
+                <>
+                  {item.subTabs.map(sub => {
+                    const active = activeSub === sub.id
+                    return (
+                      <button key={sub.id} onClick={() => {
+                          const p = new URLSearchParams(isActiveRoute ? location.search : '')
+                          p.set('view', sub.id)
+                          navigate(`${itemPath}?${p.toString()}`)
+                        }}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px',
+                          border: 'none', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit',
+                          fontSize: 12.5, fontWeight: active ? 700 : 500, textAlign: 'left',
+                          background: active ? `${color}18` : 'transparent',
+                          color: active ? color : 'var(--text-muted)',
+                        }}>
+                        <span style={{ fontSize: 13, width: 16, textAlign: 'center', flexShrink: 0 }}>{sub.icon}</span>
+                        <span>{sub.label}</span>
+                      </button>
+                    )
+                  })}
+                </>
+              )
+
+              // When you're already on this page, the whole row is the open/close
+              // toggle for its views — no separate tiny chevron button to hunt for.
+              // (Projects, once a project is open, keeps its own "📁 Name" toggle below instead.)
+              const canToggleHere = item.subTabs && isActiveRoute && !collapsed && (!isProjects || !selectedName)
+
               return (
-                <NavLink key={item.to} to={item.to} end={item.to === '/'}
-                  className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
-                  style={({ isActive }) => isActive ? { '--link-color': color } : {}}>
-                  <Icon size={17} className="nav-icon" />
-                  {!collapsed && <span className="nav-label">{item.label}</span>}
-                </NavLink>
+                <div key={item.to} style={{ position: 'relative' }}>
+                  <NavLink to={item.to} end={item.to === '/'} title={collapsed ? item.label : undefined}
+                    className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
+                    style={({ isActive }) => (isActive ? { '--link-color': color } : {})}
+                    onClick={(e) => { if (canToggleHere) { e.preventDefault(); toggleNavExpand(item.to) } }}>
+                    <Icon size={17} className="nav-icon" />
+                    {!collapsed && <span className="nav-label" style={{ flex: 1, minWidth: 0 }}>{item.label}</span>}
+                    {canToggleHere && (isExpanded ? <ChevronDown size={14} style={{ flexShrink: 0, opacity: .75 }} /> : <ChevronRight size={14} style={{ flexShrink: 0, opacity: .75 }} />)}
+                  </NavLink>
+
+                  {/* Non-Projects sub-navigation (e.g. Task Management) */}
+                  {item.subTabs && isActiveRoute && !collapsed && !isProjects && isExpanded && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 1, margin: '2px 0 6px 30px' }}>
+                      <SubTabButtons />
+                    </div>
+                  )}
+
+                  {/* Projects: no project open yet — just list the views (now collapsible via the
+                      same chevron toggle above, instead of always being pinned open) */}
+                  {isProjects && item.subTabs && isActiveRoute && !collapsed && !selectedName && isExpanded && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 1, margin: '2px 0 6px 30px' }}>
+                      <SubTabButtons />
+                    </div>
+                  )}
+
+                  {/* Projects: a project is open — collapsible name header + views + switcher */}
+                  {isProjects && item.subTabs && isActiveRoute && !collapsed && selectedName && (
+                    <div style={{ margin: '2px 0 6px 30px' }}>
+                      <button onClick={() => toggleNavExpand(tabsKey)}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', marginBottom: 4,
+                          fontSize: 11.5, fontWeight: 800, color, background: `${color}12`, borderRadius: 8,
+                          border: 'none', cursor: 'pointer', width: '100%', textAlign: 'left',
+                        }} title={selectedName}>
+                        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>📁 {selectedName}</span>
+                        {tabsExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                      </button>
+                      {tabsExpanded && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 1, marginBottom: 8 }}>
+                          <SubTabButtons />
+                        </div>
+                      )}
+                      {sidebarProjects.filter(p => p.id !== currentPid).length > 0 && (
+                        <div>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em', padding: '4px 10px' }}>
+                            Switch Project
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 1, maxHeight: 160, overflowY: 'auto' }}>
+                            {sidebarProjects.filter(p => p.id !== currentPid).map(p => (
+                              <button key={p.id} onClick={() => navigate(`/projects?pid=${p.id}`)}
+                                style={{
+                                  display: 'block', width: '100%', textAlign: 'left', padding: '6px 10px', borderRadius: 8,
+                                  border: 'none', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit',
+                                  fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                                }}>
+                                {p.name}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               )
             })}
           </div>
-        ))}
+          )
+        })}
       </nav>
 
       {/* Sign out */}
@@ -202,6 +414,7 @@ export default function Layout({ children }) {
           {children}
         </main>
       </div>
+      <AskBubble />
     </div>
   )
 }

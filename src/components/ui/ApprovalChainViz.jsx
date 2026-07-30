@@ -1,4 +1,4 @@
-import { getChain, stepState } from '../../lib/approvalFlow'
+import { getChainSync, stepState } from '../../lib/approvalFlow'
 
 const COLORS = {
   done:     { bg: '#dcfce7', border: '#86efac', color: '#15803d' },
@@ -7,8 +7,8 @@ const COLORS = {
   pending:  { bg: '#f1f5f9', border: '#e2e8f0', color: '#94a3b8' },
 }
 
-export default function ApprovalChainViz({ submitterRole, currentStatus, compact = false }) {
-  const chain   = getChain(submitterRole || 'employee')
+export default function ApprovalChainViz({ submitterRole, currentStatus, compact = false, workflow = 'expense' }) {
+  const chain   = getChainSync(submitterRole || 'employee', workflow)
   const isRej   = currentStatus === 'rejected' || currentStatus === 'closed'
 
   return (

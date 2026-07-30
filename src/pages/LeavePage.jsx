@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { supabase, dateFmt, nextNum } from '../lib/supabase'
+import { countWorkingDays, recomputeForEmployeeRange } from '../lib/capacity'
 import { Modal, StatusBadge, SearchBox, Loader, Empty, Confirm } from '../components/ui'
 import { Plus, Calendar, Clock, CheckCircle, XCircle, Eye, Trash2, Users } from 'lucide-react'
 
@@ -16,6 +17,13 @@ const STATUS_COLORS = {
   approved:  { bg: '#dcfce7', color: '#15803d' },
   rejected:  { bg: '#fee2e2', color: '#dc2626' },
   cancelled: { bg: '#f1f5f9', color: '#475569' },
+}
+
+// Local-calendar-date ISO string — NOT toISOString(), which converts to UTC and
+// rolls back a day for positive-UTC-offset timezones (e.g. IST) during the early
+// hours of the local day.
+function isoLocal(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 const YEAR = new Date().getFullYear()
@@ -38,16 +46,29 @@ export default function LeavePage() {
   const [policies, setPolicies] = useState([])
   const [balances, setBalances] = useState(null)
   const [employees, setEmployees] = useState([])
+  const [leaveTypes, setLeaveTypes] = useState([])
+  const [holidays, setHolidays] = useState([])
+  const [calendarLeaves, setCalendarLeaves] = useState([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [showDetail, setShowDetail] = useState(null)
   const [showPolicy, setShowPolicy] = useState(false)
   const [form, setForm] = useState(initLeaveForm())
   const [policyForm, setPolicyForm] = useState({ employee_id: '', sick_days: 12, casual_days: 12, personal_days: 6, permission_hours: 24 })
+  const [holidayForm, setHolidayForm] = useState({ holiday_date: '', name: '' })
+  const [calFrom, setCalFrom] = useState(() => isoLocal(new Date()))
+  const [calTo, setCalTo] = useState(() => { const d = new Date(); d.setDate(d.getDate() + 14); return isoLocal(d) })
   const [submitting, setSub] = useState(false)
   const [search, setSearch] = useState('')
   const [err, setErr] = useState('')
   const [deleteId, setDeleteId] = useState(null)
+
+  const holidaysSet = new Set(holidays.map(h => h.holiday_date))
+  // leave_types (Phase 2) is the source of truth once populated; falls back to the
+  // original hardcoded LEAVE_COLORS so nothing breaks before STEP30 has been run.
+  const typeColors = leaveTypes.length > 0
+    ? Object.fromEntries(leaveTypes.map(t => [t.code, { bg: t.color_bg, color: t.color_hex, label: t.name, icon: t.icon }]))
+    : LEAVE_COLORS
 
   useEffect(() => { loadAll() }, [role])
 
@@ -57,6 +78,9 @@ export default function LeavePage() {
       supabase.from('leave_requests').select('*, employee:profiles!employee_id(full_name, role, email)').eq('employee_id', profile.id).order('created_at', { ascending: false }),
       supabase.from('leave_balances').select('*').eq('employee_id', profile.id).eq('fiscal_year', YEAR).maybeSingle(),
       supabase.from('leave_policies').select('*').eq('employee_id', profile.id).eq('fiscal_year', YEAR).maybeSingle(),
+      supabase.from('leave_types').select('*').eq('is_active', true).order('name'),
+      supabase.from('holidays').select('*').order('holiday_date'),
+      supabase.from('leave_requests').select('leave_type,from_date,to_date,permission_date,status,employee:profiles!employee_id(full_name)').eq('status', 'approved'),
     ]
     if (isManager) promises.push(
       supabase.from('leave_requests').select('*, employee:profiles!employee_id(full_name, role, department_id, email)').order('created_at', { ascending: false }),
@@ -67,9 +91,12 @@ export default function LeavePage() {
     setMyLeaves(results[0].data || [])
     setBalances(results[1].data)
     setPolicies(results[2].data ? [results[2].data] : [])
+    setLeaveTypes(results[3].data || [])
+    setHolidays(results[4].data || [])
+    setCalendarLeaves(results[5].data || [])
     if (isManager) {
-      setAllLeaves(results[3].data || [])
-      setEmployees(results[4].data || [])
+      setAllLeaves(results[6].data || [])
+      setEmployees(results[7].data || [])
     }
     setLoading(false)
   }
@@ -85,7 +112,9 @@ export default function LeavePage() {
         const [th, tm] = form.to_time.split(':').map(Number)
         permHours = Math.max(0, (th * 60 + tm - fh * 60 - fm) / 60)
       }
-      const { error } = await supabase.from('leave_requests').insert({
+      const typeDef = leaveTypes.find(t => t.code === form.leave_type)
+      const autoApprove = typeDef && typeDef.requires_approval === false
+      const { data, error } = await supabase.from('leave_requests').insert({
         request_number: num,
         employee_id: profile.id,
         leave_type: form.leave_type,
@@ -96,12 +125,33 @@ export default function LeavePage() {
         to_time: isPermission ? form.to_time : null,
         permission_hours: permHours,
         reason: form.reason,
-        status: 'pending',
-      })
+        status: autoApprove ? 'approved' : 'pending',
+        ...(autoApprove ? { approved_by: profile.id, approved_at: new Date().toISOString() } : {}),
+      }).select().single()
       if (error) throw error
+      if (autoApprove) await applyBalanceAndRecompute(data)
       setShowCreate(false); setForm(initLeaveForm()); loadAll()
     } catch (e) { setErr(e.message) }
     finally { setSub(false) }
+  }
+
+  async function applyBalanceAndRecompute(req) {
+    const isPermission = req.leave_type === 'permission'
+    const days = isPermission ? null : countWorkingDays(req.from_date, req.to_date || req.from_date, holidaysSet)
+
+    const balUpdate = {}
+    if (req.leave_type === 'sick') balUpdate.sick_used = (balances?.sick_used || 0) + (days || 0)
+    if (req.leave_type === 'casual') balUpdate.casual_used = (balances?.casual_used || 0) + (days || 0)
+    if (req.leave_type === 'personal') balUpdate.personal_used = (balances?.personal_used || 0) + (days || 0)
+    if (req.leave_type === 'permission') balUpdate.permission_hours_used = (balances?.permission_hours_used || 0) + (req.permission_hours || 0)
+
+    await supabase.from('leave_balances').upsert({
+      employee_id: req.employee_id, fiscal_year: YEAR, ...balUpdate
+    }, { onConflict: 'employee_id,fiscal_year' })
+
+    const rangeStart = isPermission ? req.permission_date : req.from_date
+    const rangeEnd = isPermission ? req.permission_date : (req.to_date || req.from_date)
+    await recomputeForEmployeeRange(req.employee_id, rangeStart, rangeEnd)
   }
 
   async function handleApprove(req, action) {
@@ -113,26 +163,26 @@ export default function LeavePage() {
       }).eq('id', req.id)
       if (error) throw error
 
-      // Update leave balance if approved
-      if (status === 'approved') {
-        const days = req.leave_type === 'permission'
-          ? null
-          : Math.ceil((new Date(req.to_date || req.from_date) - new Date(req.from_date)) / 86400000) + 1
-
-        const balUpdate = {}
-        if (req.leave_type === 'sick') balUpdate.sick_used = supabase.rpc ? (balances?.sick_used || 0) + (days || 0) : 0
-        if (req.leave_type === 'casual') balUpdate.casual_used = (balances?.casual_used || 0) + (days || 0)
-        if (req.leave_type === 'personal') balUpdate.personal_used = (balances?.personal_used || 0) + (days || 0)
-        if (req.leave_type === 'permission') balUpdate.permission_hours_used = (balances?.permission_hours_used || 0) + (req.permission_hours || 0)
-
-        await supabase.from('leave_balances').upsert({
-          employee_id: req.employee_id, fiscal_year: YEAR, ...balUpdate
-        }, { onConflict: 'employee_id,fiscal_year' })
-      }
+      if (status === 'approved') await applyBalanceAndRecompute(req)
 
       setShowDetail(null); loadAll()
     } catch (e) { alert(e.message) }
     finally { setSub(false) }
+  }
+
+  async function saveHoliday(e) {
+    e.preventDefault(); setSub(true)
+    try {
+      const { error } = await supabase.from('holidays').insert({ holiday_date: holidayForm.holiday_date, name: holidayForm.name, created_by: profile.id })
+      if (error) throw error
+      setHolidayForm({ holiday_date: '', name: '' })
+      loadAll()
+    } catch (e) { alert(e.message) } finally { setSub(false) }
+  }
+
+  async function deleteHoliday(id) {
+    await supabase.from('holidays').delete().eq('id', id)
+    loadAll()
   }
 
   async function savePolicy(e) {
@@ -203,7 +253,7 @@ export default function LeavePage() {
       </div>
 
       {/* My Balance Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12, marginBottom: 24 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 24 }}>
         {[
           { type: 'sick', used: balances?.sick_used || 0, total: myPolicy?.sick_days || 12, color: '#dc2626' },
           { type: 'casual', used: balances?.casual_used || 0, total: myPolicy?.casual_days || 12, color: '#1d4ed8' },
@@ -230,22 +280,23 @@ export default function LeavePage() {
       </div>
 
       {/* Tabs */}
-      {isManager && (
-        <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
-          {[
-            { id: 'my', label: 'My Leaves' },
-            { id: 'approvals', label: `Team Approvals${pendingCount > 0 ? ` (${pendingCount})` : ''}` },
-          ].map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)}
-              style={{ padding: '7px 18px', borderRadius: 20, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 13,
-                background: tab === t.id ? '#6366f1' : '#f1f5f9', color: tab === t.id ? '#fff' : '#475569' }}>
-              {t.label}
-            </button>
-          ))}
-        </div>
-      )}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
+        {[
+          { id: 'my', label: 'My Leaves' },
+          ...(isManager ? [{ id: 'approvals', label: `Team Approvals${pendingCount > 0 ? ` (${pendingCount})` : ''}` }] : []),
+          { id: 'calendar', label: 'Team Calendar' },
+          ...(isHR ? [{ id: 'holidays', label: 'Holidays' }] : []),
+        ].map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            style={{ padding: '7px 18px', borderRadius: 20, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 13,
+              background: tab === t.id ? '#6366f1' : '#f1f5f9', color: tab === t.id ? '#fff' : '#475569' }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
 
       {/* Leave Table */}
+      {(tab === 'my' || tab === 'approvals') && (
       <div className="table-wrap">
         <div className="table-toolbar">
           {tab === 'approvals'
@@ -266,10 +317,10 @@ export default function LeavePage() {
             {displayLeaves.length === 0
               ? <tr><td colSpan={8}><Empty icon="📅" title="No leave requests" desc={tab === 'my' ? 'Apply for leave using the button above' : 'No pending team requests'} /></td></tr>
               : displayLeaves.map(req => {
-                const lc = LEAVE_COLORS[req.leave_type] || LEAVE_COLORS.casual
+                const lc = typeColors[req.leave_type] || LEAVE_COLORS.casual
                 const sc = STATUS_COLORS[req.status] || STATUS_COLORS.pending
                 const isPerm = req.leave_type === 'permission'
-                const days = isPerm ? null : req.from_date && req.to_date ? Math.ceil((new Date(req.to_date) - new Date(req.from_date)) / 86400000) + 1 : 1
+                const days = isPerm ? null : req.from_date ? countWorkingDays(req.from_date, req.to_date || req.from_date, holidaysSet) : 1
                 return (
                   <tr key={req.id}>
                     <td style={{ fontFamily: 'monospace', fontSize: 11, fontWeight: 700, color: '#6366f1' }}>{req.request_number}</td>
@@ -320,6 +371,47 @@ export default function LeavePage() {
           </tbody>
         </table>
       </div>
+      )}
+
+      {/* Team Calendar — who's out, grouped by date, for a selected range */}
+      {tab === 'calendar' && (
+        <TeamCalendar allLeaves={calendarLeaves} typeColors={typeColors}
+          calFrom={calFrom} calTo={calTo} setCalFrom={setCalFrom} setCalTo={setCalTo} />
+      )}
+
+      {/* Holidays CRUD (HR/admin only) */}
+      {tab === 'holidays' && isHR && (
+        <div>
+          <form onSubmit={saveHoliday} style={{ display: 'flex', gap: 10, alignItems: 'flex-end', marginBottom: 20, flexWrap: 'wrap' }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Date *</label>
+              <input className="form-input" type="date" value={holidayForm.holiday_date} onChange={e => setHolidayForm(f => ({ ...f, holiday_date: e.target.value }))} required />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0, flex: 1, minWidth: 200 }}>
+              <label className="form-label">Name *</label>
+              <input className="form-input" value={holidayForm.name} onChange={e => setHolidayForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Diwali" required />
+            </div>
+            <button className="btn btn-primary" type="submit" disabled={submitting}><Plus size={13} /> Add Holiday</button>
+          </form>
+          {holidays.length === 0 ? <Empty icon="🏖️" title="No holidays configured" desc="Add company holidays so leave duration and capacity calculations skip them" /> : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Date</th><th>Name</th><th>Scope</th><th></th></tr></thead>
+                <tbody>
+                  {holidays.map(h => (
+                    <tr key={h.id}>
+                      <td>{dateFmt(h.holiday_date)}</td>
+                      <td className="td-bold">{h.name}</td>
+                      <td style={{ textTransform: 'capitalize' }}>{h.scope}</td>
+                      <td><button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }} onClick={() => deleteHoliday(h.id)}><Trash2 size={13} /></button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Apply Leave Modal */}
       <Modal open={showCreate} onClose={() => setShowCreate(false)} title="Apply for Leave" size="lg"
@@ -333,7 +425,7 @@ export default function LeavePage() {
         <div className="form-group">
           <label className="form-label">Leave Type *</label>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 8 }}>
-            {Object.entries(LEAVE_COLORS).map(([k, v]) => (
+            {Object.entries(typeColors).map(([k, v]) => (
               <button key={k} type="button" onClick={() => setForm(f => ({ ...f, leave_type: k }))}
                 style={{ padding: '10px 14px', borderRadius: 12, border: `2px solid ${form.leave_type === k ? v.color : '#e2e8f0'}`, background: form.leave_type === k ? v.bg : '#fff', color: form.leave_type === k ? v.color : '#475569', fontWeight: 700, fontSize: 13, cursor: 'pointer', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span>{v.icon}</span> {v.label}
@@ -429,7 +521,7 @@ export default function LeavePage() {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             {[
               ['Employee', showDetail.employee?.full_name],
-              ['Type', LEAVE_COLORS[showDetail.leave_type]?.label],
+              ['Type', typeColors[showDetail.leave_type]?.label],
               ['Status', showDetail.status],
               ['Reason', showDetail.reason],
               showDetail.leave_type === 'permission'
@@ -438,7 +530,7 @@ export default function LeavePage() {
               ['Submitted', dateFmt(showDetail.created_at)],
             ].filter(Boolean).map(([k,v]) => (
               <div key={k} style={{ padding: '10px 14px', borderRadius: 10, background: '#f8fafc' }}>
-                <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: '#94a3b8', marginBottom: 3 }}>{k}</div>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#94a3b8', marginBottom: 3 }}>{k}</div>
                 <div style={{ fontWeight: 600, fontSize: 14, textTransform: 'capitalize' }}>{v || '—'}</div>
               </div>
             ))}
@@ -447,6 +539,67 @@ export default function LeavePage() {
       )}
 
       <Confirm open={!!deleteId} message="Cancel this leave request?" danger onConfirm={() => deleteLeave(deleteId)} onCancel={() => setDeleteId(null)} />
+    </div>
+  )
+}
+
+/* ─── Team Calendar — who's out, grouped by date, for a selected range ─── */
+function TeamCalendar({ allLeaves, typeColors, calFrom, calTo, setCalFrom, setCalTo }) {
+  const byDate = {}
+  allLeaves.filter(l => l.status === 'approved').forEach(l => {
+    if (l.leave_type === 'permission') {
+      if (l.permission_date && l.permission_date >= calFrom && l.permission_date <= calTo) {
+        (byDate[l.permission_date] ||= []).push(l)
+      }
+    } else if (l.from_date) {
+      const to = l.to_date || l.from_date
+      if (l.from_date <= calTo && to >= calFrom) {
+        const start = l.from_date > calFrom ? l.from_date : calFrom
+        const end = to < calTo ? to : calTo
+        for (let d = new Date(start); d <= new Date(end); d.setDate(d.getDate() + 1)) {
+          const iso = isoLocal(d)
+          const day = d.getDay()
+          if (day === 0 || day === 6) continue
+          (byDate[iso] ||= []).push(l)
+        }
+      }
+    }
+  })
+  const dates = Object.keys(byDate).sort()
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', marginBottom: 18, flexWrap: 'wrap' }}>
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label className="form-label">From</label>
+          <input className="form-input" type="date" value={calFrom} onChange={e => setCalFrom(e.target.value)} />
+        </div>
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label className="form-label">To</label>
+          <input className="form-input" type="date" value={calTo} min={calFrom} onChange={e => setCalTo(e.target.value)} />
+        </div>
+      </div>
+      {dates.length === 0 ? (
+        <Empty icon="🗓️" title="No one is out" desc="No approved leave in this date range" />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {dates.map(date => (
+            <div key={date} style={{ display: 'flex', gap: 14, alignItems: 'flex-start', padding: '10px 14px', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10 }}>
+              <div style={{ width: 100, flexShrink: 0, fontWeight: 700, fontSize: 12.5, color: '#334155' }}>{dateFmt(date)}</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {byDate[date].map((l, i) => {
+                  const lc = typeColors[l.leave_type] || { bg: '#f1f5f9', color: '#475569', icon: '📅' }
+                  return (
+                    <span key={i} style={{ padding: '3px 10px', borderRadius: 999, fontSize: 11.5, fontWeight: 700, background: lc.bg, color: lc.color, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                      {lc.icon} {l.employee?.full_name}
+                    </span>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
