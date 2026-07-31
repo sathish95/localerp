@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { supabase } from '../lib/supabase'
+import { supabase, rupee, dateFmt } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useTabVisibility } from '../context/TabVisibilityContext'
 import { listRoles, createRole, updateRole, deleteRole, colorForRole } from '../lib/roles'
@@ -9,9 +9,11 @@ import { MODULES, MODULE_SECTIONS } from '../config/modules'
 import { Alert, Modal, Confirm, Loader, Empty } from '../components/ui'
 import {
   Settings, GitBranch, DollarSign, Bell, Tag, FileText, Sparkles, TrendingUp, Megaphone,
-  Save, Plus, Trash2, Edit2, Check, X, Users, Eye, EyeOff, Shield, ChevronDown, ChevronRight, ChevronUp, Building2
+  Save, Plus, Trash2, Edit2, Check, X, Users, Eye, EyeOff, Shield, ChevronDown, ChevronRight, ChevronUp, Building2,
+  CreditCard, Clock, CheckCircle2
 } from 'lucide-react'
 import { listInvites, createInvite, revokeInvite } from '../lib/orgInvites'
+import { listPlans, myUpgradeRequests, requestUpgrade } from '../lib/billing'
 import {
   WORKFLOWS, workflowConfig, listChainsWithSteps, createChain, saveChainSteps, setChainActive, deleteChain,
 } from '../lib/approvalChains'
@@ -1143,9 +1145,127 @@ function OrganizationTab() {
   )
 }
 
+// ── Billing (STEP107) ──
+// Read-only view of the org's own plan/status/trial/seat usage (comes
+// off profile.org — AuthContext's join already carries the billing
+// columns, same as name/slug) plus a self-serve "request a plan change"
+// flow. No payment gateway is wired up — actioning the request (and
+// therefore the actual charge, handled outside this app) is a platform
+// super admin's job from /super-admin.
+function BillingTab() {
+  const { profile } = useAuth()
+  const org = profile?.org
+  const [plans, setPlans] = useState([])
+  const [requests, setRequests] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState('')
+  const [requesting, setRequesting] = useState(null) // plan key being requested
+  const [note, setNote] = useState('')
+  const [seatCount, setSeatCount] = useState(null)
+
+  useEffect(() => { load() }, [])
+
+  async function load() {
+    setLoading(true); setErr('')
+    try {
+      const [p, r, seats] = await Promise.all([
+        listPlans(),
+        myUpgradeRequests(),
+        supabase.from('profiles').select('id', { count: 'exact', head: true }).eq('organization_id', profile.organization_id),
+      ])
+      setPlans(p); setRequests(r); setSeatCount(seats.count ?? null)
+    } catch (e) { setErr(e.message) }
+    finally { setLoading(false) }
+  }
+
+  async function handleRequest(planKey) {
+    setErr('')
+    try {
+      await requestUpgrade(planKey, note.trim() || null)
+      setRequesting(null); setNote('')
+      load()
+    } catch (e) { setErr(e.message) }
+  }
+
+  if (loading) return <Loader />
+
+  const currentPlan = plans.find(p => p.key === org?.plan_key)
+  const seatLimit = org?.seat_limit_override ?? currentPlan?.seat_limit ?? null
+  const pendingRequest = requests.find(r => r.status === 'pending')
+  const statusColor = { trialing: '#f59e0b', active: '#16a34a', past_due: '#ef4444', canceled: 'var(--ink-muted)' }[org?.billing_status] || 'var(--ink-muted)'
+  const statusLabel = { trialing: 'Trial', active: 'Active', past_due: 'Past Due', canceled: 'Canceled' }[org?.billing_status] || org?.billing_status
+
+  return (
+    <div>
+      {err && <Alert type="error" message={err} />}
+
+      <div style={{ marginBottom: 28 }}>
+        <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Current Plan</h3>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', padding: '16px 20px', borderRadius: 12, background: 'var(--surface-2, rgba(99,102,241,.06))', border: '1px solid var(--border)' }}>
+          <div style={{ width: 44, height: 44, borderRadius: 10, background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
+            <CreditCard size={20} />
+          </div>
+          <div style={{ flex: 1, minWidth: 180 }}>
+            <div style={{ fontWeight: 800, fontSize: '1rem' }}>{currentPlan?.name || org?.plan_key || 'Unknown'}</div>
+            <div style={{ fontSize: '0.82rem', color: 'var(--ink-muted)' }}>
+              {seatCount ?? '?'} / {seatLimit ?? '∞'} seats used
+              {org?.billing_status === 'trialing' && org?.trial_ends_at && <> · Trial ends {dateFmt(org.trial_ends_at)}</>}
+            </div>
+          </div>
+          <span style={{ color: statusColor, fontWeight: 700, fontSize: 12, padding: '4px 10px', borderRadius: 999, border: `1px solid ${statusColor}` }}>{statusLabel}</span>
+        </div>
+        {pendingRequest && (
+          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.82rem', color: 'var(--ink-muted)' }}>
+            <Clock size={13} /> A request to move to <strong>{plans.find(p => p.key === pendingRequest.requested_plan_key)?.name || pendingRequest.requested_plan_key}</strong> is pending review.
+          </div>
+        )}
+      </div>
+
+      <div>
+        <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Compare Plans</h3>
+        <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 16 }}>Requesting a plan change notifies the platform team — there's no self-serve checkout yet, a super admin actions it from their console.</p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 14 }}>
+          {plans.map(p => {
+            const isCurrent = p.key === org?.plan_key
+            return (
+              <div key={p.key} style={{ border: isCurrent ? '2px solid var(--c1)' : '1px solid var(--border)', borderRadius: 12, padding: 16, position: 'relative' }}>
+                {isCurrent && <span style={{ position: 'absolute', top: 10, right: 10, color: 'var(--c1)' }}><CheckCircle2 size={16} /></span>}
+                <div style={{ fontWeight: 800, fontSize: '1rem', marginBottom: 4 }}>{p.name}</div>
+                <div style={{ fontWeight: 700, fontSize: '1.3rem', marginBottom: 2 }}>
+                  {p.price_monthly == null ? 'Contact sales' : p.price_monthly === 0 ? 'Free' : `${rupee(p.price_monthly)}/mo`}
+                </div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--ink-muted)', marginBottom: 10 }}>{p.seat_limit ? `Up to ${p.seat_limit} seats` : 'Unlimited seats'}</div>
+                <ul style={{ margin: '0 0 14px', paddingLeft: 18, fontSize: '0.82rem', color: 'var(--ink-muted)' }}>
+                  {(p.features || []).map((f, i) => <li key={i}>{f}</li>)}
+                </ul>
+                {isCurrent ? (
+                  <button className="btn btn-ghost btn-sm" disabled style={{ width: '100%', justifyContent: 'center' }}>Current Plan</button>
+                ) : requesting === p.key ? (
+                  <div>
+                    <input className="form-input" style={{ marginBottom: 6, fontSize: '0.82rem' }} placeholder="Note (optional)" value={note} onChange={e => setNote(e.target.value)} />
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn btn-primary btn-sm" style={{ flex: 1, justifyContent: 'center' }} onClick={() => handleRequest(p.key)}>Confirm</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => { setRequesting(null); setNote('') }}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button className="btn btn-primary btn-sm" disabled={!!pendingRequest} style={{ width: '100%', justifyContent: 'center' }} onClick={() => setRequesting(p.key)}>
+                    {pendingRequest ? 'Request Pending' : 'Request This Plan'}
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const TABS = [
   { id: 'roles-modules', label: 'Roles & Modules', icon: <Shield size={15} /> },
   { id: 'organization', label: 'Organization', icon: <Building2 size={15} /> },
+  { id: 'billing', label: 'Billing', icon: <CreditCard size={15} /> },
   { id: 'approval', label: 'Approval Chain', icon: <GitBranch size={15} /> },
   { id: 'budget', label: 'Budget Config', icon: <DollarSign size={15} /> },
   { id: 'categories', label: 'Expense Categories', icon: <Tag size={15} /> },
@@ -1175,6 +1295,7 @@ export default function SettingsPage() {
         <div style={{ padding: '24px' }}>
           {activeTab === 'roles-modules' && <RolesModulesTab />}
           {activeTab === 'organization' && <OrganizationTab />}
+          {activeTab === 'billing' && <BillingTab />}
           {activeTab === 'approval' && <ApprovalChainTab />}
           {activeTab === 'budget' && <BudgetConfigTab />}
           {activeTab === 'categories' && <ExpenseCategoriesTab />}

@@ -1,9 +1,17 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { listOrganizations, createOrganization, setOrganizationActive } from '../lib/superAdmin'
+import {
+  listOrganizations, createOrganization, setOrganizationActive,
+  setOrgBilling, listBillingRequests, dismissBillingRequest,
+} from '../lib/superAdmin'
+import { listPlans } from '../lib/billing'
 import { createInvite } from '../lib/orgInvites'
+import { rupee, dateFmt } from '../lib/supabase'
 import { Loader, Empty, Alert, Modal } from '../components/ui'
-import { Landmark, Plus, Users, Boxes, Ban, CheckCircle2, KeyRound } from 'lucide-react'
+import { Landmark, Plus, Users, Ban, CheckCircle2, KeyRound, CreditCard, Clock, XCircle } from 'lucide-react'
+
+const STATUS_LABEL = { trialing: 'Trial', active: 'Active', past_due: 'Past Due', canceled: 'Canceled' }
+const STATUS_COLOR = { trialing: '#f59e0b', active: '#16a34a', past_due: '#ef4444', canceled: 'var(--ink-muted)' }
 
 // Platform-level org management — reachable only by profiles.is_super_admin
 // (see App.jsx route + Layout.jsx nav gate). Not module-gated: this is a
@@ -17,14 +25,52 @@ export default function SuperAdminPage() {
   const [form, setForm] = useState({ name: '', slug: '' })
   const [saving, setSaving] = useState(false)
   const [adminInvite, setAdminInvite] = useState(null) // { orgName, code }
+  const [plans, setPlans] = useState([])
+  const [requests, setRequests] = useState([])
+  const [billingOrg, setBillingOrg] = useState(null) // org being edited, or null
+  const [billingForm, setBillingForm] = useState(null)
+  const [billingSaving, setBillingSaving] = useState(false)
 
   useEffect(() => { load() }, [])
 
   async function load() {
     setLoading(true); setErr('')
-    try { setOrgs(await listOrganizations()) }
+    try {
+      const [o, p, r] = await Promise.all([listOrganizations(), listPlans(), listBillingRequests()])
+      setOrgs(o); setPlans(p); setRequests(r)
+    }
     catch (e) { setErr(e.message) }
     finally { setLoading(false) }
+  }
+
+  function openBilling(org, prefillRequest) {
+    setBillingOrg(org)
+    setBillingForm({
+      planKey: prefillRequest?.requested_plan_key || org.plan_key,
+      billingStatus: org.billing_status,
+      trialEndsAt: org.trial_ends_at ? org.trial_ends_at.slice(0, 10) : '',
+      seatLimitOverride: '',
+      requestId: prefillRequest?.id || null,
+    })
+  }
+
+  async function handleSaveBilling(e) {
+    e.preventDefault(); setBillingSaving(true); setErr('')
+    try {
+      await setOrgBilling(billingOrg.id, {
+        planKey: billingForm.planKey,
+        billingStatus: billingForm.billingStatus,
+        trialEndsAt: billingForm.trialEndsAt ? new Date(billingForm.trialEndsAt).toISOString() : null,
+        seatLimitOverride: billingForm.seatLimitOverride === '' ? null : Number(billingForm.seatLimitOverride),
+        requestId: billingForm.requestId,
+      })
+      setBillingOrg(null); setBillingForm(null); load()
+    } catch (e) { setErr(e.message) }
+    finally { setBillingSaving(false) }
+  }
+
+  async function handleDismissRequest(id) {
+    await dismissBillingRequest(id); load()
   }
 
   function slugify(name) {
@@ -68,19 +114,24 @@ export default function SuperAdminPage() {
       {orgs.length === 0 ? <Empty message="No organizations yet" /> : (
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Organization</th><th>Slug</th><th>Members</th><th>Enabled Modules</th><th>Created</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Organization</th><th>Slug</th><th>Members</th><th>Plan</th><th>Billing</th><th>Created</th><th>Active</th><th></th></tr></thead>
             <tbody>
               {orgs.map(o => (
                 <tr key={o.id}>
                   <td className="td-bold">{o.name}</td>
                   <td style={{ color: 'var(--ink-muted)' }}>/{o.slug}</td>
-                  <td><Users size={13} style={{ verticalAlign: -2, marginRight: 4 }} />{o.member_count}</td>
-                  <td><Boxes size={13} style={{ verticalAlign: -2, marginRight: 4 }} />{o.enabled_module_count}</td>
+                  <td><Users size={13} style={{ verticalAlign: -2, marginRight: 4 }} />{o.member_count}{o.seat_limit != null ? ` / ${o.seat_limit}` : ''}</td>
+                  <td>{plans.find(p => p.key === o.plan_key)?.name || o.plan_key}</td>
+                  <td>
+                    <span style={{ color: STATUS_COLOR[o.billing_status] || 'var(--ink-muted)', fontWeight: 700, fontSize: 12 }}>{STATUS_LABEL[o.billing_status] || o.billing_status}</span>
+                    {o.billing_status === 'trialing' && o.trial_ends_at && <div style={{ fontSize: 11, color: 'var(--ink-muted)' }}>ends {dateFmt(o.trial_ends_at)}</div>}
+                  </td>
                   <td>{new Date(o.created_at).toLocaleDateString()}</td>
                   <td>{o.is_active
                     ? <span style={{ color: '#16a34a', fontWeight: 700, fontSize: 12 }}>Active</span>
                     : <span style={{ color: '#ef4444', fontWeight: 700, fontSize: 12 }}>Suspended</span>}</td>
-                  <td>
+                  <td style={{ display: 'flex', gap: 6 }}>
+                    <button className="btn btn-ghost btn-sm" onClick={() => openBilling(o)}><CreditCard size={13} /> Billing</button>
                     <button className="btn btn-ghost btn-sm" onClick={() => toggleActive(o)}>
                       {o.is_active ? <><Ban size={13} /> Suspend</> : <><CheckCircle2 size={13} /> Reactivate</>}
                     </button>
@@ -90,6 +141,63 @@ export default function SuperAdminPage() {
             </tbody>
           </table>
         </div>
+      )}
+
+      <div style={{ marginTop: 32 }}>
+        <div className="page-subtitle" style={{ marginBottom: 10, fontWeight: 800, fontSize: '0.95rem', color: 'var(--ink)' }}>Pending Plan Change Requests</div>
+        {requests.filter(r => r.status === 'pending').length === 0 ? <Empty message="No pending requests" /> : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Organization</th><th>Requested Plan</th><th>Note</th><th>Requested</th><th></th></tr></thead>
+              <tbody>
+                {requests.filter(r => r.status === 'pending').map(r => (
+                  <tr key={r.id}>
+                    <td className="td-bold">{r.org_name}</td>
+                    <td>{plans.find(p => p.key === r.requested_plan_key)?.name || r.requested_plan_key}</td>
+                    <td style={{ color: 'var(--ink-muted)' }}>{r.note || '—'}</td>
+                    <td><Clock size={13} style={{ verticalAlign: -2, marginRight: 4 }} />{dateFmt(r.created_at)}</td>
+                    <td style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn btn-primary btn-sm" onClick={() => openBilling(orgs.find(o => o.id === r.organization_id), r)}>Review</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => handleDismissRequest(r.id)}><XCircle size={13} /> Dismiss</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {billingOrg && billingForm && (
+        <Modal open title={`Billing — ${billingOrg.name}`} onClose={() => { setBillingOrg(null); setBillingForm(null) }}
+          footer={<>
+            <button className="btn btn-ghost" onClick={() => { setBillingOrg(null); setBillingForm(null) }}>Cancel</button>
+            <button className="btn btn-primary" onClick={handleSaveBilling} disabled={billingSaving}>{billingSaving ? 'Saving…' : 'Save'}</button>
+          </>}>
+          <form onSubmit={handleSaveBilling}>
+            {err && <Alert type="error" message={err} />}
+            <div style={{ marginBottom: 12 }}>
+              <label className="form-label">Plan</label>
+              <select className="form-input" value={billingForm.planKey} onChange={e => setBillingForm(f => ({ ...f, planKey: e.target.value }))}>
+                {plans.map(p => <option key={p.key} value={p.key}>{p.name}{p.seat_limit ? ` (${p.seat_limit} seats)` : ' (unlimited)'}</option>)}
+              </select>
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <label className="form-label">Status</label>
+              <select className="form-input" value={billingForm.billingStatus} onChange={e => setBillingForm(f => ({ ...f, billingStatus: e.target.value }))}>
+                {Object.keys(STATUS_LABEL).map(s => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
+              </select>
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <label className="form-label">Trial Ends (leave blank if not on trial)</label>
+              <input className="form-input" type="date" value={billingForm.trialEndsAt} onChange={e => setBillingForm(f => ({ ...f, trialEndsAt: e.target.value }))} />
+            </div>
+            <div>
+              <label className="form-label">Seat Limit Override (blank = use plan default)</label>
+              <input className="form-input" type="number" min={1} value={billingForm.seatLimitOverride} onChange={e => setBillingForm(f => ({ ...f, seatLimitOverride: e.target.value }))} placeholder={billingOrg.seat_limit != null ? String(billingOrg.seat_limit) : '∞'} />
+            </div>
+          </form>
+        </Modal>
       )}
 
       {showCreate && (
