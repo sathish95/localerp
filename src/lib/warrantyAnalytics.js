@@ -15,7 +15,7 @@ const OVERRUN_FINDING_PCT = 15 // matches spendAnalyzer.js's own RecurringOverru
 
 async function upsertRollupRows(rows) {
   for (let i = 0; i < rows.length; i += CHUNK) {
-    await supabase.from('warranty_analytics_rollup').upsert(rows.slice(i, i + CHUNK), { onConflict: 'period_key,part_number,issue_type' })
+    await supabase.from('warranty_analytics_rollup').upsert(rows.slice(i, i + CHUNK), { onConflict: 'organization_id,period_key,part_number,issue_type' })
   }
 }
 

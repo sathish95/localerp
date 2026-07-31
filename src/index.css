@@ -644,3 +644,11 @@ tr:hover td { background: var(--surface) }
   position: relative;
   border-right: none;
 }
+
+/* Landing Page Builder — auto-height flex-wrap canvas (STEP86) already
+   reflows columns to full width once a row's items shrink below their
+   minWidth, but this is an explicit safeguard for real phones so
+   percentage/minWidth edge cases can never produce a squeezed column. */
+@media (max-width: 640px) {
+  .lp-block-col { flex-basis: 100% !important }
+}

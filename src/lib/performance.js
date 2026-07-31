@@ -273,15 +273,18 @@ export async function updateDevelopmentPlan(id, patch) {
   if (error) throw error
 }
 
-/* ═══ Composite Score Weights (HR-editable settings, singleton row) ═══ */
+/* ═══ Composite Score Weights (HR-editable settings, one row per organization) ═══ */
+// STEP94 replaced the old hardcoded id=1 singleton with organization_id
+// as the primary key — no .eq() filter needed for either call below, RLS
+// already scopes both to exactly the caller's own org's row.
 
 export async function getScoreWeights() {
-  const { data } = await supabase.from('performance_score_weights').select('*').eq('id', 1).maybeSingle()
+  const { data } = await supabase.from('performance_score_weights').select('*').maybeSingle()
   return data || { goal_achievement_weight_percent: 60, manager_rating_weight_percent: 30, utilization_weight_percent: 10 }
 }
 
 export async function saveScoreWeights(weights, updatedBy) {
-  const { error } = await supabase.from('performance_score_weights').update({ ...weights, updated_by: updatedBy }).eq('id', 1)
+  const { error } = await supabase.from('performance_score_weights').update({ ...weights, updated_by: updatedBy }).not('organization_id', 'is', null)
   if (error) throw error
 }
 

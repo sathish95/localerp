@@ -37,7 +37,7 @@ export async function nextNum(type) {
     const { data, error } = await supabase.rpc('next_sequence', { seq_name: type })
     if (!error && data) return data
   } catch(_) {}
-  const p = { expense:'EXP', travel:'TRV', pr:'PR', po:'PO', grn:'GRN', invoice:'INV', asset:'AST', warranty:'WCL', proposal:'PROP' }
+  const p = { expense:'EXP', travel:'TRV', pr:'PR', po:'PO', grn:'GRN', invoice:'INV', asset:'AST', warranty:'WCL', proposal:'PROP', lead:'LEAD', opportunity:'OPP' }
   return (p[type]||'REQ') + '-' + Date.now().toString().slice(-6)
 }
 

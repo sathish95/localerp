@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { MISSING_ENV } from './lib/supabase'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { TabVisibilityProvider } from './context/TabVisibilityContext'
@@ -53,16 +53,47 @@ import SpendAnalyzerPage from './pages/SpendAnalyzerPage'
 import WarrantyPage from './pages/WarrantyPage'
 import DataAssistantPage from './pages/DataAssistantPage'
 import ProposalsPage from './pages/ProposalsPage'
+import LeadsPage from './pages/LeadsPage'
+import LandingLinksPage from './pages/LandingLinksPage'
+import MeetingBookingPagesPage from './pages/MeetingBookingPagesPage'
+import OpportunitiesPage from './pages/OpportunitiesPage'
+import SalesTasksPage from './pages/SalesTasksPage'
+import ProductLaunchesPage from './pages/ProductLaunchesPage'
+import TendersPage from './pages/TendersPage'
+import PilotProjectsPage from './pages/PilotProjectsPage'
+import BootstrapProgramsPage from './pages/BootstrapProgramsPage'
+import SalesTimelinePage from './pages/SalesTimelinePage'
+import SalesDashboardPage from './pages/SalesDashboardPage'
+import PublicLeadFormPage from './pages/PublicLeadFormPage'
+import PublicMeetingBookingPage from './pages/PublicMeetingBookingPage'
+import CampaignsPage from './pages/CampaignsPage'
+import LandingPagesPage from './pages/LandingPagesPage'
+import ContentAssetsPage from './pages/ContentAssetsPage'
+import MarketingCalendarPage from './pages/MarketingCalendarPage'
 import PerformanceCyclesPage from './pages/PerformanceCyclesPage'
 import MyPerformancePage from './pages/MyPerformancePage'
 import TeamReviewsPage from './pages/TeamReviewsPage'
 import CalibrationPage from './pages/CalibrationPage'
 import PerformanceDashboardPage from './pages/PerformanceDashboardPage'
+import SuperAdminPage from './pages/SuperAdminPage'
 import { NotificationProvider } from './context/NotificationContext'
 
 function AppRoutes() {
   const { user, profile, loading } = useAuth()
+  const location = useLocation()
   if (loading) return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh' }}><div className="spinner" /></div>
+
+  // Public lead-capture / meeting-booking pages render standalone (no
+  // Layout/sidebar) and are reachable regardless of auth state — checked
+  // before the !user branch so an already-logged-in admin can preview
+  // their own link too.
+  if (location.pathname.startsWith('/l/')) {
+    return <Routes><Route path="/l/:slug" element={<PublicLeadFormPage />} /></Routes>
+  }
+  if (location.pathname.startsWith('/book/')) {
+    return <Routes><Route path="/book/:slug" element={<PublicMeetingBookingPage />} /></Routes>
+  }
+
   if (!user) return (
     <Routes>
       <Route path="/" element={<LandingPage />} />
@@ -79,6 +110,11 @@ function AppRoutes() {
   const isHROrManager = ['admin','ceo','hr','manager','department_head'].includes(role)
   const isProcurementModule = ['admin','ceo','manager','department_head','finance','procurement_lead','pm','cto'].includes(role)
   const isProposalModule = ['admin','ceo','finance','cto','sales_lead'].includes(role)
+  const isSalesModule = ['admin','ceo','sales_head','regional_sales_head','sales_rep','sales_ops'].includes(role)
+  const isLandingLinksModule = ['admin','ceo','sales_head','regional_sales_head','sales_ops','cmo','campaign_manager'].includes(role)
+  const isSalesTenderPilotBootstrap = ['admin','ceo','sales_head','regional_sales_head','sales_rep','sales_ops','finance'].includes(role)
+  const isSalesDashboard = ['admin','ceo','finance','cmo','cto','sales_head','regional_sales_head'].includes(role)
+  const isMarketingRead = ['admin','ceo','cmo','campaign_manager','sales_rep','regional_sales_head','sales_head','finance','cto'].includes(role)
   const isPerformanceAdmin = ['admin','ceo','hr'].includes(role)
   const isPerformanceReviewer = ['admin','ceo','hr','manager','department_head'].includes(role)
   const isPerformanceDashboard = ['admin','ceo','hr','manager','department_head','cto'].includes(role)
@@ -113,6 +149,21 @@ function AppRoutes() {
           <Route path="/devices" element={<ModuleGate tab="devices" allowed={isProcurementModule}><DevicesPage /></ModuleGate>} />
           <Route path="/warranty" element={<ModuleGate tab="warranty" allowed={canViewWarranty}><WarrantyPage /></ModuleGate>} />
           <Route path="/proposals" element={<ModuleGate tab="proposals" allowed={isProposalModule}><ProposalsPage /></ModuleGate>} />
+          <Route path="/sales/leads" element={<ModuleGate tab="sales-leads" allowed={isSalesModule}><LeadsPage /></ModuleGate>} />
+          <Route path="/sales/landing-links" element={<ModuleGate tab="sales-landing-links" allowed={isLandingLinksModule}><LandingLinksPage /></ModuleGate>} />
+          <Route path="/sales/meeting-pages" element={<ModuleGate tab="sales-meeting-pages" allowed={isLandingLinksModule}><MeetingBookingPagesPage /></ModuleGate>} />
+          <Route path="/sales/opportunities" element={<ModuleGate tab="sales-opportunities" allowed={isSalesModule}><OpportunitiesPage /></ModuleGate>} />
+          <Route path="/sales/tasks" element={<ModuleGate tab="sales-tasks" allowed={isSalesModule}><SalesTasksPage /></ModuleGate>} />
+          <Route path="/sales/product-launches" element={<ModuleGate tab="sales-product-launches" allowed={isSalesTenderPilotBootstrap || role==='cto'}><ProductLaunchesPage /></ModuleGate>} />
+          <Route path="/sales/tenders" element={<ModuleGate tab="sales-tenders" allowed={isSalesTenderPilotBootstrap}><TendersPage /></ModuleGate>} />
+          <Route path="/sales/pilot-projects" element={<ModuleGate tab="sales-pilot-projects" allowed={isSalesTenderPilotBootstrap}><PilotProjectsPage /></ModuleGate>} />
+          <Route path="/sales/bootstrap-programs" element={<ModuleGate tab="sales-bootstrap-programs" allowed={isSalesTenderPilotBootstrap}><BootstrapProgramsPage /></ModuleGate>} />
+          <Route path="/sales/timeline" element={<ModuleGate tab="sales-timeline" allowed={isSalesDashboard}><SalesTimelinePage /></ModuleGate>} />
+          <Route path="/sales/dashboard" element={<ModuleGate tab="sales-dashboard" allowed={isSalesDashboard}><SalesDashboardPage /></ModuleGate>} />
+          <Route path="/marketing/campaigns" element={<ModuleGate tab="marketing-campaigns" allowed={isMarketingRead}><CampaignsPage /></ModuleGate>} />
+          <Route path="/marketing/landing-pages" element={<ModuleGate tab="marketing-landing-pages" allowed={isMarketingRead}><LandingPagesPage /></ModuleGate>} />
+          <Route path="/marketing/content-assets" element={<ModuleGate tab="marketing-content-assets" allowed={isMarketingRead}><ContentAssetsPage /></ModuleGate>} />
+          <Route path="/marketing/calendar" element={<ModuleGate tab="marketing-calendar" allowed={isMarketingRead}><MarketingCalendarPage /></ModuleGate>} />
           <Route path="/performance-cycles" element={<ModuleGate tab="performance-cycles" allowed={isPerformanceAdmin}><PerformanceCyclesPage /></ModuleGate>} />
           <Route path="/my-performance" element={<ModuleGate tab="my-performance" allowed={true}><MyPerformancePage /></ModuleGate>} />
           <Route path="/team-reviews" element={<ModuleGate tab="team-reviews" allowed={isPerformanceReviewer}><TeamReviewsPage /></ModuleGate>} />
@@ -143,6 +194,10 @@ function AppRoutes() {
           <Route path="/app-monitor" element={<ModuleGate tab="app-monitor" allowed={isAdmin}><AppMonitorPage /></ModuleGate>} />
           <Route path="/llm-monitor" element={<ModuleGate tab="llm-monitor" allowed={isAdmin}><LLMMonitorPage /></ModuleGate>} />
           <Route path="/content" element={<ModuleGate tab="content" allowed={isAdmin}><AdminContentPage /></ModuleGate>} />
+          {/* Platform-level, not module-gated — a per-org "enabled modules"
+              switch has no meaning for a feature that exists above every
+              org. Gated purely on profile.is_super_admin. */}
+          <Route path="/super-admin" element={profile?.is_super_admin ? <SuperAdminPage /> : <Navigate to="/" />} />
           <Route path="/login" element={<Navigate to="/" />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>

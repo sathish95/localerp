@@ -1,15 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
-
-const ROLES = [
-  { id:'admin',    label:'Admin',    emoji:'👑', color:'#7c3aed' },
-  { id:'ceo',      label:'CEO',      emoji:'🏛️', color:'#dc2626' },
-  { id:'manager',  label:'Manager',  emoji:'📋', color:'#0284c7' },
-  { id:'finance',  label:'Finance',  emoji:'💰', color:'#16a34a' },
-  { id:'hr',       label:'HR',       emoji:'🧑‍💼', color:'#0891b2' },
-  { id:'employee', label:'Employee', emoji:'👤', color:'#d97706' },
-]
+import { previewInviteCode } from '../lib/orgInvites'
 
 export default function AuthPage() {
   const { signIn, signUp, user } = useAuth()
@@ -19,23 +11,51 @@ export default function AuthPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
-  const [role, setRole] = useState('employee')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  // Which org a new signup lands in (STEP105) — 'create' spins up a brand
+  // new organization with this user as its admin; 'join' consumes an
+  // invite code an existing org's admin generated from Settings ->
+  // Organization. Defaults to 'create' since that's the more common first
+  // touch (nobody has an invite code until an org already exists).
+  const [orgMode, setOrgMode] = useState('create')
+  const [orgName, setOrgName] = useState('')
+  const [inviteCode, setInviteCode] = useState('')
+  const [invitePreview, setInvitePreview] = useState(null) // { valid, org_name, role, reason }
+  const [checkingInvite, setCheckingInvite] = useState(false)
+
   useEffect(() => { if(user) navigate('/') }, [user])
+
+  useEffect(() => {
+    setInvitePreview(null)
+    if (mode !== 'signup' || orgMode !== 'join' || inviteCode.trim().length < 4) return
+    const t = setTimeout(async () => {
+      setCheckingInvite(true)
+      try { setInvitePreview(await previewInviteCode(inviteCode.trim())) }
+      catch { setInvitePreview({ valid:false, reason:'Could not check this code' }) }
+      finally { setCheckingInvite(false) }
+    }, 500)
+    return () => clearTimeout(t)
+  }, [inviteCode, orgMode, mode])
 
   async function handleSubmit(e) {
     e.preventDefault(); setLoading(true); setError('')
     try {
-      if (mode==='login') await signIn(email, password)
-      else await signUp(email, password, { full_name: name, role })
+      if (mode==='login') { await signIn(email, password); navigate('/'); return }
+
+      if (orgMode==='create' && !orgName.trim()) throw new Error('Organization name is required')
+      if (orgMode==='join' && !invitePreview?.valid) throw new Error('Enter a valid invite code first')
+
+      const meta = { full_name: name, role: 'employee', org_mode: orgMode }
+      if (orgMode==='create') meta.org_name = orgName.trim()
+      if (orgMode==='join') meta.invite_code = inviteCode.trim()
+
+      await signUp(email, password, meta)
       navigate('/')
     } catch(err) { setError(err.message) }
     finally { setLoading(false) }
   }
-
-  const sel = ROLES.find(r=>r.id===role)
 
   return (
     <div style={{ minHeight:'100vh', background:'#060612', display:'flex', fontFamily:"'Plus Jakarta Sans',sans-serif", position:'relative', overflow:'hidden' }}>
@@ -97,6 +117,42 @@ export default function AuthPage() {
               </div>
             )}
 
+            {mode==='signup' && (
+              <div style={{ marginBottom:14 }}>
+                <label style={{ display:'block', fontSize:12, fontWeight:700, color:'rgba(255,255,255,.6)', marginBottom:6, textTransform:'uppercase', letterSpacing:'.05em' }}>Workspace</label>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:10 }}>
+                  {[['create','New organization'],['join','Join with invite']].map(([id,label])=>(
+                    <div key={id} onClick={()=>setOrgMode(id)}
+                      style={{ padding:'10px 8px', borderRadius:10, textAlign:'center', cursor:'pointer', fontSize:12.5, fontWeight:700,
+                        border:`1.5px solid ${orgMode===id?'#6366f1':'rgba(255,255,255,.1)'}`,
+                        background:orgMode===id?'rgba(99,102,241,.15)':'rgba(255,255,255,.03)',
+                        color:orgMode===id?'#a5b4fc':'rgba(255,255,255,.5)' }}>
+                      {label}
+                    </div>
+                  ))}
+                </div>
+
+                {orgMode==='create' ? (
+                  <input value={orgName} onChange={e=>setOrgName(e.target.value)} placeholder="Your company / team name" required
+                    style={{ width:'100%', padding:'11px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,.12)', background:'rgba(255,255,255,.06)', color:'#fff', fontSize:14, fontFamily:'inherit', outline:'none', boxSizing:'border-box' }}
+                    onFocus={e=>e.target.style.borderColor='#6366f1'} onBlur={e=>e.target.style.borderColor='rgba(255,255,255,.12)'}/>
+                ) : (
+                  <>
+                    <input value={inviteCode} onChange={e=>setInviteCode(e.target.value.toUpperCase())} placeholder="Invite code (e.g. AB12CD34)" required
+                      style={{ width:'100%', padding:'11px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,.12)', background:'rgba(255,255,255,.06)', color:'#fff', fontSize:14, fontFamily:'inherit', outline:'none', boxSizing:'border-box', letterSpacing:'.05em' }}
+                      onFocus={e=>e.target.style.borderColor='#6366f1'} onBlur={e=>e.target.style.borderColor='rgba(255,255,255,.12)'}/>
+                    {checkingInvite && <div style={{ fontSize:12, color:'rgba(255,255,255,.4)', marginTop:6 }}>Checking…</div>}
+                    {!checkingInvite && invitePreview?.valid && (
+                      <div style={{ fontSize:12.5, color:'#86efac', marginTop:6 }}>✓ Joining <strong>{invitePreview.org_name}</strong> as {invitePreview.role}</div>
+                    )}
+                    {!checkingInvite && invitePreview && !invitePreview.valid && (
+                      <div style={{ fontSize:12.5, color:'#fca5a5', marginTop:6 }}>{invitePreview.reason}</div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
             <div style={{ marginBottom:14 }}>
               <label style={{ display:'block', fontSize:12, fontWeight:700, color:'rgba(255,255,255,.6)', marginBottom:6, textTransform:'uppercase', letterSpacing:'.05em' }}>Email</label>
               <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@company.com" required
@@ -111,18 +167,12 @@ export default function AuthPage() {
                 onFocus={e=>e.target.style.borderColor='#6366f1'} onBlur={e=>e.target.style.borderColor='rgba(255,255,255,.12)'}/>
             </div>
 
-            {mode==='signup' && (
-              <div style={{ marginBottom:24 }}>
-                <label style={{ display:'block', fontSize:12, fontWeight:700, color:'rgba(255,255,255,.6)', marginBottom:10, textTransform:'uppercase', letterSpacing:'.05em' }}>Your Role</label>
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8 }}>
-                  {ROLES.map(r=>(
-                    <div key={r.id} onClick={()=>setRole(r.id)}
-                      style={{ padding:'10px 6px', borderRadius:12, textAlign:'center', cursor:'pointer', border:`1.5px solid ${role===r.id?r.color:'rgba(255,255,255,.1)'}`, background:role===r.id?`${r.color}18`:'rgba(255,255,255,.03)', transition:'all .15s' }}>
-                      <div style={{ fontSize:20, marginBottom:4 }}>{r.emoji}</div>
-                      <div style={{ fontSize:10, fontWeight:700, color:role===r.id?r.color:'rgba(255,255,255,.45)', textTransform:'uppercase', letterSpacing:'.04em' }}>{r.label}</div>
-                    </div>
-                  ))}
-                </div>
+            {/* Role is decided server-side for both signup paths — 'create'
+                always makes you the new org's admin, 'join' takes the role
+                the invite was issued with — so no picker is shown here. */}
+            {mode==='signup' && orgMode==='create' && (
+              <div style={{ marginBottom:20, padding:'10px 14px', borderRadius:10, background:'rgba(124,58,237,.12)', border:'1px solid rgba(124,58,237,.25)', color:'#c4b5fd', fontSize:12.5 }}>
+                👑 You'll be the admin of this new organization.
               </div>
             )}
 

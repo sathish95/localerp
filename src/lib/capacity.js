@@ -153,8 +153,12 @@ export async function recomputeAllActive() {
   await recomputeForEmployees(ids, weeks)
 }
 
+// capacity_settings is one row per organization (STEP90 — organization_id
+// is its primary key, replacing the old hardcoded id=1 singleton row).
+// No .eq() filter is needed: RLS already scopes both the SELECT and the
+// UPDATE below to exactly the caller's own org's row.
 export async function getBenchBurnoutThresholds() {
-  const { data } = await supabase.from('capacity_settings').select('*').eq('id', 1).maybeSingle()
+  const { data } = await supabase.from('capacity_settings').select('*').maybeSingle()
   return {
     benchPct: data?.bench_risk_threshold_pct ?? 30,
     burnoutPct: data?.burnout_risk_threshold_pct ?? 100,
@@ -164,7 +168,7 @@ export async function getBenchBurnoutThresholds() {
 export async function saveBenchBurnoutThresholds(benchPct, burnoutPct, updatedBy) {
   await supabase.from('capacity_settings').update({
     bench_risk_threshold_pct: benchPct, burnout_risk_threshold_pct: burnoutPct, updated_by: updatedBy,
-  }).eq('id', 1)
+  }).not('organization_id', 'is', null) // no real filter needed — RLS already scopes this to the caller's one row; satisfies supabase-js's "update needs a filter" requirement
 }
 
 export async function getSnapshotsForEmployee(employeeId, weeks = PAST_WEEKS + FUTURE_WEEKS) {

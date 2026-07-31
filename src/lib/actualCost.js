@@ -2,7 +2,7 @@ import { supabase } from './supabase'
 import { computeWarrantyCostForProject } from './warrantyCost'
 
 async function getFinanceSettings() {
-  const { data } = await supabase.from('finance_settings').select('*').eq('id', 1).maybeSingle()
+  const { data } = await supabase.from('finance_settings').select('*').maybeSingle()
   return {
     burnRateWarningPct: data?.burn_rate_warning_pct ?? 80,
     matchTolerancePct: data?.match_variance_tolerance_pct ?? 5,

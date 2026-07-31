@@ -1,7 +1,7 @@
 import { supabase } from './supabase'
 
 export async function getMatchTolerance() {
-  const { data } = await supabase.from('finance_settings').select('match_variance_tolerance_pct').eq('id', 1).maybeSingle()
+  const { data } = await supabase.from('finance_settings').select('match_variance_tolerance_pct').maybeSingle()
   return data?.match_variance_tolerance_pct ?? 5
 }
 

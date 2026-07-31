@@ -13,18 +13,22 @@ import {
   Calendar, Clock, FileSpreadsheet, Megaphone, ClipboardList, FileClock,
   MessageSquare, Activity, Sparkles, Cpu, GraduationCap, CalendarRange, Gauge,
   DollarSign, FileCheck, Wallet, History, Percent, Radar, ShieldCheck, Coins, BookOpen, Boxes, Warehouse,
-  Target, Award, UserCheck, Scale, LineChart
+  Target, Award, UserCheck, Scale, LineChart, UserPlus, Landmark, FlaskConical, Rocket, CalendarDays, Image, Link2, LayoutTemplate, CalendarClock
 } from 'lucide-react'
 
 const roleColor = {
   admin: '#7c3aed', ceo: '#dc2626', manager: '#0284c7',
   finance: '#16a34a', employee: '#d97706', department_head: '#0284c7',
   procurement_lead: '#0891b2', pm: '#7c3aed', cto: '#be123c',
+  sales_rep: '#0ea5e9', regional_sales_head: '#0369a1', sales_head: '#1d4ed8', sales_ops: '#7c3aed', cmo: '#db2777',
+  campaign_manager: '#f472b6',
 }
 const roleLabel = {
   admin: 'Administrator', ceo: 'Chief Executive', manager: 'Manager',
   finance: 'Finance', employee: 'Employee', department_head: 'Dept. Head',
   procurement_lead: 'Procurement Lead', pm: 'Project Manager', cto: 'CTO',
+  sales_rep: 'Sales Rep', regional_sales_head: 'Regional Sales Head', sales_head: 'Sales Head', sales_ops: 'Sales Ops', cmo: 'CMO',
+  campaign_manager: 'Campaign Manager',
 }
 
 const ALL_NAV = [
@@ -70,6 +74,25 @@ const ALL_NAV = [
   ]},
   { section: 'Pre-Sales', items: [
     { to: '/proposals', tab: 'proposals', label: 'Proposals', icon: FileText, roles: ['admin','ceo','finance','cto','sales_lead'] },
+  ]},
+  { section: 'Sales', items: [
+    { to: '/sales/leads', tab: 'sales-leads', label: 'Leads', icon: UserPlus, roles: ['admin','ceo','sales_head','regional_sales_head','sales_rep','sales_ops'] },
+    { to: '/sales/landing-links', tab: 'sales-landing-links', label: 'Landing Links', icon: Link2, roles: ['admin','ceo','sales_head','regional_sales_head','sales_ops','cmo','campaign_manager'] },
+    { to: '/sales/meeting-pages', tab: 'sales-meeting-pages', label: 'Meeting Booking', icon: CalendarClock, roles: ['admin','ceo','sales_head','regional_sales_head','sales_ops','cmo','campaign_manager'] },
+    { to: '/sales/opportunities', tab: 'sales-opportunities', label: 'Opportunities', icon: TrendingUp, roles: ['admin','ceo','sales_head','regional_sales_head','sales_rep','sales_ops'] },
+    { to: '/sales/tasks', tab: 'sales-tasks', label: 'Sales Tasks', icon: ClipboardList, roles: ['admin','ceo','sales_head','regional_sales_head','sales_rep','sales_ops'] },
+    { to: '/sales/product-launches', tab: 'sales-product-launches', label: 'Product Launches', icon: Sparkles, roles: ['admin','ceo','sales_head','regional_sales_head','sales_rep','sales_ops','finance','cto'] },
+    { to: '/sales/tenders', tab: 'sales-tenders', label: 'Tenders', icon: Landmark, roles: ['admin','ceo','sales_head','regional_sales_head','sales_rep','sales_ops','finance'] },
+    { to: '/sales/pilot-projects', tab: 'sales-pilot-projects', label: 'Pilot Projects', icon: FlaskConical, roles: ['admin','ceo','sales_head','regional_sales_head','sales_rep','sales_ops','finance'] },
+    { to: '/sales/bootstrap-programs', tab: 'sales-bootstrap-programs', label: 'Bootstrap Program', icon: Rocket, roles: ['admin','ceo','sales_head','regional_sales_head','sales_rep','sales_ops','finance'] },
+    { to: '/sales/timeline', tab: 'sales-timeline', label: 'Sales Timeline', icon: History, roles: ['admin','ceo','finance','cmo','cto','sales_head','regional_sales_head'] },
+    { to: '/sales/dashboard', tab: 'sales-dashboard', label: 'Sales Dashboard', icon: LineChart, roles: ['admin','ceo','finance','cmo','cto','sales_head','regional_sales_head'] },
+  ]},
+  { section: 'Marketing', items: [
+    { to: '/marketing/campaigns', tab: 'marketing-campaigns', label: 'Campaigns', icon: Megaphone, roles: ['admin','ceo','cmo','campaign_manager','sales_rep','regional_sales_head','sales_head','finance','cto'] },
+    { to: '/marketing/landing-pages', tab: 'marketing-landing-pages', label: 'Landing Pages', icon: LayoutTemplate, roles: ['admin','ceo','cmo','campaign_manager','sales_rep','regional_sales_head','sales_head','finance','cto'] },
+    { to: '/marketing/content-assets', tab: 'marketing-content-assets', label: 'Content Assets', icon: Image, roles: ['admin','ceo','cmo','campaign_manager','sales_rep','regional_sales_head','sales_head','finance','cto'] },
+    { to: '/marketing/calendar', tab: 'marketing-calendar', label: 'Marketing Calendar', icon: CalendarDays, roles: ['admin','ceo','cmo','campaign_manager','sales_rep','regional_sales_head','sales_head','finance','cto'] },
   ]},
   { section: 'Performance', items: [
     { to: '/performance-cycles', tab: 'performance-cycles', label: 'Review Cycles', icon: Target, roles: ['admin','ceo','hr'] },
@@ -135,6 +158,12 @@ const ALL_NAV = [
     { to: '/app-monitor', tab: 'app-monitor', label: 'App Monitor', icon: Activity, roles: ['admin','ceo'] },
     { to: '/llm-monitor', tab: 'llm-monitor', label: 'LLM Usage Monitor', icon: Coins, roles: ['admin','ceo'] },
   ]},
+  { section: 'Platform', items: [
+    // platformOnly bypasses both the role list and the per-org module
+    // visibility check below — this is a platform capability that exists
+    // above any single org's "enabled modules" switches, not a module.
+    { to: '/super-admin', label: 'Super Admin', icon: Landmark, platformOnly: true },
+  ]},
 ]
 
 // Stable session ID for this browser tab's lifetime
@@ -190,6 +219,9 @@ export default function Layout({ children }) {
   const visibleNav = ALL_NAV.map(section => ({
     ...section,
     items: section.items.filter(item => {
+      // Platform-level items skip both the per-org role list and module
+      // visibility checks below — gated purely on is_super_admin.
+      if (item.platformOnly) return !!profile?.is_super_admin
       // Role guard
       if (item.roles && !item.roles.includes(role)) return false
       // Tab visibility guard (admin/ceo bypass this)
@@ -209,6 +241,10 @@ export default function Layout({ children }) {
     '/chat': 'Chat', '/app-monitor': 'App Monitor', '/llm-monitor': 'LLM Usage Monitor', '/neo-task-ai': 'Neo Task AI', '/data-assistant': 'Data Assistant',
     '/customers': 'Customers', '/products': 'Products', '/bom': 'BOM Management', '/inventory': 'Inventory Management', '/devices': 'Device Instances', '/warranty': 'Warranty Management',
     '/proposals': 'Proposals',
+    '/sales/leads': 'Leads', '/sales/landing-links': 'Landing Links', '/sales/meeting-pages': 'Meeting Booking Pages', '/sales/opportunities': 'Opportunities', '/sales/tasks': 'Sales Tasks',
+    '/sales/product-launches': 'Product Launches', '/sales/tenders': 'Tenders', '/sales/pilot-projects': 'Pilot Projects',
+    '/sales/bootstrap-programs': 'Bootstrap Program', '/sales/timeline': 'Sales Timeline', '/sales/dashboard': 'Sales Dashboard',
+    '/marketing/campaigns': 'Campaigns', '/marketing/landing-pages': 'Landing Pages', '/marketing/content-assets': 'Content Assets', '/marketing/calendar': 'Marketing Calendar',
     '/skill-matrix': 'Skill Matrix', '/allocations': 'Allocations', '/capacity': 'Capacity',
     '/role-rates': 'Role Rates', '/customer-invoices': 'Customer Invoices', '/payments': 'Payments',
     '/aging-report': 'Aging Report', '/profit-margins': 'Profit Margins', '/spend-analyzer': 'Spend Analyzer',

@@ -25,13 +25,24 @@ export function AuthProvider({ children }) {
     if (fetching.current) return; fetching.current = true
     try {
       for (let i=0; i<7; i++) {
+        // !profiles_organization_id_fkey disambiguates the embed — there
+        // are two FK paths between profiles and organizations
+        // (profiles.organization_id -> organizations.id, and
+        // organizations.created_by -> profiles.id), so an unqualified
+        // `org:organizations(...)` makes PostgREST return 300 Multiple
+        // Choices (with an empty body) on every request, which this
+        // retry loop silently swallowed as "no data yet" 7 times over —
+        // the profile query never actually succeeded until this hint.
         const { data } = await supabase.from('profiles')
-          .select('*, dept:departments(id,name,code)')
+          .select('*, dept:departments(id,name,code), org:organizations!profiles_organization_id_fkey(id,name,slug,is_active)')
           .eq('id', u.id).maybeSingle()
         if (data) { setProfile(data); return }
         await new Promise(r => setTimeout(r, 700*(i+1)))
       }
-      // fallback
+      // fallback — organization_id stays unset here (null) since the
+      // signup trigger doesn't populate it yet (STEP89); TabVisibilityContext
+      // treats a null org as "show everything" rather than locking the
+      // user out mid-signup.
       const fb = { id:u.id, email:u.email, full_name:u.user_metadata?.full_name||u.email?.split('@')[0]||'User', role:u.user_metadata?.role||'employee', is_active:true }
       await supabase.from('profiles').insert(fb).then(()=>{})
       setProfile(fb)

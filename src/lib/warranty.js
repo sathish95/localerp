@@ -34,7 +34,7 @@ export function isDeviceUnderWarranty(deviceWarrantyRow, asOfDate = new Date()) 
 
 // ── Settings (singleton) ──
 export async function getWarrantySettings() {
-  const { data } = await supabase.from('warranty_settings').select('*').eq('id', 1).maybeSingle()
+  const { data } = await supabase.from('warranty_settings').select('*').maybeSingle()
   return {
     claimAutoApproveThreshold: data?.claim_auto_approve_threshold ?? 25000,
     nearExpiryAlertDays: data?.near_expiry_alert_days ?? 30,
@@ -45,7 +45,7 @@ export async function getWarrantySettings() {
 export async function upsertWarrantySettings(patch, profileId) {
   const { error } = await supabase.from('warranty_settings').update({
     ...patch, updated_by: profileId, updated_at: new Date().toISOString(),
-  }).eq('id', 1)
+  }).not('organization_id', 'is', null)
   if (error) throw error
 }
 

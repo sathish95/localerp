@@ -6,6 +6,8 @@ import { Modal, Loader, Empty, Confirm, SearchBox, StatusBadge } from '../compon
 import AllocationGantt from '../components/AllocationGantt'
 import { recomputeForProject, getActualCostSnapshot, getBurnRate } from '../lib/actualCost'
 import { MARGIN_VISIBLE_ROLES, recomputeMargin, getMargin } from '../lib/profitMargin'
+import { findOpportunityForProject, recomputeSalesProfitAttribution } from '../lib/salesFinance'
+import { findCampaignForOpportunity, recomputeCampaignResult } from '../lib/marketingCampaigns'
 import { getFindings } from '../lib/spendAnalyzer'
 import { getWarrantyCostSummaryForProject } from '../lib/warrantyCost'
 import { Plus, Edit2, Trash2, FolderOpen, Eye, ArrowLeft, RefreshCw, AlertTriangle, TrendingDown, Percent, Radar } from 'lucide-react'
@@ -297,7 +299,24 @@ export default function ProjectsPage() {
     try {
       if (forceRecompute || !financeLoaded) await recomputeForProject(projectId)
       const canViewMargin = MARGIN_VISIBLE_ROLES.includes(role)
-      if (canViewMargin && (forceRecompute || !financeLoaded)) await recomputeMargin(projectId, profile.id)
+      if (canViewMargin && (forceRecompute || !financeLoaded)) {
+        await recomputeMargin(projectId, profile.id)
+        // If this project originated from the Sales CRM (Opportunity ->
+        // Convert to Proposal -> Project), keep SalesProfitAttribution in
+        // sync with the same recompute this triggers — same call site
+        // recomputeMargin() itself is invoked from, not a separate trigger.
+        const opportunityId = await findOpportunityForProject(projectId)
+        if (opportunityId) {
+          await recomputeSalesProfitAttribution(opportunityId)
+          // Marketing's CampaignResult.revenue_attributed_realized reads the
+          // same sales_profit_attribution row just recomputed above — keep
+          // it in sync here too, at the one place this recompute actually
+          // fires, rather than a marketingCampaigns.js <-> salesFinance.js
+          // circular import.
+          const campaignId = await findCampaignForOpportunity(opportunityId)
+          if (campaignId) await recomputeCampaignResult(campaignId)
+        }
+      }
       const [snap, burn, margin, allFindings, warranty] = await Promise.all([
         getActualCostSnapshot(projectId), getBurnRate(projectId),
         canViewMargin ? getMargin(projectId) : Promise.resolve(null),

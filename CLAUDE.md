@@ -26,7 +26,10 @@ VITE_SUPABASE_URL
 VITE_SUPABASE_ANON_KEY
 VITE_DEEPSEEK_API_KEY      # DeepSeek V3 for Neo Task AI
 VITE_GEMINI_API_KEY        # Gemini 2.5 Pro for Neo Task AI
+VITE_TURNSTILE_SITE_KEY    # Cloudflare Turnstile site key (public) for the /l/:slug public lead-capture form
 ```
+
+The Turnstile *secret* key is never an env var — it's stored server-side only, set write-only from Settings → Sales Config → Landing Links (`set_turnstile_secret` RPC, STEP75), readable by nothing except the `public_submit_lead` SECURITY DEFINER function.
 
 ## Database
 
@@ -100,6 +103,14 @@ AI-powered requirement analysis. Upload a document → AI generates stories, bac
 - Gemini uses the OpenAI-compatible endpoint: `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` with model `gemini-2.5-pro` (not the dated preview slug)
 - `parseJSON()` — 3-strategy robust parser (direct → code block → brace extraction)
 - Results persisted to 6 tables: `ai_analysis_sessions`, `ai_generated_stories`, `ai_generated_backlog`, `ai_generated_tasks`, `ai_generated_test_cases`, `ai_generated_apis`
+
+### Sales & Pre-Sales CRM (`sql/STEP68`–`STEP75`, `src/lib/sales*.js`, `src/pages/{Leads,Opportunities,SalesTasks,ProductLaunches,Tenders,PilotProjects,BootstrapPrograms,SalesTimeline,SalesDashboard}Page.jsx`)
+
+Lightweight CRM: every entry track (Lead, Won Tender, Converted Pilot, Converted Bootstrap Program) converges into `sales_opportunities`, which feeds the **existing** Proposal Builder via `salesOpportunities.convertToProposal()` (calls `proposals.js`'s `createProposal()` — never duplicates proposal/cost logic) and the **existing** actual-profit engine via `salesFinance.recomputeSalesProfitAttribution()` (reads `profit_margins`, computed by `profitMargin.js`'s `recomputeMargin()` — never recomputes cost itself). Pipeline stages, regions, roles, lookup lists, assignment rules and stale/overdue thresholds are all admin-configurable from Settings → "Sales Config" tab (`SalesConfigTab` in `SettingsPage.jsx`), backed by `src/lib/salesAdmin.js`.
+
+RLS convention for this module: permissive SELECT + role-gated writes (matches the rest of the app) EXCEPT `sales_profit_attribution`, which is deliberately DB-restricted to admin/ceo/finance/sales_head — a rep's own booked-vs-delivered gap isn't shown to them by default (config flag `view_sales_profit_attribution_individual` in `sales_config_flags` can loosen this later).
+
+**Public lead capture** (`STEP75`, `src/pages/PublicLeadFormPage.jsx`, route `/l/:slug`): admin creates a named "Landing Link" (Settings → Sales Config → Landing Links) locked to a domain/region/source, gets a shareable external URL. The public page is unauthenticated and standalone (no `Layout`, handled by a `location.pathname.startsWith('/l/')` short-circuit in `App.jsx` before the auth branch). It never touches tables directly — both reads and writes go through `SECURITY DEFINER` Postgres RPCs (`get_landing_link_public`, `public_submit_lead`) that anon is granted `EXECUTE` on but no table access. `public_submit_lead()` verifies a Cloudflare Turnstile token server-side (via the `http` Postgres extension, secret stored write-only in `sales_public_form_secrets` — no SELECT policy exists on that table at all) before running the same auto-assignment logic as `salesLeads.createLead()` and inserting the row. Requires `VITE_TURNSTILE_SITE_KEY` in `.env` (public) and the secret key set once via the Settings UI (never an env var).
 
 ### UI Components (`src/components/ui/index.jsx`)
 

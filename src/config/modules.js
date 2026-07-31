@@ -38,6 +38,23 @@ export const MODULES = [
 
   { key: 'proposals', label: 'Proposals', section: 'Pre-Sales' },
 
+  { key: 'sales-leads', label: 'Leads', section: 'Sales' },
+  { key: 'sales-landing-links', label: 'Landing Links', section: 'Sales' },
+  { key: 'sales-meeting-pages', label: 'Meeting Booking Pages', section: 'Sales' },
+  { key: 'sales-opportunities', label: 'Opportunities', section: 'Sales' },
+  { key: 'sales-tasks', label: 'Sales Tasks', section: 'Sales' },
+  { key: 'sales-product-launches', label: 'Product Launches', section: 'Sales' },
+  { key: 'sales-tenders', label: 'Tenders', section: 'Sales' },
+  { key: 'sales-pilot-projects', label: 'Pilot Projects', section: 'Sales' },
+  { key: 'sales-bootstrap-programs', label: 'Bootstrap Program', section: 'Sales' },
+  { key: 'sales-timeline', label: 'Sales Timeline', section: 'Sales' },
+  { key: 'sales-dashboard', label: 'Sales Dashboard', section: 'Sales' },
+
+  { key: 'marketing-campaigns', label: 'Campaigns', section: 'Marketing' },
+  { key: 'marketing-landing-pages', label: 'Landing Pages', section: 'Marketing' },
+  { key: 'marketing-content-assets', label: 'Content Assets', section: 'Marketing' },
+  { key: 'marketing-calendar', label: 'Marketing Calendar', section: 'Marketing' },
+
   { key: 'performance-cycles', label: 'Review Cycles', section: 'Performance' },
   { key: 'my-performance', label: 'My Performance', section: 'Performance' },
   { key: 'team-reviews', label: 'Team Reviews', section: 'Performance' },

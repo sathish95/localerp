@@ -13,20 +13,28 @@ const Ctx = createContext(null)
 export function TabVisibilityProvider({ children }) {
   const { profile } = useAuth()
   const role = profile?.role || 'employee'
+  const orgId = profile?.organization_id || null
   const [modules, setModules] = useState([])
   const [visibility, setVisibility] = useState([])
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [orgId])
 
   async function load() {
+    // No org resolved yet (e.g. a brand-new signup before the trigger
+    // populates organization_id) — skip the fetch rather than querying
+    // with a null org id. Empty modules/visibility state makes
+    // isTabVisible() fail open (show everything) below, matching this
+    // app's pre-existing "permissive by default" posture rather than
+    // locking a mid-signup user out of their own account.
+    if (!orgId) { setModules([]); setVisibility([]); setLoading(false); return }
     setLoading(true)
     try {
       // Self-healing seed only attempted by roles that can actually write
       // to `modules` (RLS-restricted to admin/ceo) — pointless for anyone
       // else, the insert would just be silently rejected.
-      if (['admin', 'ceo'].includes(role)) await syncModulesFromConfig()
-      const [mods, vis] = await Promise.all([getModules(), getModuleRoleVisibility()])
+      if (['admin', 'ceo'].includes(role)) await syncModulesFromConfig(orgId)
+      const [mods, vis] = await Promise.all([getModules(orgId), getModuleRoleVisibility(orgId)])
       setModules(mods)
       setVisibility(vis)
     } finally {
