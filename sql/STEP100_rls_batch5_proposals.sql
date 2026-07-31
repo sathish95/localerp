@@ -68,6 +68,7 @@ CREATE POLICY project_planned_budget_write ON project_planned_budget FOR ALL USI
 ALTER TABLE proposal_budget_category_map ADD COLUMN IF NOT EXISTS organization_id UUID REFERENCES organizations(id);
 UPDATE proposal_budget_category_map SET organization_id = (SELECT id FROM organizations WHERE slug = 'default-org') WHERE organization_id IS NULL;
 ALTER TABLE proposal_budget_category_map DROP CONSTRAINT IF EXISTS proposal_budget_category_map_proposal_category_key;
+ALTER TABLE proposal_budget_category_map DROP CONSTRAINT IF EXISTS proposal_budget_category_map_org_category_key;
 ALTER TABLE proposal_budget_category_map ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE proposal_budget_category_map ADD CONSTRAINT proposal_budget_category_map_org_category_key UNIQUE (organization_id, proposal_category);
 ALTER TABLE proposal_budget_category_map ALTER COLUMN organization_id SET DEFAULT current_org_id();

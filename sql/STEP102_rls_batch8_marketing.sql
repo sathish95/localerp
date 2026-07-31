@@ -44,8 +44,10 @@ END $$;
 -- UNIQUE, same lookup-list shape as the sales_* lookup lists — widen to
 -- (organization_id, name) so each org can carry its own seeded copy.
 ALTER TABLE marketing_campaign_types DROP CONSTRAINT IF EXISTS marketing_campaign_types_name_key;
+ALTER TABLE marketing_campaign_types DROP CONSTRAINT IF EXISTS marketing_campaign_types_org_name_key;
 ALTER TABLE marketing_campaign_types ADD CONSTRAINT marketing_campaign_types_org_name_key UNIQUE (organization_id, name);
 ALTER TABLE marketing_campaign_cost_types DROP CONSTRAINT IF EXISTS marketing_campaign_cost_types_name_key;
+ALTER TABLE marketing_campaign_cost_types DROP CONSTRAINT IF EXISTS marketing_campaign_cost_types_org_name_key;
 ALTER TABLE marketing_campaign_cost_types ADD CONSTRAINT marketing_campaign_cost_types_org_name_key UNIQUE (organization_id, name);
 
 NOTIFY pgrst, 'reload schema';

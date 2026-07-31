@@ -50,6 +50,7 @@ BEGIN
   END LOOP;
 END $$;
 ALTER TABLE sales_regions DROP CONSTRAINT IF EXISTS sales_regions_region_name_key;
+ALTER TABLE sales_regions DROP CONSTRAINT IF EXISTS sales_regions_org_name_key;
 ALTER TABLE sales_regions ADD CONSTRAINT sales_regions_org_name_key UNIQUE (organization_id, region_name);
 
 -- ── Group B: sales_pipeline_stages, lookup lists, assignment rules, thresholds, config flags ──
@@ -80,16 +81,22 @@ BEGIN
   END LOOP;
 END $$;
 ALTER TABLE sales_pipeline_stages DROP CONSTRAINT IF EXISTS sales_pipeline_stages_domain_stage_name_key;
+ALTER TABLE sales_pipeline_stages DROP CONSTRAINT IF EXISTS sales_pipeline_stages_org_domain_stage_key;
 ALTER TABLE sales_pipeline_stages ADD CONSTRAINT sales_pipeline_stages_org_domain_stage_key UNIQUE (organization_id, domain, stage_name);
 ALTER TABLE sales_lead_sources DROP CONSTRAINT IF EXISTS sales_lead_sources_name_key;
+ALTER TABLE sales_lead_sources DROP CONSTRAINT IF EXISTS sales_lead_sources_org_name_key;
 ALTER TABLE sales_lead_sources ADD CONSTRAINT sales_lead_sources_org_name_key UNIQUE (organization_id, name);
 ALTER TABLE sales_activity_types DROP CONSTRAINT IF EXISTS sales_activity_types_name_key;
+ALTER TABLE sales_activity_types DROP CONSTRAINT IF EXISTS sales_activity_types_org_name_key;
 ALTER TABLE sales_activity_types ADD CONSTRAINT sales_activity_types_org_name_key UNIQUE (organization_id, name);
 ALTER TABLE sales_task_types DROP CONSTRAINT IF EXISTS sales_task_types_name_key;
+ALTER TABLE sales_task_types DROP CONSTRAINT IF EXISTS sales_task_types_org_name_key;
 ALTER TABLE sales_task_types ADD CONSTRAINT sales_task_types_org_name_key UNIQUE (organization_id, name);
 ALTER TABLE sales_activity_outcomes DROP CONSTRAINT IF EXISTS sales_activity_outcomes_name_key;
+ALTER TABLE sales_activity_outcomes DROP CONSTRAINT IF EXISTS sales_activity_outcomes_org_name_key;
 ALTER TABLE sales_activity_outcomes ADD CONSTRAINT sales_activity_outcomes_org_name_key UNIQUE (organization_id, name);
 ALTER TABLE sales_stale_threshold_config DROP CONSTRAINT IF EXISTS sales_stale_threshold_config_domain_key;
+ALTER TABLE sales_stale_threshold_config DROP CONSTRAINT IF EXISTS sales_stale_threshold_config_org_domain_key;
 ALTER TABLE sales_stale_threshold_config ADD CONSTRAINT sales_stale_threshold_config_org_domain_key UNIQUE (organization_id, domain);
 -- sales_config_flags: key TEXT PRIMARY KEY -> widen PK to (organization_id, key)
 ALTER TABLE sales_config_flags DROP CONSTRAINT IF EXISTS sales_config_flags_pkey;
