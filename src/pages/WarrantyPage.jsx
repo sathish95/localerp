@@ -12,8 +12,9 @@ import {
 } from '../lib/warranty'
 import { recomputeWarrantyAnalyticsRollup, getWarrantyAnalyticsRollup, generateWarrantyFindings } from '../lib/warrantyAnalytics'
 import * as warrantyApproval from '../lib/warrantyApproval'
+import { exportWarrantyClaimPDF } from '../lib/warrantyExport'
 import { Modal, SearchBox, Loader, Empty, Tabs, Confirm, ApprovalChain } from '../components/ui'
-import { RefreshCw, ShieldCheck, ShieldAlert, Plus, ArrowRightLeft } from 'lucide-react'
+import { RefreshCw, ShieldCheck, ShieldAlert, Plus, ArrowRightLeft, Download } from 'lucide-react'
 
 const Kpi = ({ label, value, color }) => (
   <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, borderTop: `2px solid ${color}`, padding: '10px 14px' }}>
@@ -51,6 +52,14 @@ export default function WarrantyPage() {
   const canApprove = ['admin', 'ceo', 'pm', 'finance'].includes(role)
   const canResolve = ['admin', 'ceo', 'finance', 'manager', 'department_head', 'procurement_lead'].includes(role)
   const canViewCostFigures = ['admin', 'ceo', 'finance'].includes(role) // matches warranty_cost_entries/warranty_budgets RLS
+  const [exportingClaimId, setExportingClaimId] = useState(null)
+
+  async function handleExportClaim(claim) {
+    setExportingClaimId(claim.id)
+    try { await exportWarrantyClaimPDF(claim.id, profile?.org?.name) }
+    catch (e) { alert(e.message) }
+    finally { setExportingClaimId(null) }
+  }
 
   const [tab, setTab] = useState(isFieldTech ? 'claims' : (searchParams.get('tab') || 'overview'))
   const [loading, setLoading] = useState(true)
@@ -462,6 +471,7 @@ export default function WarrantyPage() {
                             <button className="btn btn-ghost btn-sm" style={{ color: '#e11d48' }} onClick={() => handleApprove(c, false)}>Reject</button>
                           </>}
                           {canResolve && c.status === 'Approved' && <button className="btn btn-outline btn-sm" onClick={() => openResolve(c)}>Resolve</button>}
+                          <button className="btn btn-ghost btn-sm btn-icon" onClick={() => handleExportClaim(c)} disabled={exportingClaimId === c.id} title="Download PDF"><Download size={13} /></button>
                         </div>
                       </td>
                     </tr>

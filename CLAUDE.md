@@ -60,11 +60,11 @@ Unauthenticated users are redirected to `/auth`.
 
 ### Tab Visibility (`src/context/TabVisibilityContext.jsx`)
 
-Controls which sidebar tabs each role can see. `isTabVisible(tab)` is the gating function. Defaults live in `DEFAULT_TABS` keyed by role; overrides are persisted to localStorage. Every new page route must be registered here for the correct roles.
+Controls which sidebar tabs each role can see. `isTabVisible(tab)` is the gating function — Supabase-backed (`modules` for a company-wide enable/disable kill switch, `module_role_visibility` for per-role visibility, default visible unless a row says otherwise), org-wide and shared across every browser/device. admin/ceo always bypass the per-role check (never the kill switch). Edited from Settings → "Roles & Modules" (`RolesModulesTab` in `SettingsPage.jsx`), backed by `src/lib/modules.js`. This is the **only** place nav visibility is gated — `Layout.jsx`'s `ALL_NAV` has no per-item role list of its own (removed; previously duplicated/conflicted with this table — see `sql/STEP112_nav_role_visibility_seed.sql`). Every new page route must still be registered in `ALL_NAV` with a matching module key in `src/config/modules.js` so it can be toggled here.
 
 ### Layout & Navigation (`src/components/layout/Layout.jsx`)
 
-Single shell with collapsible sidebar (`ALL_NAV` array) and topbar. Records a `page_view` event to `app_events` on every route change using a module-level `SESSION_ID`. Navigation items support a `roles` filter array for role-gating individual links.
+Single shell with collapsible sidebar (`ALL_NAV` array) and topbar. Records a `page_view` event to `app_events` on every route change using a module-level `SESSION_ID`. Nav item visibility is entirely `isTabVisible()`-driven (see Tab Visibility above) — `platformOnly` is the one exception, gated on `profile.is_super_admin` instead, above any per-org module system.
 
 ### Data Fetching Pattern
 

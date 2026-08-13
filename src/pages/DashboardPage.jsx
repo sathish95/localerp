@@ -5,6 +5,11 @@ import { Loader } from '../components/ui'
 import CheckInWidget from '../components/CheckInWidget'
 import { listBurnRateWatchlist } from '../lib/actualCost'
 import { getInventorySummary } from '../lib/inventory'
+import { getSalesHeadDashboard, getCMODashboard } from '../lib/salesDashboards'
+import { listLeads } from '../lib/salesLeads'
+import { listOpportunities } from '../lib/salesOpportunities'
+import { getMyQueue } from '../lib/salesTasks'
+import { computeOnboardingStatus } from '../lib/onboarding'
 import { Link } from 'react-router-dom'
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
@@ -14,7 +19,8 @@ import {
 import {
   Receipt, Users, FolderOpen, Box, TrendingUp, Clock,
   DollarSign, Plane, FileText, ShoppingCart, ArrowRight,
-  CheckCircle, AlertCircle, Briefcase, Target, BarChart2, Flame
+  CheckCircle, AlertCircle, Briefcase, Target, BarChart2, Flame,
+  UserPlus, Megaphone
 } from 'lucide-react'
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -24,8 +30,8 @@ const PERIOD_LABEL = { D:'Today', W:'This Week', M:'This Month', Y:'This Year' }
 // Shared elevation tokens — reused across KPI/ChartCard/DepartmentCard/etc so
 // every card on the dashboard reads as one consistent, "richer" visual system
 // instead of each component inventing its own shadow values.
-const CARD_SHADOW       = '0 1px 2px rgba(15,23,42,.03), 0 6px 18px -10px rgba(15,23,42,.10)'
-const CARD_SHADOW_HOVER = '0 2px 6px rgba(15,23,42,.05), 0 20px 36px -16px rgba(99,102,241,.28)'
+const CARD_SHADOW       = '0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04)'
+const CARD_SHADOW_HOVER = '0 4px 16px rgba(0,0,0,.08)'
 
 function getPeriodRange(period) {
   const now = new Date()
@@ -37,32 +43,28 @@ function getPeriodRange(period) {
   return { start, end: now }
 }
 
-// ─── Mini KPI card ────────────────────────────────────────────
+// ─── Mini KPI card — builds on .stat-card (still flat, thin border, no
+// gradients) but carries its category color as a bold left accent + a
+// solid saturated icon badge instead of a pale 15%-tint one, per the
+// "Vibrant Accent System" direction: one confident color per category,
+// used consistently, not a rainbow gradient. ──
 function KPI({ label, value, sub, color='#6366f1', icon, trend, href }) {
-  const [hover, setHover] = useState(false)
   const content = (
-    <div onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)}
-      style={{ position:'relative', background:`linear-gradient(155deg, #fff 0%, #fff 55%, ${color}09 100%)`,
-        borderRadius:16, padding:'18px 18px 16px', border:`1px solid ${color}22`,
-        boxShadow: hover ? `0 2px 6px rgba(15,23,42,.04), 0 20px 36px -14px ${color}55` : `0 1px 2px rgba(15,23,42,.03), 0 8px 20px -10px rgba(15,23,42,.12)`,
-        height:'100%', minWidth:0, overflow:'hidden',
-        transform: hover ? 'translateY(-4px)' : 'none', transition:'transform .2s ease, box-shadow .2s ease' }}>
-      <div style={{ position:'absolute', top:0, left:0, right:0, height:3.5, background:`linear-gradient(90deg, ${color}, ${color}80)` }}/>
-      <div style={{ position:'absolute', top:-30, right:-30, width:90, height:90, borderRadius:'50%', background:`${color}0d`, pointerEvents:'none' }}/>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12, gap:8, position:'relative' }}>
-        <div style={{ width:38, height:38, borderRadius:11, background:`radial-gradient(circle at 30% 30%, ${color}30, ${color}12)`, display:'flex', alignItems:'center', justifyContent:'center', color, flexShrink:0, boxShadow:`0 4px 10px ${color}22` }}>{icon}</div>
+    <div className="stat-card hover-lift" style={{ borderTop:'1.5px solid var(--border)', borderLeft:`4px solid ${color}`, height:'100%', minWidth:0 }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10, gap:8 }}>
+        <div style={{ width:34, height:34, borderRadius:9, background:color, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', flexShrink:0, boxShadow:`0 2px 6px ${color}50` }}>{icon}</div>
         {trend != null && (
-          <span style={{ fontSize:11, fontWeight:700, color: trend>=0?'#10b981':'#ef4444', background: trend>=0?'#dcfce7':'#fee2e2', padding:'2px 7px', borderRadius:999, flexShrink:0 }}>
+          <span style={{ fontSize:11, fontWeight:700, color:'#fff', background: trend>=0?'var(--success)':'var(--danger)', padding:'2px 7px', borderRadius:999, flexShrink:0 }}>
             {trend>=0?'▲':'▼'} {Math.abs(trend)}%
           </span>
         )}
       </div>
-      <div style={{ fontSize:'clamp(16px,3vw,24px)', fontWeight:800, color, lineHeight:1.2, marginBottom:4, overflowWrap:'break-word', wordBreak:'break-word', position:'relative' }}>{value}</div>
-      <div style={{ fontSize:12, color:'#64748b', fontWeight:600, position:'relative' }}>{label}</div>
-      {sub && <div style={{ fontSize:11, color:'#94a3b8', marginTop:3, position:'relative' }}>{sub}</div>}
+      <div className="stat-value" style={{ color }}>{value}</div>
+      <div className="stat-label">{label}</div>
+      {sub && <div style={{ fontSize:11, color:'var(--ink-muted)', marginTop:3 }}>{sub}</div>}
     </div>
   )
-  return href ? <Link to={href} style={{ textDecoration:'none', display:'block' }}>{content}</Link> : content
+  return href ? <Link to={href} style={{ textDecoration:'none', display:'block', height:'100%' }}>{content}</Link> : content
 }
 
 // ─── Section header ───────────────────────────────────────────
@@ -86,14 +88,14 @@ function BurnRateWatchlist() {
   if (rows === null) return null
   return (
     <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', overflow:'hidden', boxShadow:CARD_SHADOW }}>
-      <div style={{ padding:'14px 20px', borderBottom:'1px solid #f1f5f9', display:'flex', alignItems:'center', gap:8, background:'linear-gradient(180deg,#fff7f7,#fff)' }}>
+      <div style={{ padding:'14px 20px', borderBottom:'1px solid #f1f5f9', display:'flex', alignItems:'center', gap:8 }}>
         <Flame size={15} style={{ color:'#ef4444' }}/>
         <div style={{ fontWeight:700, fontSize:14 }}>Burn Rate Watchlist</div>
         <div style={{ fontSize:11, color:'#94a3b8', marginLeft:'auto' }}>Spending faster than timeline pace</div>
       </div>
       <div style={{ padding: rows.length===0 ? '20px' : '8px 0' }}>
         {rows.length===0 ? (
-          <div style={{ textAlign:'center', color:'#94a3b8', fontSize:12 }}>No projects currently over-burning 🎉</div>
+          <div style={{ textAlign:'center', color:'#94a3b8', fontSize:12 }}>No projects currently over-burning </div>
         ) : rows.map(r => (
           <Link key={r.project_id} to="/projects" className="dash-list-row" style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'8px 20px', textDecoration:'none', color:'inherit' }}>
             <span style={{ fontWeight:600, fontSize:13 }}>{r.name}</span>
@@ -105,19 +107,16 @@ function BurnRateWatchlist() {
   )
 }
 
-// ─── Chart card ───────────────────────────────────────────────
+// ─── Chart card — reuses the app's plain .card/.card-header convention
+// instead of its own gradient-header, hover-lift treatment. ──
 function ChartCard({ title, sub, children, height=220 }) {
-  const [hover, setHover] = useState(false)
   return (
-    <div onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)}
-      style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', overflow:'hidden',
-        boxShadow: hover ? CARD_SHADOW_HOVER : CARD_SHADOW,
-        transform: hover ? 'translateY(-2px)' : 'none', transition:'transform .2s ease, box-shadow .2s ease' }}>
-      <div style={{ padding:'14px 20px', borderBottom:'1px solid #f1f5f9', background:'linear-gradient(180deg,#fafbff,#fff)' }}>
-        <div style={{ fontWeight:700, fontSize:14 }}>{title}</div>
-        {sub && <div style={{ fontSize:11, color:'#94a3b8', marginTop:2 }}>{sub}</div>}
+    <div className="card">
+      <div className="card-header" style={{ display:'block' }}>
+        <div className="card-title">{title}</div>
+        {sub && <div style={{ fontSize:11, color:'var(--ink-muted)', marginTop:2 }}>{sub}</div>}
       </div>
-      <div style={{ padding:'16px 20px' }}>
+      <div className="card-body">
         <ResponsiveContainer width="100%" height={height}>{children}</ResponsiveContainer>
       </div>
     </div>
@@ -165,7 +164,7 @@ function FlowSplit({ title, sub, source, targets, fmt=(v)=>v, height=210 }) {
   const midX = (leftX+rightX)/2
   return (
     <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', overflow:'hidden', boxShadow:CARD_SHADOW }}>
-      <div style={{ padding:'14px 20px', borderBottom:'1px solid #f1f5f9', background:'linear-gradient(180deg,#fafbff,#fff)' }}>
+      <div style={{ padding:'14px 20px', borderBottom:'1px solid #f1f5f9' }}>
         <div style={{ fontWeight:700, fontSize:14 }}>{title}</div>
         {sub && <div style={{ fontSize:11, color:'#94a3b8', marginTop:2 }}>{sub}</div>}
       </div>
@@ -226,13 +225,9 @@ function RingGauge({ pct, color, size=68, label, sub }) {
 function DepartmentCard({ name, pct, health, headcount, hours, pending, hasBudget }) {
   const c = health==='over'?'#ef4444':health==='risk'?'#f59e0b':health==='unknown'?'#94a3b8':'#10b981'
   const label = health==='over'?'Over Budget':health==='risk'?'At Risk':health==='unknown'?'No Budget Set':'Healthy'
-  const [hover,setHover] = useState(false)
   return (
-    <div onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)}
-      style={{ position:'relative', background:`linear-gradient(155deg, #fff 0%, #fff 60%, ${c}08 100%)`, borderRadius:14, border:`1px solid ${c}25`, padding:'14px 16px',
-        width:'100%', minWidth:0, boxSizing:'border-box', boxShadow: hover?CARD_SHADOW_HOVER:CARD_SHADOW,
-        transform: hover?'translateY(-3px)':'none', transition:'transform .18s, box-shadow .18s', overflow:'hidden' }}>
-      <div style={{ position:'absolute', top:0, left:0, right:0, height:3.5, background:`linear-gradient(90deg, ${c}, ${c}80)` }}/>
+    <div className="hover-lift" style={{ position:'relative', background:'#fff', borderRadius:14, border:'1px solid var(--border)', borderLeft:`4px solid ${c}`, padding:'14px 16px',
+      width:'100%', minWidth:0, boxSizing:'border-box', boxShadow:CARD_SHADOW, overflow:'hidden' }}>
       <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:10 }}>
         <RingGauge pct={hasBudget?pct:0} color={c} size={56}/>
         <div style={{ minWidth:0 }}>
@@ -241,26 +236,35 @@ function DepartmentCard({ name, pct, health, headcount, hours, pending, hasBudge
         </div>
       </div>
       <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-        <span style={{ fontSize:10, padding:'3px 8px', borderRadius:6, background:'#f1f5f9', color:'#475569', fontWeight:600 }}>👥 {headcount}</span>
-        <span style={{ fontSize:10, padding:'3px 8px', borderRadius:6, background:'#f1f5f9', color:'#475569', fontWeight:600 }}>⏱ {hours}h</span>
-        {pending>0 && <span style={{ fontSize:10, padding:'3px 8px', borderRadius:6, background:'#fef3c7', color:'#b45309', fontWeight:700 }}>⚠ {pending} pending</span>}
+        <span style={{ fontSize:10, padding:'3px 8px', borderRadius:6, background:'#f1f5f9', color:'#475569', fontWeight:600 }}>{headcount}</span>
+        <span style={{ fontSize:10, padding:'3px 8px', borderRadius:6, background:'#f1f5f9', color:'#475569', fontWeight:600 }}>{hours}h</span>
+        {pending>0 && <span style={{ fontSize:10, padding:'3px 8px', borderRadius:6, background:'#fef3c7', color:'#b45309', fontWeight:700 }}>{pending} pending</span>}
       </div>
     </div>
   )
 }
 
 // ─── Hero banner ──────────────────────────────────────────────
+// role -> dashboard title shown in the flat page header (see HeroBanner)
 const HERO = {
-  admin:    { bg:'linear-gradient(135deg,#7c3aed 0%,#a855f7 50%,#ec4899 100%)', emoji:'👑', title:'Admin Control Center' },
-  ceo:      { bg:'linear-gradient(135deg,#991b1b 0%,#dc2626 50%,#f97316 100%)', emoji:'🏛️', title:'CEO Executive Dashboard' },
-  manager:  { bg:'linear-gradient(135deg,#0c4a6e 0%,#0284c7 50%,#06b6d4 100%)', emoji:'📋', title:'Manager Dashboard' },
-  department_head: { bg:'linear-gradient(135deg,#0c4a6e 0%,#0284c7 50%,#06b6d4 100%)', emoji:'🧭', title:'Department Dashboard' },
-  finance:  { bg:'linear-gradient(135deg,#064e3b 0%,#059669 50%,#34d399 100%)', emoji:'💰', title:'Finance Dashboard' },
-  hr:       { bg:'linear-gradient(135deg,#164e63 0%,#0891b2 50%,#22d3ee 100%)', emoji:'🧑‍💼', title:'HR & People Dashboard' },
-  employee: { bg:'linear-gradient(135deg,#78350f 0%,#d97706 50%,#fbbf24 100%)', emoji:'👤', title:'My Workspace' },
-  procurement_lead: { bg:'linear-gradient(135deg,#0e7490 0%,#0891b2 50%,#22d3ee 100%)', emoji:'🧾', title:'Procurement Command Center' },
-  pm:       { bg:'linear-gradient(135deg,#5b21b6 0%,#7c3aed 50%,#a78bfa 100%)', emoji:'📐', title:'Project & Procurement Overview' },
-  cto:      { bg:'linear-gradient(135deg,#881337 0%,#be123c 50%,#fb7185 100%)', emoji:'🖥️', title:'Technology Overview' },
+  admin:    { title:'Admin Control Center' },
+  ceo:      { title:'CEO Executive Dashboard' },
+  manager:  { title:'Manager Dashboard' },
+  department_head: { title:'Department Dashboard' },
+  finance:  { title:'Finance Dashboard' },
+  hr:       { title:'HR & People Dashboard' },
+  employee: { title:'My Workspace' },
+  procurement_lead: { title:'Procurement Command Center' },
+  pm:       { title:'Project & Procurement Overview' },
+  cto:      { title:'Technology Overview' },
+  sales_head: { title:'Sales Leadership Dashboard' },
+  sales_lead: { title:'Sales Leadership Dashboard' },
+  regional_sales_head: { title:'Regional Sales Dashboard' },
+  sales_ops: { title:'Sales Operations Dashboard' },
+  sales_rep: { title:'My Sales Workspace' },
+  cmo:       { title:'Marketing Command Center' },
+  campaign_manager: { title:'Campaign Dashboard' },
+  field_technician: { title:'Field Technician Dashboard' },
 }
 
 export default function DashboardPage() {
@@ -275,16 +279,30 @@ export default function DashboardPage() {
   const isProcurementLead = role==='procurement_lead'
   const isPM     = role==='pm'
   const isCTO    = role==='cto'
+  const isSalesLeadership = ['sales_head','regional_sales_head','sales_ops','sales_lead'].includes(role)
+  const isSalesRep = role==='sales_rep'
+  const isMarketing = ['cmo','campaign_manager'].includes(role)
+  const isFieldTech = role==='field_technician'
 
   const [data,    setData]    = useState(null)
   const [loading, setLoading] = useState(true)
   const [period,  setPeriod]  = useState('M')
+  const [salesLeadData, setSalesLeadData] = useState(null)
+  const [salesRepData, setSalesRepData] = useState(null)
+  const [marketingData, setMarketingData] = useState(null)
   const rawRef = useRef({ exp:[], inv:[], logs:[], users:[] })
+  const [onboarding, setOnboarding] = useState(null)
 
   const greeting = new Date().getHours()<12?'Good morning':new Date().getHours()<18?'Good afternoon':'Good evening'
   const today = new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long'})
 
   useEffect(() => { load() }, [role, profile?.id])
+  // Isolated from the big Promise.all load() above on purpose — this is
+  // a small, independent read that shouldn't be able to fail/slow down
+  // the rest of the dashboard, and only admin/ceo ever see the banner.
+  useEffect(() => {
+    if (isCEO && profile?.organization_id) computeOnboardingStatus(profile.organization_id).then(setOnboarding).catch(() => {})
+  }, [isCEO, profile?.organization_id])
 
   async function load() {
     setLoading(true)
@@ -495,6 +513,51 @@ export default function DashboardPage() {
     finally { setLoading(false) }
   }
 
+  // Sales leadership (sales_head / regional_sales_head / sales_ops / sales_lead):
+  // org- or region-wide rep performance, reusing the same aggregation the
+  // standalone Sales Dashboard's "Sales Head" persona already uses.
+  useEffect(() => {
+    if (!isSalesLeadership) return
+    getSalesHeadDashboard({ regionId: role==='regional_sales_head' ? profile?.region_id : undefined })
+      .then(setSalesLeadData)
+      .catch(() => setSalesLeadData({ repPerformance:[], totalActivities:0, overdueTasks:0, overdueByPriority:{}, pipelineByStage:[], winRate:0 }))
+  }, [isSalesLeadership, role, profile?.id])
+
+  // Sales rep: personal-only pipeline — never the org-wide numbers above.
+  useEffect(() => {
+    if (!isSalesRep || !profile?.id) return
+    Promise.all([
+      listLeads({ assignedRepId: profile.id }),
+      listOpportunities({ assignedRepId: profile.id }),
+      getMyQueue(profile.id),
+    ]).then(([leads, opps, tasks]) => {
+      const open = opps.filter(o=>o.status==='Open')
+      const won = opps.filter(o=>o.status==='Won')
+      const lost = opps.filter(o=>o.status==='Lost')
+      const closed = won.length + lost.length
+      const todayStr = new Date().toISOString().slice(0,10)
+      setSalesRepData({
+        tasks,
+        totalLeads: leads.length,
+        convertedLeads: leads.filter(l=>l.status==='Converted to Opportunity').length,
+        openOpps: open.length,
+        openValue: open.reduce((s,o)=>s+Number(o.expected_value||0),0),
+        wonCount: won.length,
+        wonValue: won.reduce((s,o)=>s+Number(o.expected_value||0),0),
+        winRate: closed ? Math.round((won.length/closed)*100) : 0,
+        overdueTasks: tasks.filter(t=>t.due_date && t.due_date < todayStr).length,
+      })
+    }).catch(() => setSalesRepData({ tasks:[], totalLeads:0, convertedLeads:0, openOpps:0, openValue:0, wonCount:0, wonValue:0, winRate:0, overdueTasks:0 }))
+  }, [isSalesRep, profile?.id])
+
+  // Marketing (cmo / campaign_manager): org-wide campaign & channel ROI.
+  useEffect(() => {
+    if (!isMarketing) return
+    getCMODashboard()
+      .then(setMarketingData)
+      .catch(() => setMarketingData({ leadSourceEffectiveness:[], campaignPerformance:[], channelEffectiveness:[], plannedVsActualSpend:{planned:0,actual:0}, upcomingCalendar:[] }))
+  }, [isMarketing])
+
   const periodStats = useMemo(() => {
     const { start, end } = getPeriodRange(period)
     const inRange = dt => { if (!dt) return false; const t = new Date(dt).getTime(); return t >= start.getTime() && t <= end.getTime() }
@@ -518,7 +581,7 @@ export default function DashboardPage() {
     <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
       <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today} />
       <CheckInWidget variant="card" />
-      <SectionHeader title="💼 My Overview"/>
+      <SectionHeader title="My Overview"/>
       <div className="stats-grid">
         <KPI label="My Expenses" value={d.myExpenses} color="#6366f1" icon={<Receipt size={18}/>} href="/expenses"/>
         <KPI label="Total Claimed" value={rupee(d.myExpAmt)} color="#ec4899" icon={<DollarSign size={18}/>}/>
@@ -542,7 +605,7 @@ export default function DashboardPage() {
         <QuickActions role={role} isMgr={isMgr} isFin={isFin}/>
       </div>
       <div className="dash-grid-2-1">
-        <ChartCard title="⏱ My Hours Logged" sub="Monthly timesheet total">
+        <ChartCard title="My Hours Logged" sub="Monthly timesheet total">
           <BarChart data={d.hoursByMonth} barSize={16}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false}/>
             <XAxis dataKey="month" tick={{fontSize:10}} axisLine={false} tickLine={false}/>
@@ -552,7 +615,7 @@ export default function DashboardPage() {
           </BarChart>
         </ChartCard>
         <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', padding:'18px 20px', boxShadow:CARD_SHADOW }}>
-          <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>🌴 My Leave Status</div>
+          <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>My Leave Status</div>
           {[
             { label:'Pending', value:d.myLeavePending, c:'#f97316' },
             { label:'Approved', value:d.myLeaveApproved, c:'#10b981' },
@@ -576,7 +639,7 @@ export default function DashboardPage() {
     <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
       <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today}/>
       <CheckInWidget variant="card" />
-      <SectionHeader title="👥 People & HR Overview"/>
+      <SectionHeader title="People & HR Overview"/>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))', gap:12 }}>
         <KPI label="Total Employees" value={d.totalEmployees} color="#6366f1" icon={<Users size={18}/>} href="/users"/>
         <KPI label="Active" value={d.activeEmployees} color="#10b981" icon={<CheckCircle size={18}/>}/>
@@ -617,7 +680,7 @@ export default function DashboardPage() {
     <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
       <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today}/>
       <CheckInWidget variant="card" />
-      <SectionHeader title="🧾 Procurement Overview" action={<Link to="/procurement" style={{ fontSize:12, color:'#0891b2', fontWeight:700, textDecoration:'none' }}>Open Requests →</Link>}/>
+      <SectionHeader title="Procurement Overview" action={<Link to="/procurement" style={{ fontSize:12, color:'#0891b2', fontWeight:700, textDecoration:'none' }}>Open Requests →</Link>}/>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(155px,1fr))', gap:12 }}>
         <KPI label="Awaiting My Review" value={d.pendingProcLead} color="#0891b2" icon={<AlertCircle size={18}/>} href="/procurement"/>
         <KPI label="Total Requests" value={d.totalPR} color="#6366f1" icon={<ShoppingCart size={18}/>} href="/procurement"/>
@@ -629,7 +692,7 @@ export default function DashboardPage() {
         <KPI label="Warranty ≤30 Days" value={d.devicesWarrantySoon} color="#f97316" icon={<Clock size={18}/>} href="/devices"/>
       </div>
       <div className="dash-grid-2-1">
-        <ChartCard title="🔄 Requests in Pipeline" sub="Awaiting review at each approval stage">
+        <ChartCard title="Requests in Pipeline" sub="Awaiting review at each approval stage">
           <BarChart data={[
             { stage:'Proc. Lead', count:d.pendingProcLead },
             { stage:'PM', count:d.pendingPM },
@@ -647,7 +710,7 @@ export default function DashboardPage() {
           </BarChart>
         </ChartCard>
         <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', padding:'18px 20px', boxShadow:CARD_SHADOW }}>
-          <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>📡 Device Fleet</div>
+          <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>Device Fleet</div>
           {[
             { label:'Deployed', value:d.devicesDeployed, c:'#10b981' },
             { label:'In Storage', value:d.devicesInStorage, c:'#3b82f6' },
@@ -669,7 +732,7 @@ export default function DashboardPage() {
     <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
       <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today}/>
       <CheckInWidget variant="card" />
-      <SectionHeader title="📐 Projects & Procurement" action={<Link to="/projects" style={{ fontSize:12, color:'#7c3aed', fontWeight:700, textDecoration:'none' }}>View Projects →</Link>}/>
+      <SectionHeader title="Projects & Procurement" action={<Link to="/projects" style={{ fontSize:12, color:'#7c3aed', fontWeight:700, textDecoration:'none' }}>View Projects →</Link>}/>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(155px,1fr))', gap:12 }}>
         <KPI label="Awaiting My Review" value={d.pendingPM} color="#7c3aed" icon={<AlertCircle size={18}/>} href="/procurement"/>
         <KPI label="Active Projects" value={d.activeProjects} color="#6366f1" icon={<FolderOpen size={18}/>} href="/projects"/>
@@ -679,7 +742,7 @@ export default function DashboardPage() {
         <KPI label="Devices Deployed" value={d.devicesDeployed} color="#10b981" icon={<Box size={18}/>} href="/devices"/>
       </div>
       <div className="dash-grid-2-1">
-        <ChartCard title="📁 Project Budget vs Actual Spend" sub="Top projects by budget allocation">
+        <ChartCard title="Project Budget vs Actual Spend" sub="Top projects by budget allocation">
           <BarChart data={d.projectBudgetData} barSize={16} barGap={4}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false}/>
             <XAxis dataKey="name" tick={{fontSize:10}} axisLine={false} tickLine={false}/>
@@ -692,7 +755,7 @@ export default function DashboardPage() {
           </BarChart>
         </ChartCard>
         <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', padding:'18px 20px', boxShadow:CARD_SHADOW }}>
-          <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>⚡ Pending Actions</div>
+          <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>Pending Actions</div>
           {[
             { label:'Procurement Reviews', value:d.pendingPM, c:'#7c3aed', href:'/procurement' },
             { label:'Active Projects', value:d.activeProjects, c:'#6366f1', href:'/projects' },
@@ -715,7 +778,7 @@ export default function DashboardPage() {
     <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
       <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today}/>
       <CheckInWidget variant="card" />
-      <SectionHeader title="🖥️ Technology & Delivery" action={<Link to="/devices" style={{ fontSize:12, color:'#be123c', fontWeight:700, textDecoration:'none' }}>View Devices →</Link>}/>
+      <SectionHeader title="Technology & Delivery" action={<Link to="/devices" style={{ fontSize:12, color:'#be123c', fontWeight:700, textDecoration:'none' }}>View Devices →</Link>}/>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(155px,1fr))', gap:12 }}>
         <KPI label="Awaiting My Review" value={d.pendingCTO} color="#be123c" icon={<AlertCircle size={18}/>} href="/procurement"/>
         <KPI label="Active Projects" value={d.activeProjects} color="#6366f1" icon={<FolderOpen size={18}/>} href="/projects"/>
@@ -725,7 +788,7 @@ export default function DashboardPage() {
         <KPI label="Total Budget" value={rupee(d.totalBudget)} color="#3b82f6" icon={<DollarSign size={18}/>}/>
       </div>
       <div className="dash-grid-1-1">
-        <ChartCard title="📡 Device Fleet Status">
+        <ChartCard title="Device Fleet Status">
           <PieChart>
             <Pie data={[
               { name:'Deployed', value:d.devicesDeployed },
@@ -739,7 +802,7 @@ export default function DashboardPage() {
             <Tooltip/>
           </PieChart>
         </ChartCard>
-        <ChartCard title="📁 Project Budget Utilization">
+        <ChartCard title="Project Budget Utilization">
           <BarChart data={d.projectBudgetData.slice(0,6)} layout="vertical" barSize={12} barGap={3}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false}/>
             <XAxis type="number" tick={{fontSize:9}} tickFormatter={v=>`₹${(v/100000).toFixed(0)}L`} axisLine={false} tickLine={false}/>
@@ -753,13 +816,205 @@ export default function DashboardPage() {
     </div>
   )
 
+  // ─── SALES LEADERSHIP DASHBOARD (sales_head / regional_sales_head / sales_ops / sales_lead) ──
+  if (isSalesLeadership) {
+    if (!salesLeadData) return <Loader/>
+    const sl = salesLeadData
+    const topReps = [...sl.repPerformance].sort((a,b)=>b.pipelineValue-a.pipelineValue).slice(0,6)
+    return (
+      <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
+        <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today}/>
+          <CheckInWidget variant="card" />
+        <SectionHeader title="Sales Performance" sub={role==='regional_sales_head' ? 'Your region' : 'Org-wide'} action={<Link to="/sales/dashboard" style={{ fontSize:12, color:'#1d4ed8', fontWeight:700, textDecoration:'none' }}>Open Sales Dashboard →</Link>}/>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(155px,1fr))', gap:12 }}>
+          <KPI label="Win Rate" value={`${sl.winRate}%`} color="#1d4ed8" icon={<Target size={18}/>} href="/sales/opportunities"/>
+          <KPI label="Open Pipeline Items" value={sl.pipelineByStage.reduce((s,p)=>s+p.count,0)} color="#3b82f6" icon={<TrendingUp size={18}/>} href="/sales/opportunities"/>
+          <KPI label="Activities Logged" value={sl.totalActivities} color="#6366f1" icon={<Clock size={18}/>}/>
+          <KPI label="Overdue Tasks" value={sl.overdueTasks} sub={`${sl.overdueByPriority.High||0} high priority`} color="#ef4444" icon={<AlertCircle size={18}/>} href="/sales/tasks"/>
+          <KPI label="Reps Tracked" value={sl.repPerformance.length} color="#8b5cf6" icon={<Users size={18}/>} href="/users"/>
+        </div>
+        <div className="dash-grid-2-1">
+          <ChartCard title="Pipeline by Stage" sub="Open opportunities">
+            <BarChart data={sl.pipelineByStage} barSize={30}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false}/>
+              <XAxis dataKey="stage" tick={{fontSize:10}} axisLine={false} tickLine={false}/>
+              <YAxis tick={{fontSize:10}} allowDecimals={false} axisLine={false} tickLine={false}/>
+              <Tooltip contentStyle={{borderRadius:10,fontSize:12}}/>
+              <Bar dataKey="count" fill="#1d4ed8" radius={[6,6,0,0]}>
+                {sl.pipelineByStage.map((_,i)=><Cell key={i} fill={COLORS[i%COLORS.length]}/>)}
+              </Bar>
+            </BarChart>
+          </ChartCard>
+          <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', padding:'18px 20px', boxShadow:CARD_SHADOW }}>
+            <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>Overdue Tasks by Priority</div>
+            {['High','Medium','Low'].map(p=>(
+              <div key={p} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 14px', borderRadius:10, background:'#f8fafc', border:'1px solid #e2e8f0', marginBottom:8 }}>
+                <span style={{ fontWeight:600, fontSize:13 }}>{p}</span>
+                <span style={{ fontWeight:800, fontSize:18, color: p==='High'?'#ef4444':p==='Medium'?'#f59e0b':'#10b981' }}>{sl.overdueByPriority[p]||0}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', padding:'18px 20px', boxShadow:CARD_SHADOW }}>
+          <div style={{ fontWeight:700, fontSize:14, marginBottom:2 }}>Top Reps — Open Pipeline Value</div>
+          <div style={{ fontSize:11, color:'#94a3b8', marginBottom:14 }}>Sorted by open pipeline value</div>
+          {topReps.length===0 ? <div style={{ fontSize:12, color:'#94a3b8' }}>No opportunities yet</div> : topReps.map((r,i)=>{
+            const max = topReps[0]?.pipelineValue || 1
+            return (
+              <div key={r.rep} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
+                <div style={{ width:20, fontSize:11, fontWeight:800, color: i<3?'#f59e0b':'#94a3b8', flexShrink:0 }}>#{i+1}</div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:12.5, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.rep}</div>
+                  <div style={{ height:5, borderRadius:3, background:'#f1f5f9', overflow:'hidden', marginTop:3 }}>
+                    <div style={{ height:'100%', width:`${(r.pipelineValue/max)*100}%`, background:'#1d4ed8', borderRadius:3 }}/>
+                  </div>
+                </div>
+                <div style={{ fontSize:11, color:'#94a3b8', flexShrink:0 }}>{r.open} open · {r.won} won</div>
+                <div style={{ fontSize:12.5, fontWeight:700, color:'#1d4ed8', flexShrink:0 }}>{rupee(r.pipelineValue)}</div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
+  // ─── SALES REP DASHBOARD (personal pipeline only — never org-wide numbers) ──
+  if (isSalesRep) {
+    if (!salesRepData) return <Loader/>
+    const sr = salesRepData
+    return (
+      <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
+        <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today}/>
+          <CheckInWidget variant="card" />
+        <SectionHeader title="My Sales Pipeline" action={<Link to="/sales/opportunities" style={{ fontSize:12, color:'#0ea5e9', fontWeight:700, textDecoration:'none' }}>Open Opportunities →</Link>}/>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(155px,1fr))', gap:12 }}>
+          <KPI label="My Leads" value={sr.totalLeads} color="#0ea5e9" icon={<UserPlus size={18}/>} href="/sales/leads"/>
+          <KPI label="Converted" value={sr.convertedLeads} color="#10b981" icon={<CheckCircle size={18}/>}/>
+          <KPI label="Open Opportunities" value={sr.openOpps} color="#3b82f6" icon={<TrendingUp size={18}/>} href="/sales/opportunities"/>
+          <KPI label="Open Pipeline Value" value={rupee(sr.openValue)} color="#6366f1" icon={<DollarSign size={18}/>}/>
+          <KPI label="Won" value={sr.wonCount} sub={rupee(sr.wonValue)} color="#059669" icon={<CheckCircle size={18}/>}/>
+          <KPI label="Win Rate" value={`${sr.winRate}%`} color="#0891b2" icon={<Target size={18}/>}/>
+          <KPI label="Overdue Tasks" value={sr.overdueTasks} color="#ef4444" icon={<AlertCircle size={18}/>} href="/sales/tasks"/>
+        </div>
+        <div className="dash-grid-1-1">
+          <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', padding:'18px 20px', boxShadow:CARD_SHADOW }}>
+            <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>My Open Tasks</div>
+            {sr.tasks.length===0 ? <div style={{ fontSize:12, color:'#94a3b8' }}>Nothing pending </div> : sr.tasks.slice(0,6).map(t=>(
+              <Link key={t.id} to="/sales/tasks" className="dash-list-row" style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 14px', borderRadius:10, background:'#f8fafc', border:'1px solid #e2e8f0', textDecoration:'none', color:'inherit', marginBottom:8 }}>
+                <span style={{ fontWeight:600, fontSize:13, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{t.task_type || 'Task'} — {t.related_to_type}</span>
+                <span style={{ fontSize:11, color:'#94a3b8', flexShrink:0 }}>{t.due_date ? dateFmt(t.due_date) : '—'}</span>
+              </Link>
+            ))}
+          </div>
+          <QuickActions role={role} isMgr={isMgr} isFin={isFin}/>
+        </div>
+      </div>
+    )
+  }
+
+  // ─── MARKETING DASHBOARD (cmo / campaign_manager) ────────────────
+  if (isMarketing) {
+    if (!marketingData) return <Loader/>
+    const mk = marketingData
+    const topCampaigns = mk.campaignPerformance.slice(0,6)
+    return (
+      <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
+        <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today}/>
+          <SectionHeader title="Marketing Performance" action={<Link to="/marketing/campaigns" style={{ fontSize:12, color:'#db2777', fontWeight:700, textDecoration:'none' }}>View Campaigns →</Link>}/>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(155px,1fr))', gap:12 }}>
+          <KPI label="Planned Spend" value={rupee(mk.plannedVsActualSpend.planned)} color="#db2777" icon={<DollarSign size={18}/>}/>
+          <KPI label="Actual Spend" value={rupee(mk.plannedVsActualSpend.actual)} color="#be185d" icon={<DollarSign size={18}/>}/>
+          <KPI label="Campaigns Tracked" value={mk.campaignPerformance.length} color="#ec4899" icon={<Megaphone size={18}/>} href="/marketing/campaigns"/>
+          <KPI label="Lead Sources" value={mk.leadSourceEffectiveness.length} color="#f472b6" icon={<TrendingUp size={18}/>} href="/sales/leads"/>
+          <KPI label="Upcoming Items" value={mk.upcomingCalendar.length} color="#f97316" icon={<Clock size={18}/>} href="/marketing/calendar"/>
+        </div>
+        <div className="dash-grid-1-1">
+          <ChartCard title="Lead Source Effectiveness" sub="Leads generated vs converted">
+            <BarChart data={mk.leadSourceEffectiveness} barSize={20}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false}/>
+              <XAxis dataKey="source" tick={{fontSize:10}} axisLine={false} tickLine={false}/>
+              <YAxis tick={{fontSize:10}} allowDecimals={false} axisLine={false} tickLine={false}/>
+              <Tooltip contentStyle={{borderRadius:10,fontSize:12}}/>
+              <Legend iconSize={9} wrapperStyle={{fontSize:12}}/>
+              <Bar dataKey="leads" name="Leads" fill="#f9a8d4" radius={[4,4,0,0]}/>
+              <Bar dataKey="converted" name="Converted" fill="#db2777" radius={[4,4,0,0]}/>
+            </BarChart>
+          </ChartCard>
+          <ChartCard title="Channel Effectiveness" sub="Conversion rate by channel">
+            <BarChart data={mk.channelEffectiveness} barSize={30}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false}/>
+              <XAxis dataKey="channel_type" tick={{fontSize:10}} axisLine={false} tickLine={false}/>
+              <YAxis tick={{fontSize:10}} tickFormatter={v=>`${v}%`} axisLine={false} tickLine={false}/>
+              <Tooltip formatter={v=>[`${v}%`,'Conversion']} contentStyle={{borderRadius:10,fontSize:12}}/>
+              <Bar dataKey="conversion_rate" fill="#ec4899" radius={[6,6,0,0]}/>
+            </BarChart>
+          </ChartCard>
+        </div>
+        <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', padding:'18px 20px', boxShadow:CARD_SHADOW }}>
+          <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>Top Campaigns by ROI</div>
+          {topCampaigns.length===0 ? <div style={{ fontSize:12, color:'#94a3b8' }}>No campaign results yet</div> : topCampaigns.map(c=>(
+            <Link key={c.campaign_id} to="/marketing/campaigns" className="dash-list-row" style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 14px', borderRadius:10, background:'#fdf2f8', border:'1px solid #fbcfe8', textDecoration:'none', color:'inherit', marginBottom:8 }}>
+              <span style={{ fontWeight:600, fontSize:13, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.campaign?.campaign_name || 'Campaign'}</span>
+              <span style={{ fontWeight:800, fontSize:15, color:'#db2777' }}>{c.roi_percent_realized}% ROI</span>
+            </Link>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  // ─── FIELD TECHNICIAN DASHBOARD ──────────────────────────────────
+  if (isFieldTech) return (
+    <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
+      <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today}/>
+      <SectionHeader title="Field Service Overview" action={<Link to="/warranty" style={{ fontSize:12, color:'#ea580c', fontWeight:700, textDecoration:'none' }}>Open Warranty Claims →</Link>}/>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(155px,1fr))', gap:12 }}>
+        <KPI label="Devices Deployed" value={d.devicesDeployed} color="#10b981" icon={<Box size={18}/>} href="/devices"/>
+        <KPI label="Needing Attention" value={d.devicesAttention} color="#ef4444" icon={<AlertCircle size={18}/>} href="/devices"/>
+        <KPI label="Warranty ≤30 Days" value={d.devicesWarrantySoon} color="#f97316" icon={<Clock size={18}/>} href="/warranty"/>
+        <KPI label="In Storage" value={d.devicesInStorage} color="#3b82f6" icon={<Box size={18}/>} href="/devices"/>
+        <KPI label="Total Assets" value={d.totalAssets} color="#8b5cf6" icon={<Briefcase size={18}/>} href="/assets"/>
+      </div>
+      <div className="dash-grid-1-1">
+        <ChartCard title="Device Fleet Status">
+          <PieChart>
+            <Pie data={[
+              { name:'Deployed', value:d.devicesDeployed },
+              { name:'In Storage', value:d.devicesInStorage },
+              { name:'Needing Attention', value:d.devicesAttention },
+              { name:'Decommissioned', value:d.devicesDecommissioned },
+            ]} cx="50%" cy="50%" innerRadius={50} outerRadius={85} dataKey="value" paddingAngle={3}>
+              {[0,1,2,3].map(i=><Cell key={i} fill={['#10b981','#3b82f6','#ef4444','#94a3b8'][i]}/>)}
+            </Pie>
+            <Legend iconSize={9} formatter={v=><span style={{fontSize:11}}>{v}</span>}/>
+            <Tooltip/>
+          </PieChart>
+        </ChartCard>
+        <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', padding:'18px 20px', boxShadow:CARD_SHADOW }}>
+          <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>Quick Links</div>
+          {[
+            { label:'Warranty Claims', href:'/warranty', c:'#ea580c' },
+            { label:'Device Instances', href:'/devices', c:'#10b981' },
+            { label:'Assets', href:'/assets', c:'#8b5cf6' },
+          ].map(item=>(
+            <Link key={item.href} to={item.href} className="dash-list-row" style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 14px', borderRadius:10, background:`${item.c}08`, border:`1px solid ${item.c}25`, textDecoration:'none', color:'inherit', marginBottom:8 }}>
+              <span style={{ fontWeight:600, fontSize:13 }}>{item.label}</span>
+              <ArrowRight size={13} style={{ color:item.c }}/>
+            </Link>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+
   // ─── MANAGER / DEPARTMENT HEAD DASHBOARD ──────────────────────
   if (role==='manager' || role==='department_head') return (
     <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
       <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today}/>
       <CheckInWidget variant="card" />
       <BurnRateWatchlist/>
-      <SectionHeader title="📋 Operations Overview" action={<PeriodFilter value={period} onChange={setPeriod}/>}/>
+      <SectionHeader title="Operations Overview" action={<PeriodFilter value={period} onChange={setPeriod}/>}/>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(155px,1fr))', gap:12 }}>
         <KPI label="Pending Approvals" value={d.pendingExp+d.pendingTrv+d.pendingPR} color="#f59e0b" icon={<AlertCircle size={18}/>} href="/approvals"/>
         <KPI label="Active Projects" value={d.activeProjects} color="#6366f1" icon={<FolderOpen size={18}/>} href="/projects"/>
@@ -771,7 +1026,7 @@ export default function DashboardPage() {
         <KPI label="Team Hours" value={`${periodStats.periodHoursLogged}h`} sub={PERIOD_LABEL[period]} color="#ec4899" icon={<Clock size={18}/>} href="/resources"/>
       </div>
       <div className="dash-grid-2-1">
-        <ChartCard title="📊 Expense Trend — Month by Month" sub="All team expenses">
+        <ChartCard title="Expense Trend — Month by Month" sub="All team expenses">
           <AreaChart data={d.expByMonth}>
             <defs>
               <linearGradient id="mg1" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3b82f6" stopOpacity={.3}/><stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/></linearGradient>
@@ -787,7 +1042,7 @@ export default function DashboardPage() {
           </AreaChart>
         </ChartCard>
         <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', padding:'18px 20px', boxShadow:CARD_SHADOW }}>
-          <div style={{ fontWeight:700, fontSize:14, marginBottom:16 }}>⚡ Pending Actions</div>
+          <div style={{ fontWeight:700, fontSize:14, marginBottom:16 }}>Pending Actions</div>
           {[
             { label:'Expense Approvals', value:d.pendingExp, c:'#6366f1', href:'/approvals' },
             { label:'Travel Approvals', value:d.pendingTrv, c:'#ec4899', href:'/approvals' },
@@ -803,7 +1058,7 @@ export default function DashboardPage() {
           ))}
         </div>
       </div>
-      <ChartCard title="📁 Project Budget vs Actual Spend" sub="Top projects by budget allocation" height={240}>
+      <ChartCard title="Project Budget vs Actual Spend" sub="Top projects by budget allocation" height={240}>
         <BarChart data={d.projectBudgetData} barSize={16} barGap={4}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false}/>
           <XAxis dataKey="name" tick={{fontSize:10}} axisLine={false} tickLine={false}/>
@@ -817,7 +1072,7 @@ export default function DashboardPage() {
       </ChartCard>
       <div className="dash-grid-1-1">
         <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', padding:'18px 20px', boxShadow:CARD_SHADOW }}>
-          <div style={{ fontWeight:700, fontSize:14, marginBottom:2 }}>🏆 Top Contributors — Hours Logged</div>
+          <div style={{ fontWeight:700, fontSize:14, marginBottom:2 }}>Top Contributors — Hours Logged</div>
           <div style={{ fontSize:11, color:'#94a3b8', marginBottom:14 }}>{PERIOD_LABEL[period]}</div>
           {periodStats.periodTopContributors.length===0
             ? <div style={{ fontSize:12, color:'#94a3b8' }}>No hours logged {PERIOD_LABEL[period].toLowerCase()}</div>
@@ -841,7 +1096,7 @@ export default function DashboardPage() {
             })}
         </div>
         <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', padding:'18px 20px', boxShadow:CARD_SHADOW }}>
-          <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>📡 Devices & Assets</div>
+          <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>Devices & Assets</div>
           {[
             { label:'Devices Deployed', value:d.devicesDeployed, c:'#10b981', href:'/devices' },
             { label:'Needing Attention', value:d.devicesAttention, c:'#ef4444', href:'/devices' },
@@ -863,7 +1118,7 @@ export default function DashboardPage() {
       <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today}/>
       <CheckInWidget variant="card" />
       <BurnRateWatchlist/>
-      <SectionHeader title="💰 Financial Overview" action={<PeriodFilter value={period} onChange={setPeriod}/>}/>
+      <SectionHeader title="Financial Overview" action={<PeriodFilter value={period} onChange={setPeriod}/>}/>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(155px,1fr))', gap:12 }}>
         <KPI label="Invoice Value" value={rupee(periodStats.periodInvTotal)} sub={PERIOD_LABEL[period]} color="#059669" icon={<FileText size={18}/>} href="/invoices"/>
         <KPI label="Paid" value={rupee(d.invPaid)} sub={`${d.paidInvoices} invoices`} color="#10b981" icon={<CheckCircle size={18}/>}/>
@@ -877,7 +1132,7 @@ export default function DashboardPage() {
 
       {/* Invoice breakdown pie */}
       <div className="dash-grid-1-1">
-        <ChartCard title="💳 Invoice Payment Status">
+        <ChartCard title="Invoice Payment Status">
           <PieChart>
             <Pie data={[{name:'Paid',value:d.invPaid},{name:'Pending',value:d.invPending}]} cx="50%" cy="50%" innerRadius={55} outerRadius={90} dataKey="value" paddingAngle={4}>
               <Cell fill="#10b981"/><Cell fill="#f59e0b"/>
@@ -886,7 +1141,7 @@ export default function DashboardPage() {
             <Tooltip formatter={v=>[rupee(v)]} contentStyle={{borderRadius:10,fontSize:12}}/>
           </PieChart>
         </ChartCard>
-        <ChartCard title="📈 Revenue vs Expenses">
+        <ChartCard title="Revenue vs Expenses">
           <BarChart data={d.expByMonth.slice(-6)} barSize={14} barGap={2}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false}/>
             <XAxis dataKey="month" tick={{fontSize:10}} axisLine={false} tickLine={false}/>
@@ -903,7 +1158,7 @@ export default function DashboardPage() {
       <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', overflow:'hidden', boxShadow:CARD_SHADOW }}>
         <div style={{ padding:'14px 20px', borderBottom:'1px solid #f1f5f9', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
           <div>
-            <div style={{ fontWeight:700, fontSize:14 }}>📊 3-Month Spend Forecast</div>
+            <div style={{ fontWeight:700, fontSize:14 }}>3-Month Spend Forecast</div>
             <div style={{ fontSize:11, color:'#94a3b8', marginTop:2 }}>Based on 3-month rolling average</div>
           </div>
           <div style={{ padding:'4px 12px', borderRadius:999, background:'#fef3c7', color:'#b45309', fontSize:11, fontWeight:700 }}>Projected</div>
@@ -935,21 +1190,37 @@ export default function DashboardPage() {
   )
 
   // ─── CEO / ADMIN DASHBOARD ────────────────────────────────────
-  return (
+  // Explicit guard, not a fallthrough default — any role not matched by
+  // one of the branches above (a future custom role, or one we don't yet
+  // know about) must NOT land here. It falls through to the safe personal
+  // overview below instead of the org-wide financial command center.
+  if (isCEO) return (
     <div style={{ display:'flex', flexDirection:'column', gap:24 }}>
       <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today}/>
 
+      {onboarding && !onboarding.allDone && (
+        <Link to="/onboarding" style={{ textDecoration: 'none' }}>
+          <div style={{ background: 'linear-gradient(135deg,#6366f1,#4338ca)', borderRadius: 16, padding: '16px 22px', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: CARD_SHADOW, flexWrap: 'wrap', gap: 10 }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>Complete Organization Setup</div>
+              <div style={{ fontSize: 12, opacity: 0.85 }}>{onboarding.doneCount} of {onboarding.total} steps done — {onboarding.steps.filter(s => !s.done).map(s => s.label).join(', ')}</div>
+            </div>
+            <div style={{ fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap' }}>Continue Setup →</div>
+          </div>
+        </Link>
+      )}
+
       {/* Process Command Center */}
       <div>
-        <SectionHeader title="🎯 Process Command Center" sub="Live view of how every department, project, payment, resource and procurement request is moving"/>
+        <SectionHeader title="Process Command Center" sub="Live view of how every department, project, payment, resource and procurement request is moving"/>
 
         <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', padding:'18px 20px', marginBottom:16, boxShadow:CARD_SHADOW }}>
-          <div style={{ fontWeight:700, fontSize:14, marginBottom:4 }}>🏢 Department Bird's-Eye View</div>
+          <div style={{ fontWeight:700, fontSize:14, marginBottom:4 }}>Department Bird's-Eye View</div>
           <div style={{ fontSize:11, color:'#94a3b8', marginBottom:14 }}>Sorted worst-first — the department needing attention is always on the left</div>
           {d.departmentHealth.length===0 ? <div style={{ fontSize:12, color:'#94a3b8' }}>No departments configured yet — add them in Settings</div> : (
             <div className="dash-dept-grid">
               {d.departmentHealth.map(dept=>(
-                <Link key={dept.id} to="/budget" style={{ textDecoration:'none', color:'inherit' }}>
+                <Link key={dept.id} to={`/budget?department=${dept.id}`} style={{ textDecoration:'none', color:'inherit' }}>
                   <DepartmentCard {...dept}/>
                 </Link>
               ))}
@@ -958,7 +1229,7 @@ export default function DashboardPage() {
         </div>
 
         <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', padding:'18px 20px', marginBottom:16, boxShadow:CARD_SHADOW }}>
-          <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>🩺 Project Health</div>
+          <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>Project Health</div>
           {d.projectHealth.length===0 ? <div style={{ fontSize:12, color:'#94a3b8' }}>No projects yet</div> : (
             <div style={{ display:'flex', gap:20, overflowX:'auto', paddingBottom:4 }}>
               {d.projectHealth.map(p=>{
@@ -974,14 +1245,14 @@ export default function DashboardPage() {
         </div>
 
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))', gap:16, marginBottom:16 }}>
-          <FlowSplit title="💳 Payment Flow — Allocation" sub="Total budget allocated across departments & projects"
+          <FlowSplit title="Payment Flow — Allocation" sub="Total budget allocated across departments & projects"
             fmt={rupee}
             source={{ label:'Allocated', value:d.totalAllocated, color:'#3b82f6' }}
             targets={[
               { label:'Committed', value:d.totalCommitted, color:'#8b5cf6' },
               { label:'Available', value:d.availableBudget, color:'#10b981' },
             ]}/>
-          <FlowSplit title="💳 Payment Flow — Settlement" sub="Committed budget moving toward actual spend"
+          <FlowSplit title="Payment Flow — Settlement" sub="Committed budget moving toward actual spend"
             fmt={rupee}
             source={{ label:'Committed', value:d.totalCommitted, color:'#8b5cf6' }}
             targets={[
@@ -991,14 +1262,14 @@ export default function DashboardPage() {
         </div>
 
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))', gap:16 }}>
-          <FlowSplit title="👥 Resource Flow" sub="Where team hours are going — top projects by hours logged"
+          <FlowSplit title="Resource Flow" sub="Where team hours are going — top projects by hours logged"
             fmt={v=>`${v}h`}
             source={{ label:'Team Hours', value:Math.round(d.totalHoursLogged), color:'#0891b2' }}
             targets={[
               ...d.topProjectsByHours.map((p,i)=>({ label:p.name, value:p.hrs, color:COLORS[i%COLORS.length] })),
               ...(d.otherProjectHours>0 ? [{ label:'Other Projects', value:d.otherProjectHours, color:'#cbd5e1' }] : []),
             ]}/>
-          <FlowSplit title="🔄 Procurement Flow" sub="Every request, by current outcome"
+          <FlowSplit title="Procurement Flow" sub="Every request, by current outcome"
             fmt={v=>v}
             source={{ label:'Total Requests', value:d.totalPR, color:'#6366f1' }}
             targets={[
@@ -1013,7 +1284,7 @@ export default function DashboardPage() {
 
       {/* People & HR */}
       <div>
-        <SectionHeader title="👥 People & HR" action={<Link to="/users" style={{ fontSize:12, color:'#6366f1', fontWeight:700, textDecoration:'none' }}>View All →</Link>}/>
+        <SectionHeader title="People & HR" action={<Link to="/users" style={{ fontSize:12, color:'#6366f1', fontWeight:700, textDecoration:'none' }}>View All →</Link>}/>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:10, marginBottom:14 }}>
           <KPI label="Total Employees" value={d.totalEmployees} color="#6366f1" icon={<Users size={16}/>} href="/users"/>
           <KPI label="Active" value={d.activeEmployees} color="#10b981" icon={<CheckCircle size={16}/>}/>
@@ -1047,7 +1318,7 @@ export default function DashboardPage() {
 
       {/* Finance */}
       <div>
-        <SectionHeader title="💰 Finance" action={<Link to="/fundflow" style={{ fontSize:12, color:'#059669', fontWeight:700, textDecoration:'none' }}>View Fund Flow →</Link>}/>
+        <SectionHeader title="Finance" action={<Link to="/fundflow" style={{ fontSize:12, color:'#059669', fontWeight:700, textDecoration:'none' }}>View Fund Flow →</Link>}/>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:10, marginBottom:14 }}>
           <KPI label="Total Expense" value={rupee(d.expTotal)} color="#6366f1" icon={<Receipt size={16}/>} href="/expenses"/>
           <KPI label="Invoice Value" value={rupee(d.invTotal)} color="#059669" icon={<FileText size={16}/>} href="/invoices"/>
@@ -1082,7 +1353,7 @@ export default function DashboardPage() {
 
       {/* Operations & Procurement */}
       <div>
-        <SectionHeader title="📋 Operations & Procurement" action={<Link to="/projects" style={{ fontSize:12, color:'#3b82f6', fontWeight:700, textDecoration:'none' }}>View Projects →</Link>}/>
+        <SectionHeader title="Operations & Procurement" action={<Link to="/projects" style={{ fontSize:12, color:'#3b82f6', fontWeight:700, textDecoration:'none' }}>View Projects →</Link>}/>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:10, marginBottom:14 }}>
           <KPI label="Active Projects" value={d.activeProjects} color="#3b82f6" icon={<FolderOpen size={16}/>} href="/projects"/>
           <KPI label="Total Budget" value={rupee(d.totalBudget)} color="#6366f1" icon={<Target size={16}/>}/>
@@ -1101,7 +1372,7 @@ export default function DashboardPage() {
               <Bar dataKey="remaining" name="Remaining" fill="#10b981" radius={[0,3,3,0]}/>
             </BarChart>
           </ChartCard>
-          <ChartCard title="🔄 Procurement Pipeline" sub="Requests awaiting each approval stage" height={200}>
+          <ChartCard title="Procurement Pipeline" sub="Requests awaiting each approval stage" height={200}>
             <BarChart data={[
               { stage:'Proc. Lead', count:d.pendingProcLead },
               { stage:'PM', count:d.pendingPM },
@@ -1123,7 +1394,7 @@ export default function DashboardPage() {
 
       {/* Technology & Delivery */}
       <div>
-        <SectionHeader title="🖥️ Technology & Delivery" action={<Link to="/devices" style={{ fontSize:12, color:'#be123c', fontWeight:700, textDecoration:'none' }}>View Devices →</Link>}/>
+        <SectionHeader title="Technology & Delivery" action={<Link to="/devices" style={{ fontSize:12, color:'#be123c', fontWeight:700, textDecoration:'none' }}>View Devices →</Link>}/>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:10, marginBottom:14 }}>
           <KPI label="Devices Deployed" value={d.devicesDeployed} color="#10b981" icon={<Box size={16}/>} href="/devices"/>
           <KPI label="Needing Attention" value={d.devicesAttention} color="#ef4444" icon={<AlertCircle size={16}/>} href="/devices"/>
@@ -1133,7 +1404,7 @@ export default function DashboardPage() {
           <KPI label="Inventory Stock Value" value={rupee(d.inventoryStockValue)} color="#0ea5e9" icon={<DollarSign size={16}/>} href="/inventory"/>
           <KPI label="Low Stock Alerts" value={d.inventoryLowStockCount} color="#ef4444" icon={<AlertCircle size={16}/>} href="/inventory?view=components"/>
         </div>
-        <ChartCard title="📡 Device Fleet Status" height={200}>
+        <ChartCard title="Device Fleet Status" height={200}>
           <PieChart>
             <Pie data={[
               { name:'Deployed', value:d.devicesDeployed },
@@ -1152,23 +1423,41 @@ export default function DashboardPage() {
       <QuickActions role={role} isMgr={true} isFin={true}/>
     </div>
   )
+
+  // ─── SAFE FALLBACK — any role not covered above (a newly-created custom
+  // role, or one this file doesn't recognize yet) gets the same
+  // least-privileged personal overview as an employee, never the CEO
+  // command center. This is the actual fix for the "unknown role sees
+  // company financials" bug — the CEO branch above is now unreachable
+  // except for admin/ceo. ──
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
+      <HeroBanner hero={hero} name={profile?.full_name} greeting={greeting} today={today} />
+      <CheckInWidget variant="card" />
+      <SectionHeader title="My Overview"/>
+      <div className="stats-grid">
+        <KPI label="My Expenses" value={d.myExpenses} color="#6366f1" icon={<Receipt size={18}/>} href="/expenses"/>
+        <KPI label="Total Claimed" value={rupee(d.myExpAmt)} color="#ec4899" icon={<DollarSign size={18}/>}/>
+        <KPI label="Pending" value={d.pendingExp} sub="awaiting approval" color="#f59e0b" icon={<Clock size={18}/>} href="/expenses"/>
+        <KPI label="Approved" value={d.approvedExp} color="#10b981" icon={<CheckCircle size={18}/>}/>
+        <KPI label="Travel Requests" value={d.myTravel} color="#3b82f6" icon={<Plane size={18}/>} href="/travel"/>
+        <KPI label="Hours This Month" value={`${d.myHoursThisMonth}h`} color="#8b5cf6" icon={<Clock size={18}/>} href="/timesheet"/>
+        <KPI label="Leave Pending" value={d.myLeavePending} color="#f97316" icon={<AlertCircle size={18}/>} href="/leave"/>
+      </div>
+      <QuickActions role={role} isMgr={isMgr} isFin={isFin}/>
+    </div>
+  )
 }
 
+// Solid single-accent banner — ONE confident brand color (var(--c1)),
+// not a per-role gradient soup and not decorative emoji, but still bold
+// enough to not read as a plain neutral page title.
 function HeroBanner({ hero, name, greeting, today }) {
   return (
-    <div style={{ background:hero.bg, borderRadius:22, padding:'30px 34px', color:'#fff', position:'relative', overflow:'hidden',
-      boxShadow:'0 20px 44px -18px rgba(15,23,42,.35)' }}>
-      <div style={{ position:'absolute', inset:0, background:'linear-gradient(115deg, rgba(255,255,255,.14) 0%, rgba(255,255,255,0) 42%)', pointerEvents:'none' }}/>
-      <div style={{ position:'absolute', right:-40, top:-40, width:220, height:220, borderRadius:'50%', background:'rgba(255,255,255,.08)' }}/>
-      <div style={{ position:'absolute', right:80, bottom:-70, width:150, height:150, borderRadius:'50%', background:'rgba(255,255,255,.06)' }}/>
-      <div style={{ position:'absolute', left:'40%', top:-60, width:120, height:120, borderRadius:'50%', background:'rgba(255,255,255,.05)' }}/>
-      <div style={{ position:'relative' }}>
-        <div style={{ fontSize:13, opacity:.85, marginBottom:6, fontWeight:600 }}>{hero.emoji} {greeting}</div>
-        <div style={{ fontSize:30, fontWeight:800, marginBottom:10, fontFamily:"'Playfair Display',serif", letterSpacing:'-.01em' }}>{name||'User'}</div>
-        <div style={{ display:'inline-flex', alignItems:'center', gap:8, fontSize:12.5, fontWeight:600, background:'rgba(255,255,255,.16)', padding:'5px 13px', borderRadius:999 }}>
-          {hero.title} <span style={{ opacity:.6 }}>·</span> {today}
-        </div>
-      </div>
+    <div style={{ background:'var(--c1)', borderRadius:'var(--radius)', padding:'22px 28px', color:'#fff' }}>
+      <div style={{ fontSize:12.5, opacity:.85, fontWeight:600, marginBottom:4 }}>{greeting}, {(name || 'there').split(' ')[0]}</div>
+      <div style={{ fontSize:22, fontWeight:800, fontFamily:"'Playfair Display',serif", letterSpacing:'-.01em' }}>{hero.title}</div>
+      <div style={{ fontSize:12, opacity:.75, marginTop:4 }}>{today}</div>
     </div>
   )
 }
@@ -1177,21 +1466,21 @@ function Calendar({ size }) { return <Clock size={size}/> }
 
 function QuickActions({ role, isMgr, isFin }) {
   const actions = [
-    { label:'+ New Expense', href:'/expenses', color:'#6366f1' },
-    { label:'✈ Travel Request', href:'/travel', color:'#ec4899' },
-    ...(isMgr?[{ label:'✓ Approvals', href:'/approvals', color:'#f59e0b' }]:[]),
-    ...(isFin?[{ label:'💸 Fund Flow', href:'/fundflow', color:'#10b981' }]:[]),
-    ...(isMgr?[{ label:'🛒 Procurement', href:'/procurement', color:'#8b5cf6' }]:[]),
-    { label:'📊 Reports', href:'/reports', color:'#3b82f6' },
-    { label:'⏱ Time Tracking', href:'/resources', color:'#0891b2' },
-    { label:'📅 Leave', href:'/leave', color:'#ec4899' },
+    { label:'New Expense', href:'/expenses' },
+    { label:'Travel Request', href:'/travel' },
+    ...(isMgr?[{ label:'Approvals', href:'/approvals' }]:[]),
+    ...(isFin?[{ label:'Fund Flow', href:'/fundflow' }]:[]),
+    ...(isMgr?[{ label:'Procurement', href:'/procurement' }]:[]),
+    { label:'Reports', href:'/reports' },
+    { label:'Time Tracking', href:'/resources' },
+    { label:'Leave', href:'/leave' },
   ]
   return (
-    <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', padding:'18px 20px', boxShadow:CARD_SHADOW }}>
-      <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>⚡ Quick Actions</div>
+    <div className="card" style={{ padding:'18px 20px' }}>
+      <div style={{ fontWeight:700, fontSize:14, marginBottom:14 }}>Quick Actions</div>
       <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
         {actions.map(a=>(
-          <Link key={a.href} to={a.href} className="dash-quick-action" style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'9px 16px', borderRadius:10, background:`${a.color}10`, color:a.color, fontSize:13, fontWeight:700, textDecoration:'none', border:`1.5px solid ${a.color}20` }}>
+          <Link key={a.href} to={a.href} className="btn btn-ghost btn-sm">
             {a.label}
           </Link>
         ))}

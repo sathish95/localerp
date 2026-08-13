@@ -2,7 +2,8 @@ import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { rupee } from './supabase'
 import { getProposal, getCostSections, getValueSummary, listTimeline, PROPOSAL_CATEGORIES } from './proposals'
-import { getDefaultTemplate } from './proposalTemplates'
+import { getActiveTemplate } from './documentTemplates'
+import { writeWrapped, pdfCurrency } from './pdfKit'
 
 // Customer-facing and internal-review builders are genuinely separate
 // functions, not one template with a visibility flag — the customer
@@ -19,24 +20,28 @@ function orderedCategories(sectionOrder) {
 // Every individual line in a section, each priced at that section's own
 // margin — used only when the template asks for itemized customer detail.
 // Still price-only: this never reads internalCost, same rule as the
-// category-level builder.
-function itemizedCustomerRows(section, marginPercent) {
+// category-level builder. Shared between the PDF and Excel exports below,
+// which need DIFFERENT currency formatting — Excel cells render the real
+// ₹ symbol fine, but jsPDF's built-in fonts can't (see pdfCurrency's
+// comment in pdfKit.js) — so the formatter is a parameter, not hardcoded.
+function itemizedCustomerRows(section, marginPercent, fmt = rupee) {
   const markup = x => x * (1 + marginPercent / 100)
   const rows = []
-  ;(section.resourcePlans || []).forEach(r => rows.push([r.designation, `${r.estimated_count} × ${r.estimated_duration_weeks}wk`, rupee(markup(r.computed_cost))]))
-  ;(section.hardwareLines || []).forEach(h => rows.push([h.description, `qty ${h.estimated_quantity}`, rupee(markup(h.subtotal_internal_cost))]))
-  ;(section.softwareLines || []).forEach(s => rows.push([s.item_name, s.cost_type, rupee(markup(s.computed_cost))]))
-  ;(section.miscLines || []).forEach(m => rows.push([m.item_name, m.line_type, rupee(markup(m.cost))]))
+  ;(section.resourcePlans || []).forEach(r => rows.push([r.designation, `${r.estimated_count} × ${r.estimated_duration_weeks}wk`, fmt(markup(r.computed_cost))]))
+  ;(section.hardwareLines || []).forEach(h => rows.push([h.description, `qty ${h.estimated_quantity}`, fmt(markup(h.subtotal_internal_cost))]))
+  ;(section.softwareLines || []).forEach(s => rows.push([s.item_name, s.cost_type, fmt(markup(s.computed_cost))]))
+  ;(section.miscLines || []).forEach(m => rows.push([m.item_name, m.line_type, fmt(markup(m.cost))]))
   return rows
 }
 
+// PDF-only from here down — always pdfCurrency, never rupee().
 function buildCustomerRows(summary, sections, template) {
-  const order = orderedCategories(template?.section_order)
-  if (!template?.show_line_item_detail) {
+  const order = orderedCategories(template?.config?.section_order)
+  if (!template?.config?.show_line_item_detail) {
     return order
       .map(cat => summary.cost_by_category.find(c => c.category === cat))
       .filter(Boolean)
-      .map(c => [c.category, rupee(c.customerPrice)])
+      .map(c => [c.category, pdfCurrency(c.customerPrice)])
   }
   const rows = []
   order.forEach(cat => {
@@ -44,23 +49,23 @@ function buildCustomerRows(summary, sections, template) {
     const section = sections.find(s => s.category === cat)
     if (!c || !section) return
     rows.push([{ content: cat, colSpan: 2, styles: { fontStyle: 'bold', fillColor: [241, 245, 249] } }])
-    itemizedCustomerRows(section, c.marginPercent).forEach(([name, meta, price]) => rows.push(['   ' + name + (meta ? ` (${meta})` : ''), price]))
+    itemizedCustomerRows(section, c.marginPercent, pdfCurrency).forEach(([name, meta, price]) => rows.push(['   ' + name + (meta ? ` (${meta})` : ''), price]))
   })
   return rows
 }
 
 function buildInternalRows(summary, template) {
-  const order = orderedCategories(template?.section_order)
+  const order = orderedCategories(template?.config?.section_order)
   return order
     .map(cat => summary.cost_by_category.find(c => c.category === cat))
     .filter(Boolean)
-    .map(c => [c.category, rupee(c.internalCost), `${c.marginPercent}%`, rupee(c.customerPrice), rupee(c.customerPrice - c.internalCost)])
+    .map(c => [c.category, pdfCurrency(c.internalCost), `${c.marginPercent}%`, pdfCurrency(c.customerPrice), pdfCurrency(c.customerPrice - c.internalCost)])
 }
 
 async function loadExportData(proposalId, mode) {
   const [proposal, sections, summary, timeline, template] = await Promise.all([
     getProposal(proposalId), getCostSections(proposalId), getValueSummary(proposalId), listTimeline(proposalId),
-    getDefaultTemplate(mode === 'customer' ? 'Customer-Facing' : 'Internal Review'),
+    getActiveTemplate('proposal', mode === 'customer' ? 'customer' : 'internal'),
   ])
   if (!summary) throw new Error('No value summary computed yet — open the proposal and let it calculate before exporting.')
   return { proposal, sections, summary, timeline, template }
@@ -83,7 +88,7 @@ export async function exportProposalPDF(proposalId, mode = 'customer') {
   doc.setTextColor(100)
   doc.text(`${proposal.proposal_number} · ${proposal.customer_name} · v${proposal.version}`, 14, y)
   y += 6
-  if (template?.company_details) { doc.text(template.company_details, 14, y); y += 6 }
+  if (template?.config?.company_details_override) { doc.text(template.config.company_details_override, 14, y); y += 6 }
   if (mode === 'internal') { doc.text('INTERNAL REVIEW — not for customer distribution', 14, y); y += 6 }
   doc.setTextColor(0)
   y += 4
@@ -91,9 +96,10 @@ export async function exportProposalPDF(proposalId, mode = 'customer') {
   if (mode === 'customer') {
     autoTable(doc, {
       startY: y,
-      head: template?.show_line_item_detail ? [['Item', `Price (${proposal.currency})`]] : [['Category', `Price (${proposal.currency})`]],
+      head: template?.config?.show_line_item_detail ? [['Item', `Price (${proposal.currency})`]] : [['Category', `Price (${proposal.currency})`]],
       body: buildCustomerRows(summary, sections, template),
-      foot: [['Total', rupee(summary.total_customer_price)]],
+      foot: [['Total', pdfCurrency(summary.total_customer_price)]],
+      columnStyles: { 1: { halign: 'right' } },
       theme: 'grid',
     })
   } else {
@@ -101,7 +107,8 @@ export async function exportProposalPDF(proposalId, mode = 'customer') {
       startY: y,
       head: [['Category', 'Internal Cost', 'Margin %', 'Customer Price', 'Profit']],
       body: buildInternalRows(summary, template),
-      foot: [['Total', rupee(summary.total_internal_cost), `${summary.blended_markup_percent}%`, rupee(summary.total_customer_price), rupee(summary.projected_profit)]],
+      foot: [['Total', pdfCurrency(summary.total_internal_cost), `${summary.blended_markup_percent}%`, pdfCurrency(summary.total_customer_price), pdfCurrency(summary.projected_profit)]],
+      columnStyles: { 1: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' } },
       theme: 'grid',
     })
   }
@@ -126,8 +133,7 @@ export async function exportProposalPDF(proposalId, mode = 'customer') {
   }
   if (mode === 'customer' && template?.terms_and_conditions_text) {
     doc.setFontSize(9); doc.setTextColor(100)
-    doc.text(doc.splitTextToSize(template.terms_and_conditions_text, 180), 14, y)
-    y += 10
+    y = writeWrapped(doc, template.terms_and_conditions_text, 14, y, 180, 4.5) + 4
   }
   if (template?.footer_text) {
     doc.setFontSize(8); doc.setTextColor(150)
@@ -154,10 +160,10 @@ export async function exportProposalExcel(proposalId, mode = 'customer') {
   await ensureXLSX()
   const { proposal, sections, summary, timeline, template } = await loadExportData(proposalId, mode)
   const XLSX = window.XLSX
-  const order = orderedCategories(template?.section_order)
+  const order = orderedCategories(template?.config?.section_order)
 
   let rows
-  if (mode === 'customer' && template?.show_line_item_detail) {
+  if (mode === 'customer' && template?.config?.show_line_item_detail) {
     rows = []
     order.forEach(cat => {
       const c = summary.cost_by_category.find(x => x.category === cat)

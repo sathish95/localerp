@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { getPOItems } from '../lib/purchaseOrders'
-import { createAndReceiveGRN, getReceivedQtyByPOItem } from '../lib/grn'
+import CreateGRNModal from '../components/CreateGRNModal'
 import { StatusBadge, SearchBox, Empty, Modal, Loader } from '../components/ui'
 import { ShoppingCart, Eye, Building2, Calendar, Package, TrendingUp, Clock, CheckCircle, X, ClipboardCheck, Send } from 'lucide-react'
 
@@ -31,11 +31,6 @@ export default function PurchaseOrdersPage() {
   const [selectedItems, setSelectedItems] = useState([])
 
   const [showCreateGRN, setShowCreateGRN] = useState(null)
-  const [grnItems, setGrnItems] = useState([])
-  const [grnDate, setGrnDate] = useState('')
-  const [grnRemarks, setGrnRemarks] = useState('')
-  const [grnSubmitting, setGrnSubmitting] = useState(false)
-  const [grnErr, setGrnErr] = useState('')
   const [markingSent, setMarkingSent] = useState(false)
 
   useEffect(() => { load() }, [])
@@ -67,22 +62,6 @@ export default function PurchaseOrdersPage() {
 
   function openCreateGRN(po) {
     setShowCreateGRN(po)
-    setGrnErr(''); setGrnRemarks(''); setGrnDate(new Date().toISOString().slice(0, 10))
-    Promise.all([getPOItems(po.id), getReceivedQtyByPOItem(po.id)]).then(([items, received]) => {
-      setGrnItems(items.map(i => {
-        const alreadyReceived = received[i.id] || 0
-        const outstanding = Math.max(0, Number(i.quantity) - alreadyReceived)
-        return {
-          po_item_id: i.id, part_number: i.part_number, description: i.description,
-          quantity_ordered: i.quantity, quantity_received: outstanding, unit_cost: i.unit_cost,
-          already_received: alreadyReceived,
-        }
-      }))
-    })
-  }
-
-  function updateGrnQty(idx, qty) {
-    setGrnItems(prev => prev.map((it, i) => i === idx ? { ...it, quantity_received: qty } : it))
   }
 
   async function markSent(po) {
@@ -94,14 +73,9 @@ export default function PurchaseOrdersPage() {
     } finally { setMarkingSent(false) }
   }
 
-  async function handleReceiveGRN() {
-    setGrnSubmitting(true); setGrnErr('')
-    try {
-      await createAndReceiveGRN({ poId: showCreateGRN.id, receivedDate: grnDate, items: grnItems, remarks: grnRemarks, userId: profile.id })
-      setShowCreateGRN(null)
-      if (selected?.id === showCreateGRN.id) openDetail(selected)
-    } catch (e) { setGrnErr(e.message) }
-    finally { setGrnSubmitting(false) }
+  function handleGRNCreated() {
+    if (selected?.id === showCreateGRN.id) openDetail(selected)
+    setShowCreateGRN(null)
   }
 
   if (loading) return <Loader />
@@ -298,46 +272,7 @@ export default function PurchaseOrdersPage() {
         </Modal>
       )}
 
-      {/* Create GRN Modal */}
-      <Modal open={!!showCreateGRN} onClose={() => setShowCreateGRN(null)} title={showCreateGRN ? `Create GRN — ${showCreateGRN.po_number}` : ''} size="lg"
-        footer={<>
-          <button className="btn btn-ghost" onClick={() => setShowCreateGRN(null)}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleReceiveGRN} disabled={grnSubmitting || !grnItems.length}>{grnSubmitting ? 'Receiving…' : 'Receive GRN'}</button>
-        </>}>
-        {showCreateGRN && (
-          <div>
-            {grnErr && <div className="alert alert-danger" style={{ marginBottom: 12 }}>{grnErr}</div>}
-            <div className="form-row">
-              <div className="form-group">
-                <label className="form-label">Received Date</label>
-                <input className="form-input" type="date" value={grnDate} onChange={e => setGrnDate(e.target.value)} />
-              </div>
-              <div className="form-group">
-                <label className="form-label">Remarks</label>
-                <input className="form-input" value={grnRemarks} onChange={e => setGrnRemarks(e.target.value)} placeholder="Optional" />
-              </div>
-            </div>
-            <div className="table-wrap" style={{ marginBottom: 8 }}>
-              <table>
-                <thead><tr><th>Part #</th><th>Description</th><th>Ordered</th><th>Already Received</th><th>Receiving Now</th><th>Unit Cost</th></tr></thead>
-                <tbody>
-                  {grnItems.map((it, i) => (
-                    <tr key={i}>
-                      <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{it.part_number || '—'}</td>
-                      <td>{it.description}</td>
-                      <td>{it.quantity_ordered}</td>
-                      <td style={{ color: '#64748b' }}>{it.already_received || 0}</td>
-                      <td><input className="form-input" style={{ width: 90 }} type="number" min="0" step="0.01" value={it.quantity_received} onChange={e => updateGrnQty(i, e.target.value)} /></td>
-                      <td>{rupee(it.unit_cost)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div style={{ fontSize: 11, color: '#94a3b8' }}>Receiving less than ordered marks the GRN "Partial" — raise another GRN against this PO later for the remainder. Non-serialized parts post straight into Inventory; serialized parts still need their units registered in Devices.</div>
-          </div>
-        )}
-      </Modal>
+      <CreateGRNModal po={showCreateGRN} onClose={() => setShowCreateGRN(null)} onCreated={handleGRNCreated} />
     </div>
   )
 }

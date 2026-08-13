@@ -1,19 +1,26 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, Fragment } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase, rupee, dateFmt } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useTabVisibility } from '../context/TabVisibilityContext'
 import { listRoles, createRole, updateRole, deleteRole, colorForRole } from '../lib/roles'
 import { getModules, setModuleEnabled, getModuleRoleVisibility, setModuleRoleVisibility } from '../lib/modules'
 import { getLLMSettings, saveLLMSettings } from '../lib/llmSettings'
+import { getDocumentSettings, saveDocumentSettings } from '../lib/documentSettings'
+import { listTemplates, createTemplate, updateTemplate, setActive, archiveTemplate, deleteTemplate } from '../lib/documentTemplates'
+import { PROPOSAL_CATEGORIES } from '../lib/proposals'
 import { MODULES, MODULE_SECTIONS } from '../config/modules'
-import { Alert, Modal, Confirm, Loader, Empty } from '../components/ui'
+import { Alert, Modal, Confirm, Loader, Empty, SearchBox } from '../components/ui'
 import {
   Settings, GitBranch, DollarSign, Bell, Tag, FileText, Sparkles, TrendingUp, Megaphone,
   Save, Plus, Trash2, Edit2, Check, X, Users, Eye, EyeOff, Shield, ChevronDown, ChevronRight, ChevronUp, Building2,
-  CreditCard, Clock, CheckCircle2
+  CreditCard, Clock, CheckCircle2, LayoutTemplate, ArrowUp, ArrowDown, Puzzle, Lock, Unlock, Key,
 } from 'lucide-react'
 import { listInvites, createInvite, revokeInvite } from '../lib/orgInvites'
 import { listPlans, myUpgradeRequests, requestUpgrade } from '../lib/billing'
+import { listBundles, myBundleSubscriptions, myBundleRequests, requestBundleChange, orgBundleMonthlyTotal } from '../lib/billingBundles'
+import { listPermissions, listRolePermissions, setRolePermission } from '../lib/permissions'
+import { createPaymentOrder, launchCheckout, cancelSubscription, listPaymentProviders } from '../lib/paymentGateway'
 import {
   WORKFLOWS, workflowConfig, listChainsWithSteps, createChain, saveChainSteps, setChainActive, deleteChain,
 } from '../lib/approvalChains'
@@ -27,6 +34,7 @@ import {
   listStaleThresholds, updateStaleThreshold,
   getConfigFlag, setConfigFlag,
 } from '../lib/salesAdmin'
+import { AI_CAPABILITY_REGISTRY, getEnabledCapabilities, setCapabilityEnabled } from '../lib/aiCapabilities'
 
 // ── Roles & Modules (Admin Feature) ──
 // Company-wide module enablement (a real kill switch, applies to every
@@ -594,42 +602,360 @@ function ExpenseCategoriesTab() {
   )
 }
 
-// ── GST Settings ──
+// ── GST Settings — org-wide tax identity + bank details. The per-document
+// letterhead (logo/footer/terms) used to live here too (STEP113) but now
+// lives per-template under Settings -> Manage Templates (STEP114), since
+// different templates for the same document type can reasonably want
+// different footer text/terms — org GSTIN/address/bank details can't
+// vary that way, so they stay here. ──
+const initDocSettings = () => ({
+  gstin: '', business_name: '', address: '', state: '', state_code: '',
+  cgst_rate: 9, sgst_rate: 9, igst_rate: 18, default_hsn: '',
+  include_gst_in_invoices: true, auto_calculate: true, bank_details: '',
+})
+
 function GSTSettingsTab() {
-  const [s, setS] = useState({ gstin: '', business_name: '', address: '', state: '', state_code: '', cgst_rate: 9, sgst_rate: 9, igst_rate: 18, default_hsn: '', include_gst_in_invoices: true, auto_calculate: true })
+  const { profile } = useAuth()
+  const navigate = useNavigate()
+  const [s, setS] = useState(initDocSettings())
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  function save() { setSaved(true); setTimeout(() => setSaved(false), 2500) }
+  const [err, setErr] = useState('')
+  const canEdit = ['admin', 'ceo', 'finance'].includes(profile?.role)
+
+  useEffect(() => { load() }, [])
+
+  async function load() {
+    setLoading(true)
+    const existing = await getDocumentSettings()
+    setS({ ...initDocSettings(), ...existing })
+    setLoading(false)
+  }
+
+  async function save() {
+    setSaving(true); setErr('')
+    try {
+      await saveDocumentSettings(s, profile?.id)
+      setSaved(true); setTimeout(() => setSaved(false), 2500)
+    } catch (e) { setErr(e.message) } finally { setSaving(false) }
+  }
   const set = (k, v) => setS(p => ({ ...p, [k]: v }))
+
+  if (loading) return <Loader />
 
   return (
     <div>
-      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>GST Configuration</h3>
-      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 20 }}>Configure GST details for invoices and procurement.</p>
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>GST &amp; Business Settings</h3>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 12 }}>
+        Your organization's tax identity and bank details — used on every generated document regardless of which template is active.
+        {' '}Looking for the logo, footer text or terms &amp; conditions?{' '}
+        <button type="button" onClick={() => navigate('/settings?tab=document-templates')} style={{ background: 'none', border: 'none', padding: 0, color: 'var(--c1)', fontWeight: 700, cursor: 'pointer', font: 'inherit' }}>
+          Manage those under Document Templates →
+        </button>
+      </p>
+      {!canEdit && <Alert type="info" message="You can view these settings, but only admin/ceo/finance can edit them." />}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 20 }}>
         {[['gstin','GSTIN','29ABCDE1234F1Z5',false],['business_name','Business Name','Acme Pvt. Ltd.',false],['address','Registered Address','123, MG Road...',true],['state','State','Karnataka',false],['state_code','State Code','29',false],['default_hsn','Default HSN Code','998313',false]].map(([k,label,ph,full]) => (
           <div key={k} style={{ gridColumn: full ? '1/-1' : 'auto' }}>
             <label className="form-label">{label}</label>
-            <input className="form-input" value={s[k]} placeholder={ph} onChange={e => set(k, e.target.value)} />
+            <input className="form-input" value={s[k] || ''} placeholder={ph} disabled={!canEdit} onChange={e => set(k, e.target.value)} />
           </div>
         ))}
       </div>
       <h4 style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: 12 }}>GST Rates</h4>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 14, marginBottom: 20 }}>
         {[['cgst_rate','CGST Rate (%)'],['sgst_rate','SGST Rate (%)'],['igst_rate','IGST Rate (%)']].map(([k,l]) => (
-          <div key={k}><label className="form-label">{l}</label><input type="number" className="form-input" value={s[k]} onChange={e => set(k, parseFloat(e.target.value)||0)} min={0} max={28} step={0.5} /></div>
+          <div key={k}><label className="form-label">{l}</label><input type="number" className="form-input" value={s[k]} disabled={!canEdit} onChange={e => set(k, parseFloat(e.target.value)||0)} min={0} max={28} step={0.5} /></div>
         ))}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
         {[['include_gst_in_invoices','Include GST breakdown in invoices'],['auto_calculate','Auto-calculate GST on amounts']].map(([k,l]) => (
-          <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: '0.9rem' }}>
-            <input type="checkbox" checked={s[k]} onChange={() => set(k, !s[k])} style={{ width: 16, height: 16, accentColor: 'var(--c1)' }} />
+          <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: canEdit ? 'pointer' : 'default', fontSize: '0.9rem' }}>
+            <input type="checkbox" checked={s[k]} disabled={!canEdit} onChange={() => set(k, !s[k])} style={{ width: 16, height: 16, accentColor: 'var(--c1)' }} />
             {l}
           </label>
         ))}
       </div>
-      {saved && <Alert type="success" message="GST settings saved!" />}
-      <button className="btn btn-primary" onClick={save}><Save size={15} /> Save GST Settings</button>
+
+      <div className="form-group" style={{ marginBottom: 20 }}><label className="form-label">Bank Details</label><textarea className="form-textarea" rows={2} disabled={!canEdit} value={s.bank_details || ''} onChange={e => set('bank_details', e.target.value)} placeholder="Account name, number, IFSC, bank name…" /></div>
+
+      {err && <Alert type="danger" message={err} />}
+      {saved && <Alert type="success" message="Settings saved!" />}
+      {canEdit && <button className="btn btn-primary" onClick={save} disabled={saving}><Save size={15} /> {saving ? 'Saving…' : 'Save Settings'}</button>}
     </div>
+  )
+}
+
+// ── Shared logo-upload control — one PNG file picker with live preview,
+// a 300KB cap (every generated PDF embeds it directly), and a Remove
+// button. Used by the Document Templates modal below. ──
+function LogoUploadField({ value, onChange, disabled }) {
+  const [logoErr, setLogoErr] = useState('')
+  function handleFile(file) {
+    setLogoErr('')
+    if (!file) return
+    if (file.type !== 'image/png') { setLogoErr('Please choose a PNG file.'); return }
+    if (file.size > 300 * 1024) { setLogoErr('That logo is too large (max 300 KB) — every generated PDF embeds it directly. Try a smaller or more compressed PNG.'); return }
+    const reader = new FileReader()
+    reader.onload = () => onChange(reader.result)
+    reader.onerror = () => setLogoErr('Could not read that file — please try again.')
+    reader.readAsDataURL(file)
+  }
+  return (
+    <div className="form-group">
+      <label className="form-label">Header Logo</label>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+        {value && (
+          <img src={value} alt="Logo preview" style={{ height: 44, maxWidth: 140, objectFit: 'contain', border: '1px solid var(--border)', borderRadius: 8, padding: 4, background: '#fff' }} />
+        )}
+        <div>
+          <input type="file" accept="image/png" disabled={disabled} onChange={e => handleFile(e.target.files?.[0])} style={{ fontSize: 13 }} />
+          <div style={{ fontSize: 11, color: 'var(--ink-muted)', marginTop: 4 }}>PNG only, up to 300 KB.</div>
+        </div>
+        {value && !disabled && <button type="button" className="btn btn-ghost btn-sm" onClick={() => onChange('')}>Remove</button>}
+      </div>
+      {logoErr && <div style={{ fontSize: 11, color: '#dc2626', marginTop: 4 }}>{logoErr}</div>}
+    </div>
+  )
+}
+
+// ── Document Templates (STEP114) — one unified, admin-configurable
+// template system for Invoice, Delivery Note, Proposal, Warranty, and
+// GRN, replacing Proposals' old bespoke proposal_templates. Every
+// template has a Draft -> Active -> Archived lifecycle; only the one
+// Active template per (type, audience) is read by the real PDF
+// exporters (customerInvoiceExport.js, deliveryNoteExport.js,
+// proposalExport.js, warrantyExport.js, grnExport.js). ──
+const DOC_TYPES = [
+  { key: 'invoice', label: 'Invoice' },
+  { key: 'delivery_note', label: 'Delivery Note' },
+  { key: 'proposal', label: 'Proposal' },
+  { key: 'warranty', label: 'Warranty' },
+  { key: 'grn', label: 'GRN' },
+]
+const TEMPLATE_STATUS_STYLE = {
+  draft: { bg: '#f1f5f9', color: '#475569' },
+  active: { bg: '#dcfce7', color: '#15803d' },
+  archived: { bg: '#f1f5f9', color: '#94a3b8' },
+}
+
+function DocumentTemplatesTab() {
+  const { profile } = useAuth()
+  const canEdit = ['admin', 'ceo', 'finance', 'sales_lead', 'cto'].includes(profile?.role)
+  const [docType, setDocType] = useState('invoice')
+  const [audience, setAudience] = useState('customer')
+  const [templates, setTemplates] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [showModal, setShowModal] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const [deleteConfirm, setDeleteConfirm] = useState(null)
+  const [err, setErr] = useState('')
+
+  const effectiveAudience = docType === 'proposal' ? audience : undefined
+
+  useEffect(() => { load() }, [docType, audience])
+
+  async function load() {
+    setLoading(true); setErr('')
+    try { setTemplates(await listTemplates(docType, effectiveAudience)) }
+    catch (e) { setErr(e.message) }
+    finally { setLoading(false) }
+  }
+
+  async function handleSetActive(id) {
+    setErr('')
+    try { await setActive(id); load() } catch (e) { setErr(e.message) }
+  }
+  async function handleArchive(id) {
+    setErr('')
+    try { await archiveTemplate(id); load() } catch (e) { setErr(e.message) }
+  }
+  async function handleDelete() {
+    setErr('')
+    try { await deleteTemplate(deleteConfirm); setDeleteConfirm(null); load() } catch (e) { setErr(e.message) }
+  }
+
+  return (
+    <div>
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Document Templates</h3>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 18 }}>
+        The letterhead and layout used when generating each document's PDF. Only one <b>Active</b> template per type is used for real exports — keep drafts around to preview a new look before switching.
+      </p>
+
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
+        {DOC_TYPES.map(t => (
+          <button key={t.key} onClick={() => setDocType(t.key)} style={{ padding: '6px 16px', borderRadius: 20, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12, background: docType === t.key ? 'var(--c1)' : 'var(--surface)', color: docType === t.key ? '#fff' : 'var(--ink-soft)' }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {docType === 'proposal' && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 18 }}>
+          {[['customer', 'Customer-Facing'], ['internal', 'Internal Review']].map(([k, label]) => (
+            <button key={k} onClick={() => setAudience(k)} style={{ padding: '5px 14px', borderRadius: 8, border: '1px solid var(--border)', cursor: 'pointer', fontWeight: 600, fontSize: 11.5, background: audience === k ? 'var(--accent-wash, #eef2ff)' : '#fff', color: audience === k ? 'var(--c1)' : 'var(--ink-muted)' }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {err && <Alert type="danger" message={err} />}
+
+      {canEdit && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+          <button className="btn btn-primary btn-sm" onClick={() => { setEditing(null); setShowModal(true) }}><Plus size={14} /> New Template</button>
+        </div>
+      )}
+
+      {loading ? <Loader /> : templates.length === 0 ? (
+        <Empty icon={<LayoutTemplate size={36} />} title="No templates yet" desc="Create one to control what this document's PDF looks like — until then, exports use a built-in default layout." />
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Status</th><th>Logo</th><th>Updated</th>{canEdit && <th></th>}</tr></thead>
+            <tbody>
+              {templates.map(t => {
+                const st = TEMPLATE_STATUS_STYLE[t.status] || TEMPLATE_STATUS_STYLE.draft
+                return (
+                  <tr key={t.id}>
+                    <td className="td-bold">{t.template_name}</td>
+                    <td><span style={{ padding: '2px 10px', borderRadius: 999, fontSize: 10.5, fontWeight: 700, textTransform: 'capitalize', background: st.bg, color: st.color }}>{t.status}</span></td>
+                    <td>{t.header_logo ? <span className="badge badge-success">Set</span> : '—'}</td>
+                    <td style={{ fontSize: 12, color: 'var(--ink-muted)' }}>{dateFmt(t.updated_at)}</td>
+                    {canEdit && (
+                      <td>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                          <button className="btn btn-ghost btn-sm btn-icon" title="Edit" onClick={() => { setEditing(t); setShowModal(true) }}><Edit2 size={12} /></button>
+                          {t.status !== 'active' && <button className="btn btn-ghost btn-sm" onClick={() => handleSetActive(t.id)}>Set Active</button>}
+                          {t.status !== 'archived' && <button className="btn btn-ghost btn-sm" onClick={() => handleArchive(t.id)}>Archive</button>}
+                          <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }} title="Delete" onClick={() => setDeleteConfirm(t.id)}><Trash2 size={12} /></button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {showModal && (
+        <DocumentTemplateModal documentType={docType} audience={effectiveAudience} template={editing} userId={profile.id}
+          onClose={() => setShowModal(false)} onSaved={async () => { setShowModal(false); await load() }} />
+      )}
+      <Confirm open={!!deleteConfirm} message="Delete this template? This cannot be undone." danger
+        onConfirm={handleDelete} onCancel={() => setDeleteConfirm(null)} />
+    </div>
+  )
+}
+
+function DocumentTemplateModal({ documentType, audience, template, userId, onClose, onSaved }) {
+  const isProposal = documentType === 'proposal'
+  const [form, setForm] = useState(() => ({
+    template_name: template?.template_name || '',
+    status: (template?.status === 'draft' || template?.status === 'archived') ? template.status : 'draft',
+    header_logo: template?.header_logo || '',
+    footer_text: template?.footer_text || '',
+    terms_and_conditions_text: template?.terms_and_conditions_text || '',
+    show_line_item_detail: template?.config?.show_line_item_detail || false,
+    section_order: template?.config?.section_order?.length ? template.config.section_order : [...PROPOSAL_CATEGORIES],
+    company_details_override: template?.config?.company_details_override || '',
+  }))
+  const [submitting, setSubmitting] = useState(false)
+  const [err, setErr] = useState('')
+
+  function move(idx, dir) {
+    setForm(f => {
+      const arr = [...f.section_order]
+      const j = idx + dir
+      if (j < 0 || j >= arr.length) return f
+      ;[arr[idx], arr[j]] = [arr[j], arr[idx]]
+      return { ...f, section_order: arr }
+    })
+  }
+
+  async function submit(e) {
+    e.preventDefault()
+    setSubmitting(true); setErr('')
+    try {
+      const patch = {
+        document_type: documentType, audience: audience || null,
+        template_name: form.template_name, status: form.status,
+        header_logo: form.header_logo || null, footer_text: form.footer_text || null,
+        terms_and_conditions_text: form.terms_and_conditions_text || null,
+        ...(isProposal ? { config: { show_line_item_detail: form.show_line_item_detail, section_order: form.section_order, company_details_override: form.company_details_override || null } } : {}),
+      }
+      template ? await updateTemplate(template.id, patch) : await createTemplate(patch, userId)
+      onSaved()
+    } catch (e) { setErr(e.message) } finally { setSubmitting(false) }
+  }
+
+  return (
+    <Modal open onClose={onClose} title={template ? 'Edit Template' : 'New Template'} size="lg"
+      footer={<>
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={submit} disabled={submitting}>{submitting ? 'Saving…' : 'Save'}</button>
+      </>}>
+      <form onSubmit={submit}>
+        {err && <div className="alert alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
+        <div className="form-group">
+          <label className="form-label">Template Name *</label>
+          <input className="form-input" value={form.template_name} onChange={e => setForm(f => ({ ...f, template_name: e.target.value }))} required />
+        </div>
+
+        {template?.status !== 'active' && (
+          <div className="form-group">
+            <label className="form-label">Status</label>
+            <select className="form-select" value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))}>
+              <option value="draft">Draft</option>
+              <option value="archived">Archived</option>
+            </select>
+            <div style={{ fontSize: 11, color: 'var(--ink-muted)', marginTop: 4 }}>Use "Set Active" from the template list to make this the one real exports use.</div>
+          </div>
+        )}
+        {template?.status === 'active' && (
+          <div className="alert alert-info" style={{ marginBottom: 14, fontSize: 12 }}>This is the Active template — real exports use it right now. Archive it from the template list if you want to retire it.</div>
+        )}
+
+        <LogoUploadField value={form.header_logo} onChange={v => setForm(f => ({ ...f, header_logo: v }))} />
+
+        {isProposal && (
+          <div className="form-group"><label className="form-label">Company Details Override</label>
+            <textarea className="form-textarea" rows={2} value={form.company_details_override} onChange={e => setForm(f => ({ ...f, company_details_override: e.target.value }))} placeholder="Leave blank to use the org's GST Settings address" />
+          </div>
+        )}
+        <div className="form-group"><label className="form-label">Terms &amp; Conditions</label>
+          <textarea className="form-textarea" rows={3} value={form.terms_and_conditions_text} onChange={e => setForm(f => ({ ...f, terms_and_conditions_text: e.target.value }))} placeholder="Payment terms, late fees, dispute process…" />
+        </div>
+        <div className="form-group"><label className="form-label">Footer Text</label>
+          <input className="form-input" value={form.footer_text} onChange={e => setForm(f => ({ ...f, footer_text: e.target.value }))} placeholder="e.g. Thank you for your business." />
+        </div>
+
+        {isProposal && (
+          <>
+            <div className="form-group">
+              <label className="form-label">Category Order</label>
+              <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                {form.section_order.map((cat, i) => (
+                  <div key={cat} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderBottom: i < form.section_order.length - 1 ? '1px solid var(--border)' : 'none', fontSize: 12 }}>
+                    <span style={{ flex: 1 }}>{cat}</span>
+                    <button type="button" className="btn btn-ghost btn-sm btn-icon" disabled={i === 0} onClick={() => move(i, -1)}><ArrowUp size={12} /></button>
+                    <button type="button" className="btn btn-ghost btn-sm btn-icon" disabled={i === form.section_order.length - 1} onClick={() => move(i, 1)}><ArrowDown size={12} /></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+              <input type="checkbox" checked={form.show_line_item_detail} onChange={e => setForm(f => ({ ...f, show_line_item_detail: e.target.checked }))} />
+              Show itemized line-by-line detail (instead of category totals only) — Customer-Facing only, ignored for Internal Review
+            </label>
+          </>
+        )}
+      </form>
+    </Modal>
   )
 }
 
@@ -640,6 +966,74 @@ function GSTSettingsTab() {
 // user (the browser calls DeepSeek/Gemini directly, same exposure level as
 // the existing VITE_ vars, which are already bundled into the client JS),
 // writable only by admin/ceo (enforced by STEP44's RLS policy too).
+// ── AI Capabilities (Admin Feature) ──
+// A capability's absence from ai_capability_settings means "enabled"
+// (STEP110) — toggling it off writes an explicit false row; toggling it
+// back on deletes that row rather than writing true, keeping the table
+// storing only the exceptions. Read by AskBubble.jsx (src/lib/aiCapabilities.js)
+// to decide which capability tabs to show in the floating chat bubble.
+function AICapabilitiesTab() {
+  const { profile } = useAuth()
+  const [enabled, setEnabled] = useState({})
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState('')
+
+  useEffect(() => { load() }, [])
+
+  async function load() {
+    setLoading(true); setErr('')
+    try { setEnabled(await getEnabledCapabilities()) }
+    catch (e) { setErr(e.message) }
+    finally { setLoading(false) }
+  }
+
+  async function toggle(key) {
+    const next = !enabled[key]
+    setEnabled(e => ({ ...e, [key]: next })) // optimistic
+    try {
+      if (next) {
+        await supabase.from('ai_capability_settings').delete().eq('capability_key', key)
+      } else {
+        await setCapabilityEnabled(key, false, profile.id)
+      }
+    } catch (e) { setErr(e.message); load() }
+  }
+
+  if (loading) return <Loader />
+
+  return (
+    <div>
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>AI Capabilities</h3>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 18 }}>
+        Turn individual AI features on or off for this organization — independent of the module they live in.
+        Useful if you haven't configured an LLM key yet, or want to control AI usage. Everything is on by default.
+      </p>
+      {err && <Alert type="error" message={err} />}
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Capability</th><th>Part of</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {AI_CAPABILITY_REGISTRY.map(c => (
+              <tr key={c.key}>
+                <td className="td-bold">{c.label}</td>
+                <td style={{ color: 'var(--ink-muted)' }}>{c.module}</td>
+                <td>{enabled[c.key]
+                  ? <span style={{ color: '#16a34a', fontWeight: 700, fontSize: 12 }}>Enabled</span>
+                  : <span style={{ color: '#ef4444', fontWeight: 700, fontSize: 12 }}>Disabled</span>}</td>
+                <td>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={!!enabled[c.key]} onChange={() => toggle(c.key)} style={{ width: 16, height: 16, accentColor: '#10b981', cursor: 'pointer' }} />
+                  </label>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 function AILLMKeysTab() {
   const { profile } = useAuth()
   const [form, setForm] = useState({ deepseek_api_key: '', gemini_api_key: '', claude_api_key: '', ollama_url: '' })
@@ -1152,9 +1546,99 @@ function OrganizationTab() {
 // flow. No payment gateway is wired up — actioning the request (and
 // therefore the actual charge, handled outside this app) is a platform
 // super admin's job from /super-admin.
+// ── Renewal / Cancellation (STEP128) — EXPERIMENTAL. The Edge Functions
+// behind createPaymentOrder/launchCheckout have not been exercised
+// against any live Razorpay/Stripe/Cashfree sandbox; the actual gateway
+// calls, signature verification, and checkout SDK loading are all
+// written to each provider's public docs but unverified. Says so
+// directly in the UI rather than presenting this as production-ready. ──
+const PROVIDER_LABEL = { razorpay: 'Razorpay', stripe: 'Stripe', cashfree: 'Cashfree' }
+
+function RenewalSection({ org, profile, activeBundleKeys, paymentProviders }) {
+  const [payingWith, setPayingWith] = useState(null)
+  const [err, setErr] = useState('')
+  const [submitted, setSubmitted] = useState(false)
+  const [cancelForm, setCancelForm] = useState(null)
+  const [cancelling, setCancelling] = useState(false)
+
+  // A gateway shows up here only if it's platform-enabled AND (when the
+  // org has a per-org allow-list) on that allow-list. This mirrors, but
+  // doesn't replace, the same two checks create-payment-order enforces
+  // server-side (STEP129) — this is a UI convenience, not the actual gate.
+  const availableProviders = (paymentProviders || [])
+    .filter(p => p.is_active)
+    .filter(p => !org?.allowed_payment_providers || org.allowed_payment_providers.includes(p.key))
+    .map(p => p.key)
+
+  async function handlePay(provider) {
+    setPayingWith(provider); setErr(''); setSubmitted(false)
+    try {
+      const order = await createPaymentOrder({ provider, planKey: org?.plan_key, bundleKeys: activeBundleKeys, billingCycle: 'monthly' })
+      await launchCheckout(order, { orgName: org?.name, email: profile?.email, onSubmitted: () => setSubmitted(true) })
+    } catch (e) { setErr(e.message) }
+    finally { setPayingWith(null) }
+  }
+
+  async function handleCancel() {
+    setCancelling(true); setErr('')
+    try {
+      await cancelSubscription(cancelForm.immediately, cancelForm.reason)
+      setCancelForm(null)
+      window.location.reload() // simplest way to refresh profile.org everywhere it's read from
+    } catch (e) { setErr(e.message) }
+    finally { setCancelling(false) }
+  }
+
+  return (
+    <div style={{ marginBottom: 32, padding: '16px 20px', borderRadius: 12, border: '1px solid var(--border)' }}>
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 4 }}>Renew / Manage Subscription</h3>
+      <p style={{ fontSize: '0.82rem', color: 'var(--ink-muted)', marginBottom: 14 }}>
+        {org?.current_period_end ? <>Current period ends {dateFmt(org.current_period_end)}. </> : 'No active billing period yet. '}
+        Experimental — not yet verified against a live Razorpay/Stripe/Cashfree sandbox.
+      </p>
+      {err && <Alert type="error" message={err} />}
+      {submitted && <Alert type="success" message="Payment submitted — this updates automatically once confirmed, usually within a minute." />}
+      {availableProviders.length === 0 ? (
+        <p style={{ fontSize: '0.82rem', color: 'var(--ink-muted)', marginBottom: 14 }}>No payment method is currently enabled for your organization — contact the platform team.</p>
+      ) : (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+          {availableProviders.map(key => (
+            <button key={key} className="btn btn-outline btn-sm" disabled={!!payingWith} onClick={() => handlePay(key)}>
+              {payingWith === key ? 'Opening…' : `Pay with ${PROVIDER_LABEL[key] || key}`}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {cancelForm ? (
+        <div style={{ padding: 12, borderRadius: 8, background: 'var(--surface-2, rgba(99,102,241,.06))' }}>
+          <div style={{ display: 'flex', gap: 16, marginBottom: 8, fontSize: 13 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input type="radio" checked={!cancelForm.immediately} onChange={() => setCancelForm(f => ({ ...f, immediately: false }))} /> Cancel at period end
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input type="radio" checked={cancelForm.immediately} onChange={() => setCancelForm(f => ({ ...f, immediately: true }))} /> Cancel immediately
+            </label>
+          </div>
+          <textarea className="form-input" rows={2} placeholder="Reason (optional)" value={cancelForm.reason} onChange={e => setCancelForm(f => ({ ...f, reason: e.target.value }))} style={{ marginBottom: 8 }} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-danger btn-sm" onClick={handleCancel} disabled={cancelling}>{cancelling ? 'Cancelling…' : 'Confirm Cancellation'}</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setCancelForm(null)}>Back</button>
+          </div>
+        </div>
+      ) : (
+        org?.billing_status !== 'canceled' && (
+          <button className="btn btn-ghost btn-sm" style={{ color: '#dc2626' }} onClick={() => setCancelForm({ immediately: false, reason: '' })}>Cancel Subscription</button>
+        )
+      )}
+    </div>
+  )
+}
+
 function BillingTab() {
   const { profile } = useAuth()
   const org = profile?.org
+  const isEnterprise = org?.plan_key === 'enterprise'
   const [plans, setPlans] = useState([])
   const [requests, setRequests] = useState([])
   const [loading, setLoading] = useState(true)
@@ -1163,17 +1647,33 @@ function BillingTab() {
   const [note, setNote] = useState('')
   const [seatCount, setSeatCount] = useState(null)
 
+  const [bundles, setBundles] = useState([])
+  const [activeBundleKeys, setActiveBundleKeys] = useState(new Set())
+  const [bundleRequests, setBundleRequests] = useState([])
+  const [monthlyTotal, setMonthlyTotal] = useState(0)
+  const [bundleAction, setBundleAction] = useState(null) // { key, action }
+  const [bundleNote, setBundleNote] = useState('')
+  const [bundleErr, setBundleErr] = useState('')
+  const [paymentProviders, setPaymentProviders] = useState([])
+
   useEffect(() => { load() }, [])
 
   async function load() {
     setLoading(true); setErr('')
     try {
-      const [p, r, seats] = await Promise.all([
+      const [p, r, seats, b, myBundles, bReqs, total, providers] = await Promise.all([
         listPlans(),
         myUpgradeRequests(),
         supabase.from('profiles').select('id', { count: 'exact', head: true }).eq('organization_id', profile.organization_id),
+        listBundles(),
+        myBundleSubscriptions(profile.organization_id),
+        myBundleRequests(),
+        orgBundleMonthlyTotal(profile.organization_id),
+        listPaymentProviders(),
       ])
       setPlans(p); setRequests(r); setSeatCount(seats.count ?? null)
+      setBundles(b); setActiveBundleKeys(new Set(myBundles.map(x => x.bundle_key))); setBundleRequests(bReqs); setMonthlyTotal(total)
+      setPaymentProviders(providers)
     } catch (e) { setErr(e.message) }
     finally { setLoading(false) }
   }
@@ -1185,6 +1685,15 @@ function BillingTab() {
       setRequesting(null); setNote('')
       load()
     } catch (e) { setErr(e.message) }
+  }
+
+  async function handleBundleRequest(bundleKey, action) {
+    setBundleErr('')
+    try {
+      await requestBundleChange(bundleKey, action, bundleNote.trim() || null)
+      setBundleAction(null); setBundleNote('')
+      load()
+    } catch (e) { setBundleErr(e.message) }
   }
 
   if (loading) return <Loader />
@@ -1220,6 +1729,8 @@ function BillingTab() {
           </div>
         )}
       </div>
+
+      <RenewalSection org={org} profile={profile} activeBundleKeys={[...activeBundleKeys]} paymentProviders={paymentProviders} />
 
       <div>
         <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Compare Plans</h3>
@@ -1258,51 +1769,284 @@ function BillingTab() {
           })}
         </div>
       </div>
+
+      <div style={{ marginTop: 36 }}>
+        <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Puzzle size={17} /> Modules &amp; Add-ons
+        </h3>
+        <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 6 }}>
+          {isEnterprise
+            ? 'Your Enterprise plan already includes every module — add-ons below are informational only.'
+            : "Pick which modules your team pays for, priced per active seat. Some modules require another one to already be active — see \"Requires\" below."}
+        </p>
+        {!isEnterprise && (
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 16, padding: '10px 16px', borderRadius: 10, background: 'var(--surface-2, rgba(99,102,241,.06))', border: '1px solid var(--border)' }}>
+            <DollarSign size={15} style={{ color: 'var(--c1)' }} />
+            <span style={{ fontSize: '0.85rem', color: 'var(--ink-muted)' }}>Estimated add-on cost, {seatCount ?? 0} active seat(s):</span>
+            <span style={{ fontWeight: 800, fontSize: '1.05rem' }}>{rupee(monthlyTotal)}/mo</span>
+          </div>
+        )}
+        {bundleErr && <Alert type="error" message={bundleErr} />}
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
+          {bundles.map(b => {
+            const isActive = isEnterprise || activeBundleKeys.has(b.key)
+            const pending = bundleRequests.find(r => r.bundle_key === b.key && r.status === 'pending')
+            const missing = (b.requires || []).filter(reqKey => !activeBundleKeys.has(reqKey) && !isEnterprise)
+            const dependents = bundles.filter(other => (other.requires || []).includes(b.key) && activeBundleKeys.has(other.key))
+            return (
+              <div key={b.key} style={{ border: isActive ? '2px solid var(--c1)' : '1px solid var(--border)', borderRadius: 12, padding: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                  <div style={{ fontWeight: 700, fontSize: '0.92rem' }}>{b.name}</div>
+                  {isActive ? <Unlock size={15} style={{ color: 'var(--c1)', flexShrink: 0 }} /> : <Lock size={15} style={{ color: 'var(--ink-muted)', flexShrink: 0 }} />}
+                </div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--ink-muted)', marginBottom: 8 }}>{(b.module_keys || []).length} modules · {rupee(b.price_per_seat_monthly)}/seat/mo</div>
+                {missing.length > 0 && (
+                  <div style={{ fontSize: '0.76rem', color: '#b45309', marginBottom: 8 }}>Requires: {missing.map(k => bundles.find(x => x.key === k)?.name || k).join(', ')}</div>
+                )}
+                {pending ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', color: 'var(--ink-muted)' }}>
+                    <Clock size={12} /> {pending.action === 'activate' ? 'Activation' : 'Deactivation'} pending review
+                  </div>
+                ) : bundleAction?.key === b.key ? (
+                  <div>
+                    <input className="form-input" style={{ marginBottom: 6, fontSize: '0.8rem' }} placeholder="Note (optional)" value={bundleNote} onChange={e => setBundleNote(e.target.value)} />
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn btn-primary btn-sm" style={{ flex: 1, justifyContent: 'center' }} onClick={() => handleBundleRequest(b.key, bundleAction.action)}>Confirm</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => { setBundleAction(null); setBundleNote('') }}>Cancel</button>
+                    </div>
+                  </div>
+                ) : isEnterprise ? (
+                  <button className="btn btn-ghost btn-sm" disabled style={{ width: '100%', justifyContent: 'center' }}>Included</button>
+                ) : isActive ? (
+                  <button className="btn btn-outline btn-sm" style={{ width: '100%', justifyContent: 'center' }}
+                    disabled={dependents.length > 0}
+                    title={dependents.length > 0 ? `Deactivate ${dependents.map(d => d.name).join(', ')} first` : undefined}
+                    onClick={() => setBundleAction({ key: b.key, action: 'deactivate' })}>
+                    {dependents.length > 0 ? 'In Use by Other Modules' : 'Deactivate'}
+                  </button>
+                ) : (
+                  <button className="btn btn-primary btn-sm" style={{ width: '100%', justifyContent: 'center' }}
+                    disabled={missing.length > 0}
+                    onClick={() => setBundleAction({ key: b.key, action: 'activate' })}>
+                    Activate
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Permissions (STEP125) ──
+// 'admin' is locked read-only in this grid — it's seeded with every
+// permission and is the role that bootstraps this very screen; letting
+// someone uncheck their own admin's AWARD_GRANT etc. here would be a
+// self-lockout with no recovery path short of the SQL editor, same
+// reasoning as `settings` being a PROTECTED_MODULE in lib/modules.js.
+const PERMISSION_LOCKED_ROLE = 'admin'
+
+function PermissionsTab() {
+  const [permissions, setPermissions] = useState([])
+  const [roles, setRoles] = useState([])
+  const [granted, setGranted] = useState(new Set())
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState('')
+
+  useEffect(() => { load() }, [])
+
+  async function load() {
+    setLoading(true); setErr('')
+    try {
+      const [perms, rolePerms, roleList] = await Promise.all([listPermissions(), listRolePermissions(), listRoles()])
+      setPermissions(perms)
+      setRoles(roleList)
+      setGranted(new Set(rolePerms.map(rp => `${rp.role_key}:${rp.permission_key}`)))
+    } catch (e) { setErr(e.message) }
+    finally { setLoading(false) }
+  }
+
+  async function toggle(roleKey, permKey) {
+    if (roleKey === PERMISSION_LOCKED_ROLE) return
+    const key = `${roleKey}:${permKey}`
+    const isGranted = granted.has(key)
+    setGranted(g => { const next = new Set(g); isGranted ? next.delete(key) : next.add(key); return next })
+    try { await setRolePermission(roleKey, permKey, !isGranted) }
+    catch (e) {
+      setErr(e.message)
+      setGranted(g => { const next = new Set(g); isGranted ? next.add(key) : next.delete(key); return next }) // revert on failure
+    }
+  }
+
+  if (loading) return <Loader />
+
+  const categories = [...new Set(permissions.map(p => p.category))]
+
+  return (
+    <div>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 16 }}>
+        Which roles can perform which actions, independent of the Roles &amp; Modules tab's nav visibility. Changes apply immediately, platform-wide (roles aren't per-organization).
+      </p>
+      {err && <Alert type="error" message={err} />}
+
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Permission</th>
+              {roles.map(r => (
+                <th key={r.role_key} style={{ textAlign: 'center' }} title={r.role_key === PERMISSION_LOCKED_ROLE ? 'Always fully granted' : undefined}>
+                  {r.label} {r.role_key === PERMISSION_LOCKED_ROLE && <Lock size={11} style={{ verticalAlign: -1 }} />}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {categories.map(cat => (
+              <Fragment key={cat}>
+                <tr style={{ background: 'var(--surface)' }}>
+                  <td colSpan={roles.length + 1} style={{ fontWeight: 700, fontSize: '0.78rem', color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>{cat}</td>
+                </tr>
+                {permissions.filter(p => p.category === cat).map(p => (
+                  <tr key={p.key}>
+                    <td>{p.label}</td>
+                    {roles.map(r => {
+                      const isLocked = r.role_key === PERMISSION_LOCKED_ROLE
+                      const isChecked = isLocked || granted.has(`${r.role_key}:${p.key}`)
+                      return (
+                        <td key={r.role_key} style={{ textAlign: 'center' }}>
+                          <input type="checkbox" checked={isChecked} disabled={isLocked} onChange={() => toggle(r.role_key, p.key)} style={{ cursor: isLocked ? 'not-allowed' : 'pointer' }} />
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
 
 const TABS = [
-  { id: 'roles-modules', label: 'Roles & Modules', icon: <Shield size={15} /> },
-  { id: 'organization', label: 'Organization', icon: <Building2 size={15} /> },
-  { id: 'billing', label: 'Billing', icon: <CreditCard size={15} /> },
-  { id: 'approval', label: 'Approval Chain', icon: <GitBranch size={15} /> },
-  { id: 'budget', label: 'Budget Config', icon: <DollarSign size={15} /> },
-  { id: 'categories', label: 'Expense Categories', icon: <Tag size={15} /> },
-  { id: 'gst', label: 'GST Settings', icon: <FileText size={15} /> },
-  { id: 'ai-keys', label: 'AI / LLM Keys', icon: <Sparkles size={15} /> },
-  { id: 'sales', label: 'Sales Config', icon: <TrendingUp size={15} /> },
-  { id: 'marketing', label: 'Marketing Config', icon: <Megaphone size={15} /> },
+  { id: 'organization', label: 'Organization', icon: <Building2 size={15} />, group: 'general', description: "Your organization's name, branding and workspace details" },
+  { id: 'roles-modules', label: 'Roles & Modules', icon: <Shield size={15} />, group: 'general', description: 'Control which modules are visible to each role, org-wide' },
+  { id: 'permissions', label: 'Permissions', icon: <Key size={15} />, group: 'general', description: 'Fine-grained action permissions per role, e.g. who can approve or grant an award' },
+  { id: 'billing', label: 'Billing', icon: <CreditCard size={15} />, group: 'general', description: 'Plan, seats, and à-la-carte module add-ons' },
+  { id: 'approval', label: 'Approval Chain', icon: <GitBranch size={15} />, group: 'finance', description: 'Configure multi-step approval chains per workflow and role' },
+  { id: 'budget', label: 'Budget Config', icon: <DollarSign size={15} />, group: 'finance', description: 'Department and project budget thresholds' },
+  { id: 'categories', label: 'Expense Categories', icon: <Tag size={15} />, group: 'finance', description: 'Manage the expense category list' },
+  { id: 'gst', label: 'GST Settings', icon: <FileText size={15} />, group: 'finance', description: 'Company GST details and tax configuration' },
+  { id: 'document-templates', label: 'Document Templates', icon: <LayoutTemplate size={15} />, group: 'finance', description: 'Design PDF letterheads for invoices, GRNs, warranties and proposals' },
+  { id: 'ai-keys', label: 'AI / LLM Keys', icon: <Sparkles size={15} />, group: 'ai', description: 'API keys for DeepSeek and Gemini used by Neo Task AI' },
+  { id: 'ai-capabilities', label: 'AI Capabilities', icon: <Sparkles size={15} />, group: 'ai', description: 'Turn AI-powered features on or off per module' },
+  { id: 'sales', label: 'Sales Config', icon: <TrendingUp size={15} />, group: 'sales', description: 'Regions, pipeline stages, assignment rules and sales roles' },
+  { id: 'marketing', label: 'Marketing Config', icon: <Megaphone size={15} />, group: 'sales', description: 'Campaign budgets, lookups and marketing configuration' },
+]
+
+const TAB_GROUPS = [
+  { id: 'general', label: 'General' },
+  { id: 'finance', label: 'Finance & Approvals' },
+  { id: 'ai', label: 'AI' },
+  { id: 'sales', label: 'Sales & Marketing' },
 ]
 
 export default function SettingsPage() {
+  const [searchParams] = useSearchParams()
   const [activeTab, setActiveTab] = useState('roles-modules')
+  const [search, setSearch] = useState('')
+  useEffect(() => { const t = searchParams.get('tab'); if (t) setActiveTab(t) }, [searchParams])
+
+  const q = search.trim().toLowerCase()
+  const matches = t => !q || t.label.toLowerCase().includes(q) || t.description.toLowerCase().includes(q)
+  const activeTabInfo = TABS.find(t => t.id === activeTab)
+
   return (
     <div>
+      <style>{`
+        @media (max-width: 900px) {
+          .settings-shell { flex-direction: column !important; }
+          .settings-rail { width: 100% !important; position: static !important; }
+          .settings-rail-groups { display: flex !important; overflow-x: auto; gap: 6px !important; padding-bottom: 4px; }
+          .settings-rail-group { flex-shrink: 0; }
+        }
+      `}</style>
+
       <div className="page-header">
         <div><div className="page-title">Settings</div><div className="page-subtitle">Configure system-wide settings and permissions</div></div>
       </div>
 
-      <div className="table-wrap">
-        {/* Tab bar */}
-        <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', overflowX: 'auto', padding: '0 4px' }}>
-          {TABS.map(t => (
-            <button key={t.id} onClick={() => setActiveTab(t.id)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '12px 18px', border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 600, fontSize: '0.86rem', color: activeTab === t.id ? 'var(--c1)' : 'var(--ink-muted)', borderBottom: activeTab === t.id ? '2.5px solid var(--c1)' : '2.5px solid transparent', transition: 'all .15s', marginBottom: -1, whiteSpace: 'nowrap' }}>
-              {t.icon} {t.label}
-            </button>
-          ))}
+      <div className="settings-shell" style={{ display: 'flex', gap: 20, alignItems: 'flex-start' }}>
+        <div className="settings-rail card" style={{ width: 268, flexShrink: 0, padding: 14, position: 'sticky', top: 20 }}>
+          <div style={{ marginBottom: 12 }}>
+            <SearchBox value={search} onChange={setSearch} placeholder="Search settings…" />
+          </div>
+          <div className="settings-rail-groups">
+            {TAB_GROUPS.map(g => {
+              const groupTabs = TABS.filter(t => t.group === g.id && matches(t))
+              if (groupTabs.length === 0) return null
+              return (
+                <div key={g.id} className="settings-rail-group" style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--ink-muted)', padding: '4px 10px', marginBottom: 2 }}>{g.label}</div>
+                  {groupTabs.map(t => {
+                    const isActive = t.id === activeTab
+                    return (
+                      <button key={t.id} onClick={() => setActiveTab(t.id)} style={{
+                        display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left',
+                        padding: '9px 10px', borderRadius: 10, border: 'none', cursor: 'pointer', marginBottom: 2,
+                        background: isActive ? 'var(--surface-2)' : 'transparent',
+                        color: isActive ? 'var(--c1)' : 'var(--ink-soft)',
+                        fontWeight: isActive ? 700 : 500, fontSize: '0.85rem', transition: 'background .12s',
+                      }}
+                      onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg)' }}
+                      onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent' }}>
+                        <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, borderRadius: 8, flexShrink: 0, background: isActive ? '#fff' : 'var(--surface)', color: isActive ? 'var(--c1)' : 'var(--ink-muted)' }}>{t.icon}</span>
+                        {t.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              )
+            })}
+            {TABS.every(t => !matches(t)) && (
+              <div style={{ fontSize: '0.82rem', color: 'var(--ink-muted)', padding: '8px 10px' }}>No settings match "{search}"</div>
+            )}
+          </div>
         </div>
-        <div style={{ padding: '24px' }}>
-          {activeTab === 'roles-modules' && <RolesModulesTab />}
-          {activeTab === 'organization' && <OrganizationTab />}
-          {activeTab === 'billing' && <BillingTab />}
-          {activeTab === 'approval' && <ApprovalChainTab />}
-          {activeTab === 'budget' && <BudgetConfigTab />}
-          {activeTab === 'categories' && <ExpenseCategoriesTab />}
-          {activeTab === 'gst' && <GSTSettingsTab />}
-          {activeTab === 'ai-keys' && <AILLMKeysTab />}
-          {activeTab === 'sales' && <SalesConfigTab />}
-          {activeTab === 'marketing' && <MarketingConfigTab />}
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="card" style={{ marginBottom: 16, padding: '18px 22px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ width: 38, height: 38, borderRadius: 10, background: 'linear-gradient(135deg,#6366f1,#4338ca)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#fff', flexShrink: 0 }}>
+                {activeTabInfo?.icon}
+              </span>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: '1.05rem' }}>{activeTabInfo?.label}</div>
+                <div style={{ fontSize: '0.82rem', color: 'var(--ink-muted)' }}>{activeTabInfo?.description}</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="card" style={{ padding: 24 }}>
+            {activeTab === 'roles-modules' && <RolesModulesTab />}
+            {activeTab === 'permissions' && <PermissionsTab />}
+            {activeTab === 'organization' && <OrganizationTab />}
+            {activeTab === 'billing' && <BillingTab />}
+            {activeTab === 'approval' && <ApprovalChainTab />}
+            {activeTab === 'budget' && <BudgetConfigTab />}
+            {activeTab === 'categories' && <ExpenseCategoriesTab />}
+            {activeTab === 'gst' && <GSTSettingsTab />}
+            {activeTab === 'document-templates' && <DocumentTemplatesTab />}
+            {activeTab === 'ai-keys' && <AILLMKeysTab />}
+            {activeTab === 'ai-capabilities' && <AICapabilitiesTab />}
+            {activeTab === 'sales' && <SalesConfigTab />}
+            {activeTab === 'marketing' && <MarketingConfigTab />}
+          </div>
         </div>
       </div>
     </div>

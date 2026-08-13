@@ -1,15 +1,13 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase, rupee } from '../lib/supabase'
 import { getActiveBomEdges } from '../lib/bom'
+import { DEVICE_TYPES } from '../config/deviceTypes'
 import { Modal, SearchBox, Loader, Empty, Confirm } from '../components/ui'
-import { Plus, Edit2, Trash2, Layers, Boxes, Warehouse, Cpu } from 'lucide-react'
-
-const DEVICE_TYPES = [
-  'IoT Logger', 'Temperature Sensor', 'Humidity Sensor', 'Pressure Sensor', 'Gateway',
-  'Flow Meter', 'GPS Tracker', 'Vibration Sensor', 'Camera Module', 'Power Meter', 'Other',
-]
+import AIDockedPanel from '../components/AIDockedPanel'
+import { ProductAiTab } from '../components/AIActionTabs'
+import { Plus, Edit2, Trash2, Layers, Boxes, Warehouse, Cpu, Sparkles } from 'lucide-react'
 
 const initForm = () => ({
   part_number: '', name: '', device_type: DEVICE_TYPES[0], spec_sheet: '',
@@ -19,6 +17,7 @@ const initForm = () => ({
 
 export default function ProductsPage() {
   const { profile } = useAuth()
+  const [searchParams] = useSearchParams()
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -31,6 +30,8 @@ export default function ProductsPage() {
   const [err, setErr] = useState('')
   const [deviceCountByPart, setDeviceCountByPart] = useState({})
   const [componentCountByPart, setComponentCountByPart] = useState({})
+
+  const [showAiPanel, setShowAiPanel] = useState(searchParams.get('ai') === '1')
 
   const role = profile?.role || 'employee'
   const canEdit = ['admin', 'ceo', 'manager', 'department_head', 'finance', 'procurement_lead'].includes(role)
@@ -101,6 +102,7 @@ export default function ProductsPage() {
           <div className="page-subtitle">Finished-good catalog only — warranty terms, reorder thresholds, standard cost. Components live under Inventory → Component.</div>
         </div>
         <div className="page-actions">
+          {canEdit && <button className="btn btn-outline" onClick={() => setShowAiPanel(true)} style={{ background: 'linear-gradient(135deg,#8b5cf611,#22d3ee11)', borderColor: '#8b5cf644' }}><Sparkles size={15} /> Create with AI</button>}
           {canEdit && <button className="btn btn-primary" onClick={openCreate}><Plus size={15} /> Add Product</button>}
         </div>
       </div>
@@ -163,6 +165,10 @@ export default function ProductsPage() {
           </table>
         </div>
       )}
+
+      <AIDockedPanel open={showAiPanel} onClose={() => setShowAiPanel(false)} title="Product Catalog AI" subtitle="Draft a catalog entry">
+        <ProductAiTab profile={profile} onSaved={load} />
+      </AIDockedPanel>
 
       <Modal open={showModal} onClose={() => setShowModal(false)} title={editing ? 'Edit Product' : 'Add New Product'} size="lg"
         footer={<>

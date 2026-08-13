@@ -1,0 +1,507 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light">
+<title>Module Dependency Map</title>
+<style>
+:root {
+  --ink: #14181f;
+  --ink-muted: #5c6472;
+  --ink-faint: #8b93a0;
+  --paper: #eef0f3;
+  --surface: #ffffff;
+  --surface-2: #f4f5f7;
+  --border: #d7dbe1;
+  --accent: #b5581f;
+  --accent-bg: #f4e6da;
+  --accent-ink: #7a3c14;
+  --soft: #1f7a68;
+  --soft-bg: #dcf0ea;
+  --soft-ink: #145346;
+  --warn-bg: #fbeee0;
+  --warn-border: #e3b988;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  --sans: -apple-system, "Segoe UI", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  margin: 0;
+}
+.page { max-width: 980px; margin: 0 auto; padding: 40px 24px 70px; }
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 10px;
+}
+h1 {
+  font-family: var(--mono);
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 12px;
+}
+.lede {
+  font-size: 15px;
+  color: var(--ink-muted);
+  max-width: 62ch;
+  margin: 0 0 32px;
+}
+h2 {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin: 40px 0 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  page-break-after: avoid;
+}
+h2 .num { color: var(--ink-faint); font-weight: 500; margin-right: 8px; }
+p { margin: 0 0 14px; }
+
+.callout {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: 10px;
+  padding: 18px 20px;
+  margin-bottom: 8px;
+  page-break-inside: avoid;
+}
+.callout .tag {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+  margin-bottom: 8px;
+  display: block;
+}
+.callout p { color: var(--ink); font-size: 14px; margin-bottom: 0; }
+.callout code { font-family: var(--mono); font-size: 0.92em; background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 4px; }
+
+.foundational { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.fchip {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 12px;
+  color: var(--ink);
+}
+.fchip b { color: var(--ink-faint); font-weight: 500; }
+
+.bundles { display: flex; flex-direction: column; gap: 12px; }
+.bundle {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 20px;
+  page-break-inside: avoid;
+}
+.bundle-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.bundle-name { font-size: 15px; font-weight: 700; }
+.bundle-id { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+.modlist { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
+.mod {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 2px 6px;
+  color: var(--ink-muted);
+}
+.deps { font-size: 12.5px; color: var(--ink-muted); }
+.deps .label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); display: block; margin-bottom: 4px; }
+.pill {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  border-radius: 5px;
+  padding: 2px 7px;
+  margin: 2px 4px 2px 0;
+}
+.pill.hard { background: var(--accent-bg); color: var(--accent-ink); }
+.pill.soft { background: var(--soft-bg); color: var(--soft-ink); }
+.why { font-size: 12px; color: var(--ink-faint); margin-top: 4px; }
+
+.legend { display: flex; gap: 16px; font-size: 12px; color: var(--ink-muted); margin-bottom: 16px; flex-wrap: wrap; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.dot.hard { background: var(--accent); }
+.dot.soft { background: var(--soft); }
+
+.chain-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px 22px;
+}
+.chain-wrap ol { margin: 0; padding-left: 20px; }
+.chain-wrap li { font-size: 13.5px; margin-bottom: 8px; }
+.chain-wrap li:last-child { margin-bottom: 0; }
+.chain-wrap code { font-family: var(--mono); font-size: 0.92em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+
+.tablewrap { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; background: var(--surface); }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+th { font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); background: var(--surface-2); }
+tr:last-child td { border-bottom: none; }
+td.k { font-family: var(--mono); font-size: 12px; color: var(--ink); white-space: nowrap; }
+td.rec { color: var(--ink-muted); }
+table, tbody { page-break-inside: auto; }
+tr { page-break-inside: avoid; }
+
+.rec-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px 10px 10px 4px;
+  padding: 16px 20px;
+  page-break-inside: avoid;
+}
+.rec-box ol { margin: 10px 0 0; padding-left: 20px; }
+.rec-box li { margin-bottom: 8px; font-size: 14px; }
+.rec-box li:last-child { margin-bottom: 0; }
+
+footer { margin-top: 40px; font-family: var(--mono); font-size: 11px; color: var(--ink-faint); text-align: center; }
+
+.section { page-break-inside: avoid; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="eyebrow">Billing architecture · module dependency audit</div>
+  <h1>Every module, and what it takes to sell it separately</h1>
+  <p class="lede">All 69 nav-registered modules, traced for cross-module imports, shared tables, and foreign keys, so pick-your-own-modules billing doesn't sell someone a dead button. Complete inventory first, dependency-safe bundles second, a starting subscription structure last.</p>
+
+  <div class="callout">
+    <span class="tag">Before anything else</span>
+    <p>Module enablement today is a <b>client-side route guard only</b> — <code>ModuleGate</code> hides the nav item and redirects the route. Nothing in the database or in any library function checks whether a module is paid for. A "Convert to Proposal" button will still insert a real row into <code>proposals</code> even if that module isn't purchased — the row just becomes permanently unreachable until someone buys access to it. Billing enforcement needs to go deeper than reusing this mechanism; the map below tells you where those deeper checks are needed, not what happens today.</p>
+  </div>
+
+  <h2><span class="num">00</span>Complete module inventory</h2>
+  <p style="color:var(--ink-muted); font-size:13px; margin-top:-6px;">Every module registered in the app's nav config, with the billing bundle it falls into below.</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Key</th><th>Label</th><th>Nav section</th><th>Billing group</th></tr></thead>
+      <tbody>
+        <tr><td class="k">dashboard</td><td>Dashboard</td><td class="rec">Overview</td><td class="rec">Foundational</td></tr>
+        <tr><td class="k">knowledge-base</td><td>Knowledge Base</td><td class="rec">Overview</td><td class="rec">Foundational</td></tr>
+        <tr><td class="k">customers</td><td>Customers</td><td class="rec">Vendors &amp; Partners</td><td class="rec">Foundational</td></tr>
+        <tr><td class="k">vendors</td><td>Vendors</td><td class="rec">Vendors &amp; Partners</td><td class="rec">Foundational</td></tr>
+        <tr><td class="k">chat</td><td>Chat</td><td class="rec">HR &amp; Resources</td><td class="rec">Foundational</td></tr>
+        <tr><td class="k">users</td><td>Users</td><td class="rec">Admin</td><td class="rec">Foundational</td></tr>
+        <tr><td class="k">reports</td><td>Reports</td><td class="rec">Admin</td><td class="rec">Foundational</td></tr>
+        <tr><td class="k">settings</td><td>Settings</td><td class="rec">Admin</td><td class="rec">Foundational · protected</td></tr>
+        <tr><td class="k">content</td><td>Landing Content</td><td class="rec">Admin</td><td class="rec">Foundational</td></tr>
+        <tr><td class="k">app-monitor</td><td>App Monitor</td><td class="rec">Admin</td><td class="rec">Foundational</td></tr>
+        <tr><td class="k">llm-monitor</td><td>LLM Usage Monitor</td><td class="rec">Admin</td><td class="rec">Foundational</td></tr>
+
+        <tr><td class="k">projects</td><td>Projects</td><td class="rec">Operations</td><td class="rec">B1 · Operations Core</td></tr>
+        <tr><td class="k">tasks</td><td>Task Management</td><td class="rec">Operations</td><td class="rec">B1 · Operations Core</td></tr>
+        <tr><td class="k">neo-task-ai</td><td>Neo Task AI</td><td class="rec">Operations</td><td class="rec">B1 · Operations Core</td></tr>
+        <tr><td class="k">budget</td><td>Budget</td><td class="rec">Operations</td><td class="rec">B1 · Operations Core</td></tr>
+        <tr><td class="k">assets</td><td>Assets</td><td class="rec">Operations</td><td class="rec">B1 · Operations Core</td></tr>
+
+        <tr><td class="k">skill-matrix</td><td>Skill Matrix</td><td class="rec">Resourcing</td><td class="rec">B2 · Resourcing</td></tr>
+        <tr><td class="k">allocations</td><td>Allocations</td><td class="rec">Resourcing</td><td class="rec">B2 · Resourcing</td></tr>
+        <tr><td class="k">capacity</td><td>Capacity</td><td class="rec">Resourcing</td><td class="rec">B2 · Resourcing</td></tr>
+
+        <tr><td class="k">expenses</td><td>Expenses</td><td class="rec">Expenses &amp; Travel</td><td class="rec">B3 · Expenses &amp; Travel</td></tr>
+        <tr><td class="k">travel</td><td>Travel Requests</td><td class="rec">Expenses &amp; Travel</td><td class="rec">B3 · Expenses &amp; Travel</td></tr>
+        <tr><td class="k">approvals</td><td>Approvals</td><td class="rec">Expenses &amp; Travel</td><td class="rec">B3 · Expenses &amp; Travel</td></tr>
+
+        <tr><td class="k">products</td><td>Product</td><td class="rec">Inventory Management</td><td class="rec">B4 · Procurement &amp; Inventory</td></tr>
+        <tr><td class="k">bom</td><td>BOM</td><td class="rec">Inventory Management</td><td class="rec">B4 · Procurement &amp; Inventory</td></tr>
+        <tr><td class="k">inventory</td><td>Component</td><td class="rec">Inventory Management</td><td class="rec">B4 · Procurement &amp; Inventory</td></tr>
+        <tr><td class="k">devices</td><td>Devices</td><td class="rec">Inventory Management</td><td class="rec">B4 · Procurement &amp; Inventory</td></tr>
+        <tr><td class="k">procurement</td><td>Purchase Request</td><td class="rec">Inventory Management</td><td class="rec">B4 · Procurement &amp; Inventory</td></tr>
+        <tr><td class="k">warranty</td><td>Warranty</td><td class="rec">Inventory Management</td><td class="rec">B4 · Procurement &amp; Inventory</td></tr>
+        <tr><td class="k">pos</td><td>PO</td><td class="rec">Inventory Management</td><td class="rec">B4 · Procurement &amp; Inventory</td></tr>
+        <tr><td class="k">invoices</td><td>Invoice (vendor)</td><td class="rec">Inventory Management</td><td class="rec">B4 · Procurement &amp; Inventory</td></tr>
+        <tr><td class="k">grn</td><td>GRN</td><td class="rec">Inventory Management</td><td class="rec">B4 · Procurement &amp; Inventory</td></tr>
+        <tr><td class="k">fundflow</td><td>Fund Flow</td><td class="rec">Vendors &amp; Partners</td><td class="rec">B4 · Procurement &amp; Inventory</td></tr>
+
+        <tr><td class="k">role-rates</td><td>Role Rates</td><td class="rec">Finance</td><td class="rec">B5 · Finance &amp; Billing Ops</td></tr>
+        <tr><td class="k">customer-invoices</td><td>Customer Invoices</td><td class="rec">Finance</td><td class="rec">B5 · Finance &amp; Billing Ops</td></tr>
+        <tr><td class="k">delivery-notes</td><td>Delivery Notes</td><td class="rec">Finance</td><td class="rec">B5 · Finance &amp; Billing Ops</td></tr>
+        <tr><td class="k">payments</td><td>Payments</td><td class="rec">Finance</td><td class="rec">B5 · Finance &amp; Billing Ops</td></tr>
+        <tr><td class="k">aging-report</td><td>Aging Report</td><td class="rec">Finance</td><td class="rec">B5 · Finance &amp; Billing Ops</td></tr>
+        <tr><td class="k">profit-margins</td><td>Profit Margins</td><td class="rec">Finance</td><td class="rec">B5 · Finance &amp; Billing Ops</td></tr>
+        <tr><td class="k">spend-analyzer</td><td>Spend Analyzer</td><td class="rec">Finance</td><td class="rec">B5 · Finance &amp; Billing Ops</td></tr>
+
+        <tr><td class="k">proposals</td><td>Proposals</td><td class="rec">Pre-Sales</td><td class="rec">B6 · Pre-Sales</td></tr>
+
+        <tr><td class="k">sales-leads</td><td>Leads</td><td class="rec">Sales</td><td class="rec">B7 · Sales CRM</td></tr>
+        <tr><td class="k">sales-landing-links</td><td>Landing Links</td><td class="rec">Sales</td><td class="rec">B7 · Sales CRM</td></tr>
+        <tr><td class="k">sales-meeting-pages</td><td>Meeting Booking Pages</td><td class="rec">Sales</td><td class="rec">B7 · Sales CRM</td></tr>
+        <tr><td class="k">sales-opportunities</td><td>Opportunities</td><td class="rec">Sales</td><td class="rec">B7 · Sales CRM</td></tr>
+        <tr><td class="k">sales-tasks</td><td>Sales Tasks</td><td class="rec">Sales</td><td class="rec">B7 · Sales CRM</td></tr>
+        <tr><td class="k">sales-product-launches</td><td>Product Launches</td><td class="rec">Sales</td><td class="rec">B7 · Sales CRM</td></tr>
+        <tr><td class="k">sales-tenders</td><td>Tenders</td><td class="rec">Sales</td><td class="rec">B7 · Sales CRM</td></tr>
+        <tr><td class="k">sales-pilot-projects</td><td>Pilot Projects</td><td class="rec">Sales</td><td class="rec">B7 · Sales CRM</td></tr>
+        <tr><td class="k">sales-bootstrap-programs</td><td>Bootstrap Program</td><td class="rec">Sales</td><td class="rec">B7 · Sales CRM</td></tr>
+        <tr><td class="k">sales-timeline</td><td>Sales Timeline</td><td class="rec">Sales</td><td class="rec">B7 · Sales CRM</td></tr>
+        <tr><td class="k">sales-dashboard</td><td>Sales Dashboard</td><td class="rec">Sales</td><td class="rec">B7 · Sales CRM</td></tr>
+
+        <tr><td class="k">marketing-campaigns</td><td>Campaigns</td><td class="rec">Marketing</td><td class="rec">B8 · Marketing</td></tr>
+        <tr><td class="k">marketing-landing-pages</td><td>Landing Pages</td><td class="rec">Marketing</td><td class="rec">B8 · Marketing</td></tr>
+        <tr><td class="k">marketing-content-assets</td><td>Content Assets</td><td class="rec">Marketing</td><td class="rec">B8 · Marketing</td></tr>
+        <tr><td class="k">marketing-calendar</td><td>Marketing Calendar</td><td class="rec">Marketing</td><td class="rec">B8 · Marketing</td></tr>
+
+        <tr><td class="k">performance-cycles</td><td>Review Cycles</td><td class="rec">Performance</td><td class="rec">B9 · Performance Reviews</td></tr>
+        <tr><td class="k">my-performance</td><td>My Performance</td><td class="rec">Performance</td><td class="rec">B9 · Performance Reviews</td></tr>
+        <tr><td class="k">team-reviews</td><td>Team Reviews</td><td class="rec">Performance</td><td class="rec">B9 · Performance Reviews</td></tr>
+        <tr><td class="k">calibration</td><td>Calibration</td><td class="rec">Performance</td><td class="rec">B9 · Performance Reviews</td></tr>
+        <tr><td class="k">performance-dashboard</td><td>Performance Dashboard</td><td class="rec">Performance</td><td class="rec">B9 · Performance Reviews</td></tr>
+
+        <tr><td class="k">award-management</td><td>Award Management</td><td class="rec">Performance</td><td class="rec">B10 · Recognition &amp; Awards</td></tr>
+        <tr><td class="k">my-awards</td><td>My Awards</td><td class="rec">Performance</td><td class="rec">B10 · Recognition &amp; Awards</td></tr>
+        <tr><td class="k">team-awards</td><td>Team Awards</td><td class="rec">Performance</td><td class="rec">B10 · Recognition &amp; Awards</td></tr>
+        <tr><td class="k">certificate-templates</td><td>Certificate Templates</td><td class="rec">Performance</td><td class="rec">B10 · Recognition &amp; Awards</td></tr>
+
+        <tr><td class="k">leave</td><td>Leave Management</td><td class="rec">HR &amp; Resources</td><td class="rec">B11 · HR &amp; Resources</td></tr>
+        <tr><td class="k">resources</td><td>Resource Tracking</td><td class="rec">HR &amp; Resources</td><td class="rec">B11 · HR &amp; Resources</td></tr>
+        <tr><td class="k">timesheet</td><td>Timesheet</td><td class="rec">HR &amp; Resources</td><td class="rec">B11 · HR &amp; Resources</td></tr>
+        <tr><td class="k">timesheet-approvals</td><td>Timesheet Approvals</td><td class="rec">HR &amp; Resources</td><td class="rec">B11 · HR &amp; Resources</td></tr>
+        <tr><td class="k">data-assistant</td><td>Data Assistant</td><td class="rec">HR &amp; Resources</td><td class="rec">B11 · HR &amp; Resources</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2><span class="num">01</span>Never sold separately</h2>
+  <p style="color:var(--ink-muted); font-size:13px; margin-top:-6px;">Master data and admin plumbing that nearly everything else reads from. Include these in every plan, including free.</p>
+  <div class="foundational">
+    <span class="fchip">dashboard <b>· overview</b></span>
+    <span class="fchip">knowledge-base <b>· overview</b></span>
+    <span class="fchip">customers <b>· master data</b></span>
+    <span class="fchip">vendors <b>· master data</b></span>
+    <span class="fchip">settings <b>· protected, never disable</b></span>
+    <span class="fchip">users <b>· admin</b></span>
+    <span class="fchip">reports <b>· admin</b></span>
+    <span class="fchip">app-monitor <b>· admin</b></span>
+    <span class="fchip">llm-monitor <b>· admin</b></span>
+    <span class="fchip">content <b>· admin</b></span>
+    <span class="fchip">chat <b>· zero coupling</b></span>
+  </div>
+
+  <h2><span class="num">02</span>Sellable bundles</h2>
+  <p style="color:var(--ink-muted); font-size:13px; margin-top:-6px;">Each bundle is a cluster of modules with hard two-way coupling inside it — split any of these further and something inside breaks.</p>
+
+  <div class="legend">
+    <span><span class="dot hard"></span>Hard — the feature errors or silently orphans data without it</span>
+    <span><span class="dot soft"></span>Soft — degrades to an empty list/zero, nothing breaks</span>
+  </div>
+
+  <div class="bundles">
+    <div class="bundle">
+      <div class="bundle-head"><span class="bundle-name">Operations Core</span><span class="bundle-id">B1</span></div>
+      <div class="modlist"><span class="mod">projects</span><span class="mod">tasks</span><span class="mod">neo-task-ai</span><span class="mod">budget</span><span class="mod">assets</span></div>
+      <div class="deps">
+        <span class="label">Required by</span>
+        <span class="pill hard">Finance</span><span class="pill hard">Resourcing</span><span class="pill hard">Expenses &amp; Travel</span>
+        <div class="why"><code>customer_invoices.project_id</code> and <code>profit_margins.project_id</code> are NOT NULL foreign keys — those rows cannot even be inserted without this bundle.</div>
+      </div>
+    </div>
+
+    <div class="bundle">
+      <div class="bundle-head"><span class="bundle-name">Resourcing</span><span class="bundle-id">B2</span></div>
+      <div class="modlist"><span class="mod">skill-matrix</span><span class="mod">allocations</span><span class="mod">capacity</span></div>
+      <div class="deps">
+        <span class="label">Requires</span>
+        <span class="pill hard">Operations Core</span>
+        <div class="why"><code>allocations.project_id</code> is NOT NULL. <code>capacity</code> reads <code>allocations</code> directly for utilization math.</div>
+      </div>
+    </div>
+
+    <div class="bundle">
+      <div class="bundle-head"><span class="bundle-name">Expenses &amp; Travel</span><span class="bundle-id">B3</span></div>
+      <div class="modlist"><span class="mod">expenses</span><span class="mod">travel</span><span class="mod">approvals</span></div>
+      <div class="deps">
+        <span class="label">Requires</span>
+        <span class="pill hard">Operations Core</span>
+        <div class="why">Approvals calls <code>budgetSync.js</code> (commit/release budget) directly on expense approval.</div>
+      </div>
+    </div>
+
+    <div class="bundle">
+      <div class="bundle-head"><span class="bundle-name">Procurement &amp; Inventory</span><span class="bundle-id">B4</span></div>
+      <div class="modlist"><span class="mod">products</span><span class="mod">bom</span><span class="mod">inventory</span><span class="mod">devices</span><span class="mod">procurement</span><span class="mod">warranty</span><span class="mod">pos</span><span class="mod">invoices</span><span class="mod">grn</span><span class="mod">fundflow</span></div>
+      <div class="deps">
+        <span class="label">Internal chain</span>
+        <div class="why">PR &rarr; PO &rarr; GRN &rarr; three-way-match invoice is one literal pipeline. Fund Flow reports on PO stages + warranty rollups. Treat as one SKU.</div>
+      </div>
+    </div>
+
+    <div class="bundle">
+      <div class="bundle-head"><span class="bundle-name">Finance &amp; Billing Ops</span><span class="bundle-id">B5</span></div>
+      <div class="modlist"><span class="mod">role-rates</span><span class="mod">customer-invoices</span><span class="mod">delivery-notes</span><span class="mod">payments</span><span class="mod">aging-report</span><span class="mod">profit-margins</span><span class="mod">spend-analyzer</span></div>
+      <div class="deps">
+        <span class="label">Requires</span>
+        <span class="pill hard">Operations Core</span>
+        <span class="pill soft">Procurement &amp; Inventory</span><span class="pill soft">Resourcing</span>
+        <div class="why">Spend Analyzer alone reaches into warranty, fund flow, products, vendors and allocations.</div>
+      </div>
+    </div>
+
+    <div class="bundle">
+      <div class="bundle-head"><span class="bundle-name">Pre-Sales</span><span class="bundle-id">B6</span></div>
+      <div class="modlist"><span class="mod">proposals</span></div>
+      <div class="deps">
+        <span class="label">Requires</span>
+        <span class="pill hard">Finance &amp; Billing Ops</span><span class="pill hard">Procurement &amp; Inventory</span>
+        <div class="why">Hardware line costing reads <code>products</code>; labor pricing calls <code>role-rates</code> directly.</div>
+      </div>
+    </div>
+
+    <div class="bundle">
+      <div class="bundle-head"><span class="bundle-name">Sales CRM</span><span class="bundle-id">B7</span></div>
+      <div class="modlist"><span class="mod">sales-leads</span><span class="mod">sales-opportunities</span><span class="mod">sales-tasks</span><span class="mod">sales-product-launches</span><span class="mod">sales-tenders</span><span class="mod">sales-pilot-projects</span><span class="mod">sales-bootstrap-programs</span><span class="mod">sales-landing-links</span><span class="mod">sales-meeting-pages</span><span class="mod">sales-timeline</span><span class="mod">sales-dashboard</span></div>
+      <div class="deps">
+        <span class="label">Requires</span>
+        <span class="pill hard">Pre-Sales</span>
+        <div class="why">Tender/Pilot/Bootstrap all convert into an Opportunity internally; Meeting Pages is built directly on the landing-link infrastructure.</div>
+      </div>
+    </div>
+
+    <div class="bundle">
+      <div class="bundle-head"><span class="bundle-name">Marketing</span><span class="bundle-id">B8</span></div>
+      <div class="modlist"><span class="mod">marketing-campaigns</span><span class="mod">marketing-landing-pages</span><span class="mod">marketing-content-assets</span><span class="mod">marketing-calendar</span></div>
+      <div class="deps">
+        <span class="label">Requires</span>
+        <span class="pill hard">Sales CRM</span>
+        <div class="why">Non-obvious: Campaigns' budget-line CRUD is imported straight from Sales' own library file, not Marketing's.</div>
+      </div>
+    </div>
+
+    <div class="bundle">
+      <div class="bundle-head"><span class="bundle-name">Performance Reviews</span><span class="bundle-id">B9</span></div>
+      <div class="modlist"><span class="mod">performance-cycles</span><span class="mod">my-performance</span><span class="mod">team-reviews</span><span class="mod">calibration</span><span class="mod">performance-dashboard</span></div>
+      <div class="deps">
+        <span class="label">Enhances</span>
+        <span class="pill soft">Operations Core</span>
+        <div class="why">Shows project history on reviews if present. Fully standalone otherwise.</div>
+      </div>
+    </div>
+
+    <div class="bundle">
+      <div class="bundle-head"><span class="bundle-name">Recognition &amp; Awards</span><span class="bundle-id">B10</span></div>
+      <div class="modlist"><span class="mod">award-management</span><span class="mod">my-awards</span><span class="mod">team-awards</span><span class="mod">certificate-templates</span></div>
+      <div class="deps">
+        <span class="label">Enhanced by</span>
+        <span class="pill soft">Performance Reviews</span>
+        <div class="why">Genuinely sellable on its own — the scoring engine's performance component degrades to zero rather than failing without Performance Reviews.</div>
+      </div>
+    </div>
+
+    <div class="bundle">
+      <div class="bundle-head"><span class="bundle-name">HR &amp; Resources</span><span class="bundle-id">B11</span></div>
+      <div class="modlist"><span class="mod">leave</span><span class="mod">resources</span><span class="mod">timesheet</span><span class="mod">timesheet-approvals</span><span class="mod">data-assistant</span></div>
+      <div class="deps">
+        <span class="label">Requires</span>
+        <span class="pill hard">Resourcing</span>
+        <div class="why">Leave approval recomputes capacity directly.</div>
+      </div>
+    </div>
+  </div>
+
+  <h2><span class="num">03</span>How the bundles chain together</h2>
+  <div class="chain-wrap">
+    <ol>
+      <li><code>Foundational</code> — always on for every plan, including free.</li>
+      <li><code>Operations Core</code> — the first paid bundle almost everything else needs.</li>
+      <li><code>Resourcing</code> and <code>Expenses &amp; Travel</code> — either or both, no order between them, both need Operations Core.</li>
+      <li><code>Procurement &amp; Inventory</code> — independent of the above, needed before Finance or Pre-Sales.</li>
+      <li><code>Finance &amp; Billing Ops</code> — needs Operations Core; fully powered up also wants Procurement &amp; Inventory + Resourcing.</li>
+      <li><code>Pre-Sales</code> — needs Finance &amp; Billing Ops + Procurement &amp; Inventory.</li>
+      <li><code>Sales CRM</code> — needs Pre-Sales.</li>
+      <li><code>Marketing</code> — needs Sales CRM.</li>
+      <li><code>Performance Reviews</code> and <code>Recognition &amp; Awards</code> — independent of everything above; Reviews optionally enhances Awards' scoring, in either order.</li>
+      <li><code>HR &amp; Resources</code> — needs Resourcing.</li>
+    </ol>
+  </div>
+
+  <h2><span class="num">04</span>Recommendation</h2>
+  <div class="rec-box">
+    <p style="margin:0; font-size:14px;">Sell at the <b>bundle</b> level (11 SKUs above), not the individual module level. A true per-module toggle across 69 items will eventually let someone buy Sales without Pre-Sales, or GRN without Purchase Orders — both dead ends today.</p>
+    <ol>
+      <li><b>Confirm the bundle boundaries above</b> — especially B10 (Recognition &amp; Awards), the one bundle independently sellable despite sharing a nav section with Performance Reviews.</li>
+      <li><b>Add real enforcement</b> before launch: an org's enabled-bundle set needs to gate at the RLS/RPC layer, not just <code>ModuleGate</code>'s route redirect.</li>
+      <li><b>Pick a chain-selling rule</b>: auto-include a bundle's hard requirements in the cart, or block selection with an inline explanation of what's missing.</li>
+    </ol>
+  </div>
+
+  <h2><span class="num">05</span>Proposed subscription structure</h2>
+  <p style="color:var(--ink-muted); font-size:13px; margin-top:-6px;">A hybrid that keeps what's already built (<code>billing_plans</code>: Free/Starter/Pro/Enterprise seat tiers, STEP107) and adds true à-la-carte on top.</p>
+
+  <div class="rec-box" style="margin-bottom:16px;">
+    <p style="margin:0; font-size:14px;"><b>Seat tier</b> governs how many people can log in, exactly as today. <b>Bundle add-ons</b> govern which modules those people can use, sold as flat monthly/yearly add-ons independent of seat tier. Enterprise keeps its current "all modules included" meaning; every other tier starts with Foundational only.</p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Bundle</th><th>Modules</th><th>Suggested / mo</th><th>Suggested / yr</th></tr></thead>
+      <tbody>
+        <tr><td class="k">B1 · Operations Core</td><td class="rec">5</td><td class="rec">&#8377;999</td><td class="rec">&#8377;9,990</td></tr>
+        <tr><td class="k">B2 · Resourcing</td><td class="rec">3</td><td class="rec">&#8377;799</td><td class="rec">&#8377;7,990</td></tr>
+        <tr><td class="k">B3 · Expenses &amp; Travel</td><td class="rec">3</td><td class="rec">&#8377;799</td><td class="rec">&#8377;7,990</td></tr>
+        <tr><td class="k">B4 · Procurement &amp; Inventory</td><td class="rec">10</td><td class="rec">&#8377;2,999</td><td class="rec">&#8377;29,990</td></tr>
+        <tr><td class="k">B5 · Finance &amp; Billing Ops</td><td class="rec">7</td><td class="rec">&#8377;2,499</td><td class="rec">&#8377;24,990</td></tr>
+        <tr><td class="k">B6 · Pre-Sales</td><td class="rec">1</td><td class="rec">&#8377;999</td><td class="rec">&#8377;9,990</td></tr>
+        <tr><td class="k">B7 · Sales CRM</td><td class="rec">11</td><td class="rec">&#8377;2,999</td><td class="rec">&#8377;29,990</td></tr>
+        <tr><td class="k">B8 · Marketing</td><td class="rec">4</td><td class="rec">&#8377;1,499</td><td class="rec">&#8377;14,990</td></tr>
+        <tr><td class="k">B9 · Performance Reviews</td><td class="rec">5</td><td class="rec">&#8377;999</td><td class="rec">&#8377;9,990</td></tr>
+        <tr><td class="k">B10 · Recognition &amp; Awards</td><td class="rec">4</td><td class="rec">&#8377;1,499</td><td class="rec">&#8377;14,990</td></tr>
+        <tr><td class="k">B11 · HR &amp; Resources</td><td class="rec">5</td><td class="rec">&#8377;1,499</td><td class="rec">&#8377;14,990</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p style="font-size:11.5px; color:var(--ink-faint); margin-top:10px;">Placeholder numbers, flat per org regardless of seat count. Swap freely.</p>
+
+  <p style="font-size:13.5px; margin-top:20px;"><b>Worked example</b> — a 20-seat org on Starter (&#8377;4,999/mo) adding Operations Core + Finance &amp; Billing Ops + Sales CRM:</p>
+  <div class="tablewrap" style="margin-bottom:16px;">
+    <table>
+      <tbody>
+        <tr><td>Starter plan — 20 seats</td><td class="rec" style="text-align:right; font-family:var(--mono);">&#8377;4,999</td></tr>
+        <tr><td>+ Operations Core</td><td class="rec" style="text-align:right; font-family:var(--mono);">&#8377;999</td></tr>
+        <tr><td>+ Finance &amp; Billing Ops</td><td class="rec" style="text-align:right; font-family:var(--mono);">&#8377;2,499</td></tr>
+        <tr><td>+ Sales CRM (auto-includes Pre-Sales)</td><td class="rec" style="text-align:right; font-family:var(--mono);">&#8377;2,999 + &#8377;999</td></tr>
+        <tr><td><b>Monthly total</b></td><td style="text-align:right; font-family:var(--mono); font-weight:700;">&#8377;12,495</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p style="font-size:13.5px;"><b>Schema shape this needs</b> (extends STEP107, doesn't replace it):</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Table</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td class="k">billing_bundles</td><td>key, name, module_keys jsonb, price_monthly, price_yearly, requires jsonb, sort_order</td></tr>
+        <tr><td class="k">organization_bundle_subscriptions</td><td>organization_id, bundle_key, status, activated_at, deactivated_at</td></tr>
+        <tr><td class="k">org_has_bundle(org_id, bundle_key)</td><td>SQL function — the new gate, called by ModuleGate and RLS policies alike</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <footer>generated from a full cross-module import + schema audit &middot; thingsalive neox</footer>
+</div>
+</body>
+</html>

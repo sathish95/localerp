@@ -35,3 +35,21 @@ export async function requestUpgrade(planKey, note) {
   if (error) throw error
   return data
 }
+
+// Pricing admin (STEP131) — billing_plans_write (STEP107) is already
+// super-admin-only RLS, so this is a plain table call, same posture as
+// setOrganizationActive(). listPlans() above filters to is_active, so
+// the pricing console uses its own unfiltered query.
+export async function listAllPlans() {
+  const { data, error } = await supabase.from('billing_plans').select('*').order('sort_order')
+  if (error) throw error
+  return data || []
+}
+
+export async function updatePlanPricing(key, { priceMonthly, priceYearly, seatLimit, isActive, trialDays }) {
+  const { error } = await supabase.from('billing_plans').update({
+    price_monthly: priceMonthly, price_yearly: priceYearly, seat_limit: seatLimit, is_active: isActive,
+    trial_days: trialDays,
+  }).eq('key', key)
+  if (error) throw error
+}

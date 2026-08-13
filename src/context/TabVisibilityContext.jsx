@@ -7,6 +7,8 @@
 import { createContext, useContext, useState, useEffect, useMemo } from 'react'
 import { useAuth } from './AuthContext'
 import { getModules, getModuleRoleVisibility, syncModulesFromConfig } from '../lib/modules'
+import { listBundles, myBundleSubscriptions, buildModuleBundleMap } from '../lib/billingBundles'
+import { listRolePermissions } from '../lib/permissions'
 
 const Ctx = createContext(null)
 
@@ -14,8 +16,12 @@ export function TabVisibilityProvider({ children }) {
   const { profile } = useAuth()
   const role = profile?.role || 'employee'
   const orgId = profile?.organization_id || null
+  const isEnterprise = profile?.org?.plan_key === 'enterprise'
   const [modules, setModules] = useState([])
   const [visibility, setVisibility] = useState([])
+  const [moduleBundleMap, setModuleBundleMap] = useState({})
+  const [activeBundleKeys, setActiveBundleKeys] = useState(new Set())
+  const [rolePermissionKeys, setRolePermissionKeys] = useState(new Set())
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { load() }, [orgId])
@@ -27,7 +33,7 @@ export function TabVisibilityProvider({ children }) {
     // isTabVisible() fail open (show everything) below, matching this
     // app's pre-existing "permissive by default" posture rather than
     // locking a mid-signup user out of their own account.
-    if (!orgId) { setModules([]); setVisibility([]); setLoading(false); return }
+    if (!orgId) { setModules([]); setVisibility([]); setModuleBundleMap({}); setActiveBundleKeys(new Set()); setLoading(false); return }
     setLoading(true)
     try {
       // Self-healing seed only attempted by roles that can actually write
@@ -37,6 +43,33 @@ export function TabVisibilityProvider({ children }) {
       const [mods, vis] = await Promise.all([getModules(orgId), getModuleRoleVisibility(orgId)])
       setModules(mods)
       setVisibility(vis)
+
+      // Bundle billing (STEP124) is fetched separately and fails OPEN
+      // (empty map = nothing gated) rather than inside the Promise.all
+      // above — otherwise an org whose database hasn't had STEP124 run
+      // yet would have this query reject and take the whole nav's
+      // modules/visibility down with it via Promise.all's fail-fast
+      // semantics, breaking every existing user's sidebar.
+      try {
+        const [bundles, orgBundles] = await Promise.all([listBundles(), myBundleSubscriptions(orgId)])
+        setModuleBundleMap(buildModuleBundleMap(bundles))
+        setActiveBundleKeys(new Set(orgBundles.map(b => b.bundle_key)))
+      } catch {
+        setModuleBundleMap({})
+        setActiveBundleKeys(new Set())
+      }
+
+      // Fine-grained permissions (STEP125) — fails CLOSED (no
+      // permissions granted) rather than open, unlike the bundle billing
+      // fetch above: this is an authorization check, not a billing one,
+      // so an unmigrated database or transient fetch error should hide
+      // a permission-gated action rather than reveal one.
+      try {
+        const perms = await listRolePermissions()
+        setRolePermissionKeys(new Set(perms.map(p => `${p.role_key}:${p.permission_key}`)))
+      } catch {
+        setRolePermissionKeys(new Set())
+      }
     } finally {
       setLoading(false)
     }
@@ -50,6 +83,14 @@ export function TabVisibilityProvider({ children }) {
   }, [visibility])
 
   function isTabVisible(tab) {
+    // Billing gate — a module tied to an unpurchased à-la-carte bundle
+    // stays hidden even for admin/ceo, same as the company-wide kill
+    // switch below: this is a billing boundary, not a permission one,
+    // so role bypasses don't apply to it. Enterprise-plan orgs bypass
+    // entirely (matches billing_plans' existing "All modules" meaning).
+    const bundleKey = moduleBundleMap[tab]
+    if (bundleKey && !isEnterprise && !activeBundleKeys.has(bundleKey)) return false
+
     const mod = moduleByKey[tab]
     // Company-wide kill switch — overrides everything, even admin/ceo.
     if (mod && mod.enabled === false) return false
@@ -58,8 +99,12 @@ export function TabVisibilityProvider({ children }) {
     return visibilityByRole[role]?.[tab] !== false
   }
 
+  function hasPermission(permissionKey) {
+    return rolePermissionKeys.has(`${role}:${permissionKey}`)
+  }
+
   return (
-    <Ctx.Provider value={{ modules, visibility, isTabVisible, loading, refresh: load }}>
+    <Ctx.Provider value={{ modules, visibility, isTabVisible, hasPermission, loading, refresh: load }}>
       {children}
     </Ctx.Provider>
   )

@@ -60,9 +60,21 @@ export const MODULES = [
   { key: 'team-reviews', label: 'Team Reviews', section: 'Performance' },
   { key: 'calibration', label: 'Calibration', section: 'Performance' },
   { key: 'performance-dashboard', label: 'Performance Dashboard', section: 'Performance' },
+  { key: 'award-management', label: 'Award Management', section: 'Performance' },
+  { key: 'my-awards', label: 'My Awards', section: 'Performance' },
+  { key: 'team-awards', label: 'Team Awards', section: 'Performance' },
+  { key: 'certificate-templates', label: 'Certificate Templates', section: 'Performance' },
+
+  { key: 'scenario-dashboard', label: 'Scenario Dashboard', section: 'Scenario Planning' },
+  { key: 'scenario-my', label: 'My Scenarios', section: 'Scenario Planning' },
+  { key: 'scenario-all', label: 'All Scenarios', section: 'Scenario Planning' },
+  { key: 'scenario-templates', label: 'Scenario Templates', section: 'Scenario Planning' },
+  { key: 'scenario-compare', label: 'Scenario Comparison', section: 'Scenario Planning' },
+  { key: 'scenario-approvals', label: 'Scenario Approvals', section: 'Scenario Planning' },
 
   { key: 'role-rates', label: 'Role Rates', section: 'Finance' },
   { key: 'customer-invoices', label: 'Customer Invoices', section: 'Finance' },
+  { key: 'delivery-notes', label: 'Delivery Notes', section: 'Finance' },
   { key: 'payments', label: 'Payments', section: 'Finance' },
   { key: 'aging-report', label: 'Aging Report', section: 'Finance' },
   { key: 'profit-margins', label: 'Profit Margins', section: 'Finance' },
@@ -74,6 +86,8 @@ export const MODULES = [
   { key: 'timesheet-approvals', label: 'Timesheet Approvals', section: 'HR & Resources' },
   { key: 'chat', label: 'Chat', section: 'HR & Resources' },
   { key: 'data-assistant', label: 'Data Assistant', section: 'HR & Resources' },
+
+  { key: 'support', label: 'Support', section: 'HR & Resources' },
 
   { key: 'users', label: 'Users', section: 'Admin' },
   { key: 'reports', label: 'Reports', section: 'Admin' },

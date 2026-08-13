@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { getPublicLandingLink, getPublicLandingPage } from '../lib/publicLeadForm'
 import { PublicLeadCaptureForm } from '../components/PublicLeadCaptureForm'
 import PublicLandingPage from '../components/PublicLandingPage'
+import { useAppName } from '../context/BrandingContext'
 
 // Public, unauthenticated marketing page — deliberately NOT wrapped in
 // Layout/AuthProvider gating. If the link has an attached, Published
@@ -11,6 +12,7 @@ import PublicLandingPage from '../components/PublicLandingPage'
 // links created before the builder existed keep working unchanged.
 export default function PublicLeadFormPage() {
   const { slug } = useParams()
+  const appName = useAppName()
   const [link, setLink] = useState(undefined) // undefined = loading, null = not found
   const [builderPage, setBuilderPage] = useState(undefined) // undefined = loading, null = no builder page for this link
 
@@ -35,7 +37,7 @@ export default function PublicLeadFormPage() {
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', fontFamily: "'Plus Jakarta Sans',sans-serif", padding: 20 }}>
       <div style={{ maxWidth: 480, width: '100%' }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, fontWeight: 800 }}>ThingsAlive <span style={{ color: '#6366f1' }}>NeoX</span></div>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, fontWeight: 800 }}>{appName}</div>
         </div>
 
         <div style={{ background: '#fff', borderRadius: 16, border: '1.5px solid #e2e8f0', boxShadow: '0 4px 24px rgba(0,0,0,.06)', padding: 28 }}>

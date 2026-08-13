@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts'
 import { supabase, rupee, dateFmt } from '../lib/supabase'
@@ -19,12 +19,12 @@ import {
 import * as proposalApproval from '../lib/proposalApproval'
 import { exportProposalPDF, exportProposalExcel } from '../lib/proposalExport'
 import { createProjectFromProposal } from '../lib/proposalConvert'
-import { listTemplates, getDefaultTemplate, createTemplate, updateTemplate, deleteTemplate } from '../lib/proposalTemplates'
+import { getActiveTemplate } from '../lib/documentTemplates'
 import { Modal, SearchBox, Loader, Empty, Confirm, StatCard, ApprovalChain } from '../components/ui'
 import {
   FileText, Plus, Edit2, Trash2, Download, ShieldCheck, CheckCircle, XCircle, X, Save,
   ChevronRight, Users, Package, Wallet, TrendingUp, Clock, LayoutGrid,
-  CalendarRange, Truck, GitBranch, Settings2, ArrowUp, ArrowDown, ArrowLeft, Monitor, Plane,
+  CalendarRange, Truck, GitBranch, Settings2, ArrowLeft, Monitor, Plane,
   Code2, Cpu, Wrench, Database, Cloud, FileSpreadsheet, Lock,
 } from 'lucide-react'
 
@@ -58,8 +58,8 @@ export default function ProposalsPage() {
   const canViewInternal = ['admin', 'ceo', 'finance', 'cto'].includes(role)
   const isFinanceOrAbove = ['admin', 'ceo', 'finance'].includes(role)
   const canManageTemplates = ['admin', 'ceo', 'finance'].includes(role)
+  const navigate = useNavigate()
 
-  const [view, setView] = useState('proposals') // 'proposals' | 'templates'
   const [searchParams, setSearchParams] = useSearchParams()
   const selectedId = searchParams.get('id') || ''
 
@@ -122,28 +122,23 @@ export default function ProposalsPage() {
             <span style={{ width: 38, height: 38, borderRadius: 10, background: 'linear-gradient(135deg,#f97316,#ea580c)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
               <FileText size={19} />
             </span>
-            {view === 'templates' ? 'Proposal Templates' : 'Proposals'}
+            Proposals
           </div>
-          <div className="page-subtitle">
-            {view === 'templates' ? 'Customer-facing and internal-review export layouts' : 'Pre-sales cost proposals — internal cost, margin and customer price, never confused with each other'}
-          </div>
+          <div className="page-subtitle">Pre-sales cost proposals — internal cost, margin and customer price, never confused with each other</div>
         </div>
         <div className="page-actions" style={{ display: 'flex', gap: 8 }}>
           {canManageTemplates && (
-            <button className="btn btn-outline" onClick={() => setView(v => v === 'templates' ? 'proposals' : 'templates')}>
-              <Settings2 size={15} /> {view === 'templates' ? 'Back to Proposals' : 'Manage Templates'}
+            <button className="btn btn-outline" onClick={() => navigate('/settings?tab=document-templates')} title="Manage export templates for Proposals, Invoices, Delivery Notes, Warranty and GRN">
+              <Settings2 size={15} /> Manage Templates
             </button>
           )}
-          {view === 'proposals' && isSalesLead && (
+          {isSalesLead && (
             <button className="btn btn-primary" onClick={() => setShowCreate(true)}><Plus size={15} /> New Proposal</button>
           )}
         </div>
       </div>
 
-      {view === 'templates' ? (
-        <TemplatesManager profile={profile} />
-      ) : (
-        <>
+      <>
           <div className="stats-grid" style={{ marginBottom: 16 }}>
             <StatCard label="Total Proposals" value={proposals.length} icon={<FileText size={17} />} accent="#f97316" />
             <StatCard label="Ready for Approval" value={proposals.filter(p => p.status === 'Ready for Approval').length} icon={<ShieldCheck size={17} />} accent="#4338ca" />
@@ -181,7 +176,6 @@ export default function ProposalsPage() {
             </div>
           )}
         </>
-      )}
 
       <Modal open={showCreate} onClose={() => setShowCreate(false)} title="New Proposal" size="lg"
         footer={<>
@@ -1763,13 +1757,13 @@ function ConvertToProjectAction({ proposalId, profileId, onChanged }) {
 
 /* ── Export ── */
 function TemplateBadgeRow({ template }) {
-  if (!template) return <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 12 }}>No default template configured for this export type — using the built-in layout. Set one under Proposal Templates.</div>
+  if (!template) return <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 12 }}>No active template configured for this export type — using the built-in layout. Set one under Settings → Manage Templates.</div>
   const badge = (label, bg, color) => <span key={label} style={{ padding: '2px 9px', borderRadius: 999, fontSize: 10.5, fontWeight: 700, background: bg, color }}>{label}</span>
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 14 }}>
       {badge(template.template_name, '#eef2ff', '#4338ca')}
-      {badge(template.show_line_item_detail ? 'Itemized line detail' : 'Category summary only', '#f1f5f9', '#475569')}
-      {template.section_order?.length ? badge(`${template.section_order.length} section(s) ordered`, '#f1f5f9', '#475569') : null}
+      {badge(template.config?.show_line_item_detail ? 'Itemized line detail' : 'Category summary only', '#f1f5f9', '#475569')}
+      {template.config?.section_order?.length ? badge(`${template.config.section_order.length} section(s) ordered`, '#f1f5f9', '#475569') : null}
       {template.header_logo ? badge('Logo set', '#f0fdf4', '#15803d') : null}
       {template.terms_and_conditions_text ? badge('T&C included', '#f0fdf4', '#15803d') : null}
       {template.footer_text ? badge('Footer note', '#f0fdf4', '#15803d') : null}
@@ -1817,7 +1811,7 @@ function ExportTab({ proposal, summary, canViewInternal }) {
 
   useEffect(() => {
     let alive = true
-    Promise.all([getDefaultTemplate('Customer-Facing'), getDefaultTemplate('Internal Review')])
+    Promise.all([getActiveTemplate('proposal', 'customer'), getActiveTemplate('proposal', 'internal')])
       .then(([customer, internal]) => { if (alive) setTemplates({ customer, internal }) })
       .catch(() => {})
     return () => { alive = false }
@@ -1884,145 +1878,6 @@ function VersionsTab({ versions }) {
   )
 }
 
-/* ══════════════════════════════════════════════════════════════
-   TEMPLATES MANAGER — list-level, not tied to one proposal
-   ══════════════════════════════════════════════════════════════ */
-function TemplatesManager({ profile }) {
-  const [templates, setTemplates] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [showModal, setShowModal] = useState(false)
-  const [editing, setEditing] = useState(null)
-  const [deleteConfirm, setDeleteConfirm] = useState(null)
-
-  useEffect(() => { load() }, [])
-  async function load() { setLoading(true); setTemplates(await listTemplates()); setLoading(false) }
-
-  function openCreate() { setEditing(null); setShowModal(true) }
-  function openEdit(t) { setEditing(t); setShowModal(true) }
-
-  if (loading) return <Loader />
-
-  return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
-        <button className="btn btn-primary" onClick={openCreate}><Plus size={15} /> New Template</button>
-      </div>
-      {templates.length === 0 ? (
-        <Empty icon={<Settings2 size={40} />} title="No templates yet" desc="Create a Customer-Facing and an Internal Review template to control what proposal exports look like." />
-      ) : (
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>Name</th><th>Type</th><th>Itemized?</th><th>Default</th><th></th></tr></thead>
-            <tbody>
-              {templates.map(t => (
-                <tr key={t.id} style={{ cursor: 'pointer' }} onClick={() => openEdit(t)}>
-                  <td className="td-bold">{t.template_name}</td>
-                  <td><span className="badge">{t.template_type}</span></td>
-                  <td style={{ fontSize: 12 }}>{t.template_type === 'Customer-Facing' ? (t.show_line_item_detail ? 'Itemized' : 'Category totals') : '—'}</td>
-                  <td>{t.is_default && <span className="badge badge-success">Default</span>}</td>
-                  <td onClick={e => e.stopPropagation()}>
-                    <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }} onClick={() => setDeleteConfirm(t.id)}><Trash2 size={12} /></button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {showModal && (
-        <TemplateModal template={editing} userId={profile.id} onClose={() => setShowModal(false)} onSaved={async () => { setShowModal(false); await load() }} />
-      )}
-      <Confirm open={!!deleteConfirm} message="Delete this template? This cannot be undone." danger
-        onConfirm={async () => { await deleteTemplate(deleteConfirm); setDeleteConfirm(null); load() }} onCancel={() => setDeleteConfirm(null)} />
-    </div>
-  )
-}
-
-const initTemplateForm = () => ({
-  template_name: '', template_type: 'Customer-Facing', header_logo: '', company_details: '',
-  terms_and_conditions_text: '', footer_text: '', section_order: [...PROPOSAL_CATEGORIES], show_line_item_detail: false, is_default: false,
-})
-
-function TemplateModal({ template, userId, onClose, onSaved }) {
-  const [form, setForm] = useState(() => template ? { ...initTemplateForm(), ...template, section_order: template.section_order?.length ? template.section_order : [...PROPOSAL_CATEGORIES] } : initTemplateForm())
-  const [submitting, setSubmitting] = useState(false)
-  const [err, setErr] = useState('')
-
-  function move(idx, dir) {
-    setForm(f => {
-      const arr = [...f.section_order]
-      const j = idx + dir
-      if (j < 0 || j >= arr.length) return f
-      ;[arr[idx], arr[j]] = [arr[j], arr[idx]]
-      return { ...f, section_order: arr }
-    })
-  }
-
-  async function submit(e) {
-    e.preventDefault()
-    setSubmitting(true); setErr('')
-    try {
-      const patch = { ...form }
-      template ? await updateTemplate(template.id, patch) : await createTemplate(patch, userId)
-      onSaved()
-    } catch (e) { setErr(e.message) }
-    finally { setSubmitting(false) }
-  }
-
-  return (
-    <Modal open onClose={onClose} title={template ? 'Edit Template' : 'New Template'} size="lg"
-      footer={<>
-        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" onClick={submit} disabled={submitting}>{submitting ? 'Saving…' : 'Save'}</button>
-      </>}>
-      <form onSubmit={submit}>
-        {err && <div className="alert alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
-        <div className="form-row">
-          <div className="form-group"><label className="form-label">Template Name *</label><input className="form-input" value={form.template_name} onChange={e => setForm(f => ({ ...f, template_name: e.target.value }))} required /></div>
-          <div className="form-group"><label className="form-label">Type</label>
-            <select className="form-select" value={form.template_type} onChange={e => setForm(f => ({ ...f, template_type: e.target.value }))}>
-              <option value="Customer-Facing">Customer-Facing</option>
-              <option value="Internal Review">Internal Review</option>
-            </select></div>
-        </div>
-        <div className="form-group">
-          <label className="form-label">Header Logo</label>
-          <input className="form-input" value={form.header_logo || ''} onChange={e => setForm(f => ({ ...f, header_logo: e.target.value }))} placeholder="data:image/png;base64,… (embeddable) — a plain URL won't render in the PDF" />
-          {form.header_logo && !form.header_logo.startsWith('data:image') && (
-            <div style={{ fontSize: 11, color: '#dc2626', marginTop: 4 }}>⚠ This isn't an embeddable data:image URI — the PDF export will silently skip it and show a text header instead.</div>
-          )}
-        </div>
-        <div className="form-group"><label className="form-label">Company Details</label><textarea className="form-textarea" rows={2} value={form.company_details || ''} onChange={e => setForm(f => ({ ...f, company_details: e.target.value }))} placeholder="Address, GST number, contact details…" /></div>
-        {form.template_type === 'Customer-Facing' && (
-          <div className="form-group"><label className="form-label">Terms & Conditions</label><textarea className="form-textarea" rows={3} value={form.terms_and_conditions_text || ''} onChange={e => setForm(f => ({ ...f, terms_and_conditions_text: e.target.value }))} /></div>
-        )}
-        <div className="form-group"><label className="form-label">Footer Text</label><input className="form-input" value={form.footer_text || ''} onChange={e => setForm(f => ({ ...f, footer_text: e.target.value }))} /></div>
-
-        <div className="form-group">
-          <label className="form-label">Category Order</label>
-          <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-            {form.section_order.map((cat, i) => (
-              <div key={cat} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderBottom: i < form.section_order.length - 1 ? '1px solid var(--border)' : 'none', fontSize: 12 }}>
-                <span style={{ flex: 1 }}>{cat}</span>
-                <button type="button" className="btn btn-ghost btn-sm btn-icon" disabled={i === 0} onClick={() => move(i, -1)}><ArrowUp size={12} /></button>
-                <button type="button" className="btn btn-ghost btn-sm btn-icon" disabled={i === form.section_order.length - 1} onClick={() => move(i, 1)}><ArrowDown size={12} /></button>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {form.template_type === 'Customer-Facing' && (
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 10 }}>
-            <input type="checkbox" checked={form.show_line_item_detail} onChange={e => setForm(f => ({ ...f, show_line_item_detail: e.target.checked }))} />
-            Show itemized line-by-line detail (instead of category totals only)
-          </label>
-        )}
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-          <input type="checkbox" checked={form.is_default} onChange={e => setForm(f => ({ ...f, is_default: e.target.checked }))} />
-          Set as default for this template type
-        </label>
-      </form>
-    </Modal>
-  )
-}
+// Template management for every document type (Invoice, Delivery Note,
+// Proposal, Warranty, GRN) now lives in one place — Settings -> Manage
+// Templates — instead of this page having its own Proposal-only copy.

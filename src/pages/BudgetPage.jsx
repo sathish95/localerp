@@ -1,4 +1,5 @@
 import { useState, useEffect, Fragment } from 'react'
+import { useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase, rupee } from '../lib/supabase'
 import { Modal, Loader, Empty } from '../components/ui'
@@ -32,7 +33,9 @@ export default function BudgetPage() {
   const [err, setErr]           = useState('')
   const [deleteConfirm, setDel] = useState(null)
   const [filterType, setFilterType] = useState('all')
+  const [filterDeptId, setFilterDeptId] = useState('')
   const [filterYear, setFilterYear] = useState(CURRENT_YEAR)
+  const location = useLocation()
   const [revisions, setRevisions] = useState([])
   const [expandedRevisions, setExpandedRevisions] = useState(() => new Set())
   const [pendingOnly, setPendingOnly] = useState(false)
@@ -45,6 +48,14 @@ export default function BudgetPage() {
   const canEdit  = ['admin', 'ceo', 'finance'].includes(role)
 
   useEffect(() => { loadAll() }, [])
+
+  // Deep link from the Dashboard's Department Bird's-Eye View — each
+  // department card links here with ?department=<id> so it actually
+  // lands on that department's budget instead of the unfiltered list.
+  useEffect(() => {
+    const deptId = new URLSearchParams(location.search).get('department')
+    if (deptId) { setFilterType('department'); setFilterDeptId(deptId) }
+  }, [location.search])
 
   async function loadAll() {
     setLoading(true)
@@ -145,9 +156,10 @@ export default function BudgetPage() {
 
   const filtered = budgets.filter(b => {
     const mt = filterType === 'all' || (filterType === 'department' && b.department_id) || (filterType === 'project' && b.project_id)
+    const md = !filterDeptId || b.department_id === filterDeptId
     const my = b.fiscal_year === filterYear
     const mp = !pendingOnly || (revisionsByBudget[b.id] || []).some(r => r.status === 'pending_review')
-    return mt && my && mp
+    return mt && md && my && mp
   })
 
   const totalAllocated = filtered.reduce((s, b) => s + (b.allocated || 0), 0)
@@ -200,8 +212,14 @@ export default function BudgetPage() {
       {/* Filters */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
         {['all','department','project'].map(t => (
-          <button key={t} onClick={() => setFilterType(t)} style={{ padding: '6px 16px', borderRadius: 20, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12, background: filterType === t ? '#6366f1' : '#f1f5f9', color: filterType === t ? '#fff' : '#475569', textTransform: 'capitalize' }}>{t === 'all' ? 'All Types' : t}</button>
+          <button key={t} onClick={() => { setFilterType(t); if (t !== 'department') setFilterDeptId('') }} style={{ padding: '6px 16px', borderRadius: 20, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12, background: filterType === t ? '#6366f1' : '#f1f5f9', color: filterType === t ? '#fff' : '#475569', textTransform: 'capitalize' }}>{t === 'all' ? 'All Types' : t}</button>
         ))}
+        {filterType === 'department' && (
+          <select className="form-select" style={{ fontSize: 12, width: 200 }} value={filterDeptId} onChange={e => setFilterDeptId(e.target.value)}>
+            <option value="">All Departments</option>
+            {depts.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        )}
         {canEdit && (
           <button onClick={() => setPendingOnly(p => !p)} style={{ padding: '6px 16px', borderRadius: 20, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12, background: pendingOnly ? '#f59e0b' : '#f1f5f9', color: pendingOnly ? '#fff' : '#475569', display: 'flex', alignItems: 'center', gap: 5 }}>
             <History size={12} /> Pending Revisions{pendingRevisionsCount > 0 ? ` (${pendingRevisionsCount})` : ''}

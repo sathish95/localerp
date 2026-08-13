@@ -34,7 +34,7 @@ export function AuthProvider({ children }) {
         // retry loop silently swallowed as "no data yet" 7 times over —
         // the profile query never actually succeeded until this hint.
         const { data } = await supabase.from('profiles')
-          .select('*, dept:departments(id,name,code), org:organizations!profiles_organization_id_fkey(id,name,slug,is_active,plan_key,billing_status,trial_ends_at,seat_limit_override)')
+          .select('*, dept:departments(id,name,code), org:organizations!profiles_organization_id_fkey(id,name,slug,is_active,deleted_at,plan_key,billing_status,trial_ends_at,seat_limit_override,current_period_end,payment_provider,allowed_payment_providers)')
           .eq('id', u.id).maybeSingle()
         if (data) { setProfile(data); return }
         await new Promise(r => setTimeout(r, 700*(i+1)))

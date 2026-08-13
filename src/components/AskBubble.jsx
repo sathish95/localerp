@@ -1,10 +1,31 @@
 import { useState, useRef, useEffect } from 'react'
-import { Link } from 'react-router-dom'
-import { Sparkles, X, Send, Receipt, ShoppingCart, CalendarDays, Plane, AlertTriangle, Wallet, TrendingUp, FileText, Building2, Users, ChevronRight, ChevronDown, Bot, Maximize2, Check } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Sparkles, X, Send, Receipt, ShoppingCart, CalendarDays, Plane, AlertTriangle, Wallet, TrendingUp, FileText, Building2, Users, ChevronRight, ChevronDown, Bot, Maximize2, Check, Boxes, Package, Zap, FileCheck, Truck, ArrowLeft, Radar } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { QUESTIONS } from '../lib/quickAnswers'
 import { LLM_MODELS, isModelUsable } from '../lib/llm'
 import { answerQuestion, getPreferredModel, setPreferredModel } from '../lib/assistant'
+import { getEnabledCapabilities } from '../lib/aiCapabilities'
+
+// Capability picker (STEP: AI capabilities added alongside the original
+// Quick Answers chat). 'ask' is this component's original behavior,
+// opening the popover chat unchanged. Every other capability is tied to
+// one real module page, so clicking it navigates there instead of
+// opening a popover — the docked AI panel that lives on that page (see
+// AIDockedPanel.jsx + the module pages) is the real chat surface,
+// alongside the actual data instead of floating disconnected from it.
+// This popover only ever hosts 'ask' now.
+const AI_TABS = [
+  { id:'ask', label:'Ask', icon:Bot, color:'var(--c1)', title:'Quick Answers', subtitle:"Ask me about the company's data", link:'/data-assistant' },
+  { id:'neo-task-ai', label:'Neo Task', icon:Sparkles, color:'#6366f1', title:'Neo Task AI', subtitle:'Requirement doc → full plan', link:'/neo-task-ai' },
+  { id:'bom-ai', label:'BOM AI', icon:Boxes, color:'#0891b2', title:'BOM AI', subtitle:'Draft a Bill of Materials', link:'/bom' },
+  { id:'product-ai', label:'Product AI', icon:Package, color:'#d97706', title:'Product AI', subtitle:'Draft a catalog entry', link:'/products' },
+  { id:'task-actions', label:'Tasks', icon:Zap, color:'#db2777', title:'Task Actions', subtitle:'Create or update tasks', link:'/tasks' },
+  { id:'customer-invoice-ai', label:'Cust. Invoice', icon:FileCheck, color:'#059669', title:'Customer Invoice AI', subtitle:'Draft a customer invoice', link:'/customer-invoices' },
+  { id:'vendor-invoice-ai', label:'Vendor Invoice', icon:FileText, color:'#7c3aed', title:'Vendor Invoice AI', subtitle:'Draft a vendor invoice', link:'/invoices' },
+  { id:'delivery-note-ai', label:'Delivery Note', icon:Truck, color:'#0d9488', title:'Delivery Note AI', subtitle:'Draft an outbound shipment', link:'/delivery-notes' },
+  { id:'scenario-ai', label:'Scenario AI', icon:Radar, color:'#6d28d9', title:'Scenario AI', subtitle:'Draft a what-if scenario', link:'/scenarios/my' },
+]
 
 const ICONS = {
   'pending-expenses': Receipt,
@@ -28,7 +49,11 @@ function fmtTime(ts) {
 
 export default function AskBubble() {
   const { profile } = useAuth()
+  const navigate = useNavigate()
   const [open, setOpen] = useState(false)
+  const [capMenuOpen, setCapMenuOpen] = useState(false) // fan-out capability picker, shown before the panel opens
+  const [enabledCaps, setEnabledCaps] = useState(null) // null while loading — treated as "show all" so nothing flashes hidden
+  const [tab, setTab] = useState('ask')
   const [closing, setClosing] = useState(false)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
@@ -48,6 +73,12 @@ export default function AskBubble() {
     Promise.all(LLM_MODELS.map(async m => [m, await isModelUsable(m)])).then(pairs => {
       if (!cancelled) setUsableModels(pairs.filter(([, ok]) => ok).map(([m]) => m))
     })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    getEnabledCapabilities().then(caps => { if (!cancelled) setEnabledCaps(caps) }).catch(() => {})
     return () => { cancelled = true }
   }, [])
 
@@ -91,11 +122,29 @@ export default function AskBubble() {
   useEffect(() => {
     function onClickOut(e) {
       if (menuRef.current && !menuRef.current.contains(e.target)) setModelMenuOpen(false)
-      if (ref.current && !ref.current.contains(e.target)) closePanel()
+      if (ref.current && !ref.current.contains(e.target)) { closePanel(); setCapMenuOpen(false) }
     }
     document.addEventListener('mousedown', onClickOut)
     return () => document.removeEventListener('mousedown', onClickOut)
   }, [])
+
+  function selectCapability(tabId) {
+    setCapMenuOpen(false)
+    if (tabId === 'ask') { setTab('ask'); openPanel(); return }
+    // Every other capability is tied to one real module page — navigate
+    // there instead of opening this popover; ?ai=1 tells the page to
+    // auto-open its own docked AI panel (AIDockedPanel.jsx) on arrival.
+    dismissNudge()
+    const t = AI_TABS.find(x => x.id === tabId)
+    navigate(t.id === 'neo-task-ai' ? t.link : `${t.link}?ai=1`)
+  }
+
+  // Only 'ask' opens in this popover now — the back-arrow returns to the
+  // fan-out picker in case the user wants a different capability instead.
+  function goBackToMenu() {
+    closePanel()
+    setTimeout(() => setCapMenuOpen(true), CLOSE_ANIM_MS)
+  }
 
   useEffect(() => {
     if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight
@@ -152,10 +201,16 @@ export default function AskBubble() {
   }
 
   const started = messages.length > 0
+  const activeTab = AI_TABS.find(t => t.id === tab) || AI_TABS[0]
+  // 'ask' (Data Assistant) isn't part of the per-org AI capability toggle
+  // (STEP110) — it's a distinct, longer-standing feature with its own
+  // access model, not one of the new module-AI features admins can turn
+  // off. The other four are filtered by the org's saved settings.
+  const visibleTabs = AI_TABS.filter(t => t.id === 'ask' || enabledCaps === null || enabledCaps[t.id] !== false)
 
   return (
     <div ref={ref}>
-      {showNudge && !open && (
+      {showNudge && !open && !capMenuOpen && (
         <div className="askbubble-nudge" style={{
           position: 'fixed', bottom: 90, right: 24, zIndex: 9999, maxWidth: 230,
           background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '14px 14px 4px 14px',
@@ -173,8 +228,13 @@ export default function AskBubble() {
 
       <button
         className="askbubble-fab"
-        onClick={() => (open ? closePanel() : openPanel())}
-        title="Quick Answers"
+        onClick={() => {
+          if (open) { closePanel(); return }
+          if (capMenuOpen) { setCapMenuOpen(false); return }
+          setCapMenuOpen(true)
+          dismissNudge()
+        }}
+        title="Ask NeoX AI"
         style={{
           position: 'fixed', bottom: 24, right: 24, zIndex: 9999,
           width: 54, height: 54, borderRadius: '50%', border: 'none', cursor: 'pointer',
@@ -182,14 +242,37 @@ export default function AskBubble() {
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           boxShadow: 'inset 0 1px 0 rgba(255,255,255,.25)',
         }}>
-        <span className="askbubble-fab-icon" style={{ display: 'flex', transform: open ? 'rotate(90deg)' : 'rotate(0deg)' }}>
-          {open ? <X size={22} /> : <Sparkles size={22} />}
+        <span className="askbubble-fab-icon" style={{ display: 'flex', transform: (open || capMenuOpen) ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+          {(open || capMenuOpen) ? <X size={22} /> : <Sparkles size={22} />}
         </span>
       </button>
 
+      {capMenuOpen && !open && (
+        <div style={{ position: 'fixed', bottom: 90, right: 24, zIndex: 9999, display: 'flex', flexDirection: 'column-reverse', alignItems: 'flex-end', gap: 10 }}>
+          {visibleTabs.map((t, i) => {
+            const Icon = t.icon
+            return (
+              <div key={t.id} className="askbubble-mini" style={{ display: 'flex', alignItems: 'center', gap: 10, animationDelay: `${i * 70}ms` }}>
+                <span style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '6px 11px', fontSize: 12, fontWeight: 700, color: 'var(--text)', boxShadow: '0 4px 14px rgba(0,0,0,.14)', whiteSpace: 'nowrap' }}>
+                  {t.title}
+                </span>
+                <button onClick={() => selectCapability(t.id)} title={t.title}
+                  style={{
+                    width: 46, height: 46, borderRadius: '50%', border: '1px solid var(--border)', cursor: 'pointer',
+                    background: 'var(--surface)', color: t.color, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    boxShadow: '0 8px 22px rgba(0,0,0,.18)', flexShrink: 0,
+                  }}>
+                  <Icon size={19} />
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
       {open && (
         <div className={`askbubble-panel${closing ? ' closing' : ''}`} style={{
-          position: 'fixed', bottom: 90, right: 24, zIndex: 9999, width: 380, maxHeight: 560,
+          position: 'fixed', bottom: 90, right: 24, zIndex: 9999, width: 380, maxHeight: 'min(640px, 78vh)',
           background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 18,
           boxShadow: '0 20px 60px rgba(0,0,0,.22), 0 4px 16px rgba(0,0,0,.08)', overflow: 'hidden', display: 'flex', flexDirection: 'column',
         }}>
@@ -197,6 +280,10 @@ export default function AskBubble() {
             padding: '16px 18px', background: 'linear-gradient(135deg, var(--c1), #8b5cf6)', color: '#fff',
             display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
           }}>
+            <button onClick={goBackToMenu} title="Back to all AI features"
+              style={{ background: 'rgba(255,255,255,.15)', border: 'none', borderRadius: 8, cursor: 'pointer', color: '#fff', width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <ArrowLeft size={14} />
+            </button>
             <div style={{ position: 'relative', flexShrink: 0 }}>
               <div style={{ width: 32, height: 32, borderRadius: 10, background: 'rgba(255,255,255,.18)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <Bot size={17} />
@@ -204,14 +291,14 @@ export default function AskBubble() {
               <span style={{ position: 'absolute', bottom: -1, right: -1, width: 9, height: 9, borderRadius: '50%', background: '#22c55e', border: '2px solid #6366f1' }} />
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 800, fontSize: 14.5 }}>Quick Answers</div>
-              <div style={{ fontSize: 11, opacity: .85 }}>Ask me about the company's data</div>
+              <div style={{ fontWeight: 800, fontSize: 14.5 }}>{activeTab.title}</div>
+              <div style={{ fontSize: 11, opacity: .85 }}>{activeTab.subtitle}</div>
             </div>
-            <Link to="/data-assistant" onClick={closePanel} title="Open full Data Assistant"
-              style={{ background: 'rgba(255,255,255,.15)', border: 'none', borderRadius: 8, cursor: 'pointer', color: '#fff', width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Link to={activeTab.link} onClick={closePanel} title={`Open ${activeTab.title}`}
+              style={{ background: 'rgba(255,255,255,.15)', border: 'none', borderRadius: 8, cursor: 'pointer', color: '#fff', width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
               <Maximize2 size={12} />
             </Link>
-            <button onClick={closePanel} style={{ background: 'rgba(255,255,255,.15)', border: 'none', borderRadius: 8, cursor: 'pointer', color: '#fff', width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <button onClick={closePanel} style={{ background: 'rgba(255,255,255,.15)', border: 'none', borderRadius: 8, cursor: 'pointer', color: '#fff', width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
               <X size={13} />
             </button>
           </div>
@@ -281,7 +368,7 @@ export default function AskBubble() {
             )}
           </div>
 
-          {usableModels.length > 1 && (
+          {tab === 'ask' && usableModels.length > 1 && (
             <div ref={menuRef} style={{ position: 'relative', padding: '8px 12px 0', borderTop: '1px solid var(--border)', background: 'var(--surface)', flexShrink: 0 }}>
               <button onClick={() => setModelMenuOpen(o => !o)} title="Switch AI model" style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 8px 4px 10px',
@@ -314,32 +401,34 @@ export default function AskBubble() {
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: 8, padding: 12, alignItems: 'flex-end', borderTop: usableModels.length > 1 ? 'none' : '1px solid var(--border)', background: 'var(--surface)', flexShrink: 0 }}>
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              value={input}
-              onChange={e => { setInput(e.target.value); autoGrow(e.target) }}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
-              placeholder="Ask a question…"
-              disabled={busy}
-              className="askbubble-textarea"
-              style={{
-                flex: 1, border: '1px solid var(--border)', borderRadius: 10, padding: '9px 12px',
-                fontSize: 12.5, background: 'var(--surface)', color: 'inherit', fontFamily: 'inherit', outline: 'none',
-                lineHeight: 1.4, minHeight: 36, maxHeight: 110,
-              }}
-            />
-            <button onClick={handleSend} disabled={busy || !input.trim()} className="askbubble-send"
-              style={{
-                width: 36, height: 36, borderRadius: 10, border: 'none', cursor: busy ? 'default' : 'pointer',
-                background: 'linear-gradient(135deg, var(--c1), #8b5cf6)', color: '#fff',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                opacity: busy || !input.trim() ? 0.5 : 1,
-              }}>
-              <Send size={14} />
-            </button>
-          </div>
+          {tab === 'ask' && (
+            <div style={{ display: 'flex', gap: 8, padding: 12, alignItems: 'flex-end', borderTop: usableModels.length > 1 ? 'none' : '1px solid var(--border)', background: 'var(--surface)', flexShrink: 0 }}>
+              <textarea
+                ref={textareaRef}
+                rows={1}
+                value={input}
+                onChange={e => { setInput(e.target.value); autoGrow(e.target) }}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
+                placeholder="Ask a question…"
+                disabled={busy}
+                className="askbubble-textarea"
+                style={{
+                  flex: 1, border: '1px solid var(--border)', borderRadius: 10, padding: '9px 12px',
+                  fontSize: 12.5, background: 'var(--surface)', color: 'inherit', fontFamily: 'inherit', outline: 'none',
+                  lineHeight: 1.4, minHeight: 36, maxHeight: 110,
+                }}
+              />
+              <button onClick={handleSend} disabled={busy || !input.trim()} className="askbubble-send"
+                style={{
+                  width: 36, height: 36, borderRadius: 10, border: 'none', cursor: busy ? 'default' : 'pointer',
+                  background: 'linear-gradient(135deg, var(--c1), #8b5cf6)', color: '#fff',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                  opacity: busy || !input.trim() ? 0.5 : 1,
+                }}>
+                <Send size={14} />
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

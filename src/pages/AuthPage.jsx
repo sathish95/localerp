@@ -2,9 +2,11 @@ import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { previewInviteCode } from '../lib/orgInvites'
+import { useAppName } from '../context/BrandingContext'
 
 export default function AuthPage() {
   const { signIn, signUp, user } = useAuth()
+  const appName = useAppName()
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const [mode, setMode] = useState(params.get('mode')==='signup' ? 'signup' : 'login')
@@ -48,11 +50,29 @@ export default function AuthPage() {
       if (orgMode==='join' && !invitePreview?.valid) throw new Error('Enter a valid invite code first')
 
       const meta = { full_name: name, role: 'employee', org_mode: orgMode }
-      if (orgMode==='create') meta.org_name = orgName.trim()
+      if (orgMode==='create') {
+        meta.org_name = orgName.trim()
+        // Landing-page estimator hand-off (STEP133) — ?plan=<key>&modules=a,b,c
+        // arrives here via useSearchParams below; handle_new_user() applies
+        // that plan's own price/trial_days and activates the picked modules
+        // immediately, rather than the new org defaulting to 'free'.
+        const intendedPlan = params.get('plan')
+        const intendedModules = params.get('modules')
+        if (intendedPlan) meta.intended_plan_key = intendedPlan
+        if (intendedModules) meta.intended_bundle_keys = intendedModules
+        // Vendor referral (STEP134) — URL param wins if present, else
+        // whatever the landing page stored on first touch.
+        let referralCode = params.get('ref')
+        if (!referralCode) { try { referralCode = localStorage.getItem('referral_code') } catch {} }
+        if (referralCode) meta.referral_code = referralCode
+      }
       if (orgMode==='join') meta.invite_code = inviteCode.trim()
 
       await signUp(email, password, meta)
-      navigate('/')
+      // Estimator-driven signups land straight on Billing — their picked
+      // plan/modules and trial are already applied, so this is where
+      // they'd actually pay if they want to skip the trial.
+      navigate(meta.intended_plan_key || meta.intended_bundle_keys ? '/settings?tab=billing' : '/')
     } catch(err) { setError(err.message) }
     finally { setLoading(false) }
   }
@@ -71,7 +91,7 @@ export default function AuthPage() {
         <div style={{ maxWidth:420 }}>
           <Link to="/" style={{ display:'flex', alignItems:'center', gap:10, textDecoration:'none', marginBottom:48 }}>
             <div style={{ width:42, height:42, borderRadius:12, background:'linear-gradient(135deg,#6366f1,#8b5cf6)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:22 }}>⚡</div>
-            <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, fontWeight:800, color:'#fff' }}>ThingsAlive <span style={{ color:'#818cf8' }}>NeoX</span></div>
+            <div style={{ fontFamily:"'Playfair Display',serif", fontSize:24, fontWeight:800, color:'#fff' }}>{appName}</div>
           </Link>
           <div style={{ fontFamily:"'Playfair Display',serif", fontSize:40, fontWeight:800, color:'#fff', lineHeight:1.15, marginBottom:20 }}>
             Manage Everything.<br/><span style={{ background:'linear-gradient(135deg,#818cf8,#a78bfa)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>From One Place.</span>
@@ -95,14 +115,14 @@ export default function AuthPage() {
           {/* Logo for mobile */}
           <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:28 }}>
             <div style={{ width:34, height:34, borderRadius:10, background:'linear-gradient(135deg,#6366f1,#8b5cf6)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:17 }}>⚡</div>
-            <span style={{ fontFamily:"'Playfair Display',serif", fontSize:17, fontWeight:800, color:'#fff' }}>ThingsAlive <span style={{ color:'#818cf8' }}>NeoX</span></span>
+            <span style={{ fontFamily:"'Playfair Display',serif", fontSize:17, fontWeight:800, color:'#fff' }}>{appName}</span>
           </div>
 
           <div style={{ fontFamily:"'Playfair Display',serif", fontSize:26, fontWeight:800, color:'#fff', marginBottom:6 }}>
             {mode==='login' ? 'Welcome back' : 'Create account'}
           </div>
           <div style={{ fontSize:13, color:'rgba(255,255,255,.4)', marginBottom:28 }}>
-            {mode==='login' ? 'Sign in to your workspace' : 'Join ThingsAlive NeoX'}
+            {mode==='login' ? 'Sign in to your workspace' : `Join ${appName}`}
           </div>
 
           {error && <div style={{ padding:'10px 14px', borderRadius:10, background:'rgba(239,68,68,.15)', border:'1px solid rgba(239,68,68,.3)', color:'#fca5a5', fontSize:13, marginBottom:16 }}>{error}</div>}

@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { MISSING_ENV } from './lib/supabase'
 import { AuthProvider, useAuth } from './context/AuthContext'
+import { BrandingProvider } from './context/BrandingContext'
 import { TabVisibilityProvider } from './context/TabVisibilityContext'
 import Layout from './components/layout/Layout'
 import ModuleGate from './components/ModuleGate'
@@ -46,6 +47,7 @@ import AllocationsPage from './pages/AllocationsPage'
 import CapacityPage from './pages/CapacityPage'
 import RoleRatesPage from './pages/RoleRatesPage'
 import CustomerInvoicesPage from './pages/CustomerInvoicesPage'
+import DeliveryNotesPage from './pages/DeliveryNotesPage'
 import PaymentsPage from './pages/PaymentsPage'
 import AgingReportPage from './pages/AgingReportPage'
 import ProfitMarginPage from './pages/ProfitMarginPage'
@@ -75,7 +77,34 @@ import MyPerformancePage from './pages/MyPerformancePage'
 import TeamReviewsPage from './pages/TeamReviewsPage'
 import CalibrationPage from './pages/CalibrationPage'
 import PerformanceDashboardPage from './pages/PerformanceDashboardPage'
+import AwardManagementPage from './pages/AwardManagementPage'
+import AwardWizardPage from './pages/AwardWizardPage'
+import MyAwardsPage from './pages/MyAwardsPage'
+import TeamAwardsPage from './pages/TeamAwardsPage'
+import AwardRecommendationsPage from './pages/AwardRecommendationsPage'
+import CertificateTemplatesPage from './pages/CertificateTemplatesPage'
+import CertificateVerifyPage from './pages/CertificateVerifyPage'
+import OnboardingPage from './pages/OnboardingPage'
 import SuperAdminPage from './pages/SuperAdminPage'
+import OrganizationDetailPage from './pages/OrganizationDetailPage'
+import EstimationPage from './pages/EstimationPage'
+import PaymentGatewaySetupPage from './pages/PaymentGatewaySetupPage'
+import PartnersPage from './pages/PartnersPage'
+import OrgSuspendedPage from './pages/OrgSuspendedPage'
+import VendorDashboardPage from './pages/VendorDashboardPage'
+import ScenarioDashboardPage from './pages/ScenarioDashboardPage'
+import MyScenariosPage from './pages/MyScenariosPage'
+import AllScenariosPage from './pages/AllScenariosPage'
+import ScenarioBuilderPage from './pages/ScenarioBuilderPage'
+import ScenarioDetailPage from './pages/ScenarioDetailPage'
+import ScenarioTemplatesPage from './pages/ScenarioTemplatesPage'
+import ScenarioTemplateBuilderPage from './pages/ScenarioTemplateBuilderPage'
+import ScenarioComparisonPage from './pages/ScenarioComparisonPage'
+import ScenarioApprovalsPage from './pages/ScenarioApprovalsPage'
+import SupportTicketsPage from './pages/SupportTicketsPage'
+import SupportTicketDetailPage from './pages/SupportTicketDetailPage'
+import SupportDeskPage from './pages/SupportDeskPage'
+import SupportDeskSettingsPage from './pages/SupportDeskSettingsPage'
 import { NotificationProvider } from './context/NotificationContext'
 
 function AppRoutes() {
@@ -93,6 +122,9 @@ function AppRoutes() {
   if (location.pathname.startsWith('/book/')) {
     return <Routes><Route path="/book/:slug" element={<PublicMeetingBookingPage />} /></Routes>
   }
+  if (location.pathname.startsWith('/verify/')) {
+    return <Routes><Route path="/verify/:certificateNumber" element={<CertificateVerifyPage />} /></Routes>
+  }
 
   if (!user) return (
     <Routes>
@@ -101,6 +133,24 @@ function AppRoutes() {
       <Route path="*" element={<LandingPage />} />
     </Routes>
   )
+
+  // Suspended/soft-deleted org lockout (STEP108) — checked before any
+  // route renders. A platform super admin is exempt: they need access
+  // regardless of their own org's state to fix other orgs from
+  // /super-admin, and default-org (where super admins typically live)
+  // being suspended must never lock the platform operator out.
+  if (profile?.org && !profile.is_super_admin && (profile.org.deleted_at || profile.org.is_active === false)) {
+    return <OrgSuspendedPage />
+  }
+
+  // Vendor accounts (STEP134) are not organization members in any real
+  // sense — their organization_id is just handle_new_user()'s
+  // 'default-org' fallback, meaningless for them. Route every path to
+  // their own dashboard instead of the normal org-scoped app, so a
+  // vendor never sees default-org's operational surface at all.
+  if (profile?.vendor_id) {
+    return <Routes><Route path="*" element={<VendorDashboardPage />} /></Routes>
+  }
 
   const role = profile?.role || 'employee'
   const isManager = ['admin','ceo','manager','department_head'].includes(role)
@@ -169,11 +219,28 @@ function AppRoutes() {
           <Route path="/team-reviews" element={<ModuleGate tab="team-reviews" allowed={isPerformanceReviewer}><TeamReviewsPage /></ModuleGate>} />
           <Route path="/calibration" element={<ModuleGate tab="calibration" allowed={isPerformanceAdmin}><CalibrationPage /></ModuleGate>} />
           <Route path="/performance-dashboard" element={<ModuleGate tab="performance-dashboard" allowed={isPerformanceDashboard}><PerformanceDashboardPage /></ModuleGate>} />
+          <Route path="/awards" element={<ModuleGate tab="award-management" allowed={isPerformanceAdmin}><AwardManagementPage /></ModuleGate>} />
+          <Route path="/awards/new" element={<ModuleGate tab="award-management" allowed={isPerformanceAdmin}><AwardWizardPage /></ModuleGate>} />
+          <Route path="/awards/:id/edit" element={<ModuleGate tab="award-management" allowed={isPerformanceAdmin}><AwardWizardPage /></ModuleGate>} />
+          <Route path="/my-awards" element={<ModuleGate tab="my-awards" allowed={true}><MyAwardsPage /></ModuleGate>} />
+          <Route path="/team-awards" element={<ModuleGate tab="team-awards" allowed={isPerformanceReviewer}><TeamAwardsPage /></ModuleGate>} />
+          <Route path="/awards/:id/recommendations" element={<ModuleGate tab="award-management" allowed={isPerformanceAdmin}><AwardRecommendationsPage /></ModuleGate>} />
+          <Route path="/certificate-templates" element={<ModuleGate tab="certificate-templates" allowed={isPerformanceAdmin}><CertificateTemplatesPage /></ModuleGate>} />
           <Route path="/skill-matrix" element={<ModuleGate tab="skill-matrix" allowed={true}><SkillMatrixPage /></ModuleGate>} />
           <Route path="/allocations" element={<ModuleGate tab="allocations" allowed={true}><AllocationsPage /></ModuleGate>} />
           <Route path="/capacity" element={<ModuleGate tab="capacity" allowed={true}><CapacityPage /></ModuleGate>} />
+          <Route path="/scenarios/dashboard" element={<ModuleGate tab="scenario-dashboard" allowed={true}><ScenarioDashboardPage /></ModuleGate>} />
+          <Route path="/scenarios/my" element={<ModuleGate tab="scenario-my" allowed={true}><MyScenariosPage /></ModuleGate>} />
+          <Route path="/scenarios/templates" element={<ModuleGate tab="scenario-templates" allowed={true}><ScenarioTemplatesPage /></ModuleGate>} />
+          <Route path="/scenarios/templates/:id" element={<ModuleGate tab="scenario-templates" allowed={true}><ScenarioTemplateBuilderPage /></ModuleGate>} />
+          <Route path="/scenarios/compare" element={<ModuleGate tab="scenario-compare" allowed={true}><ScenarioComparisonPage /></ModuleGate>} />
+          <Route path="/scenarios/approvals" element={<ModuleGate tab="scenario-approvals" allowed={true}><ScenarioApprovalsPage /></ModuleGate>} />
+          <Route path="/scenarios/new" element={<ModuleGate tab="scenario-all" allowed={true}><ScenarioBuilderPage /></ModuleGate>} />
+          <Route path="/scenarios/:id" element={<ModuleGate tab="scenario-all" allowed={true}><ScenarioDetailPage /></ModuleGate>} />
+          <Route path="/scenarios" element={<ModuleGate tab="scenario-all" allowed={true}><AllScenariosPage /></ModuleGate>} />
           <Route path="/role-rates" element={<ModuleGate tab="role-rates" allowed={isFinance || role==='hr'}><RoleRatesPage /></ModuleGate>} />
           <Route path="/customer-invoices" element={<ModuleGate tab="customer-invoices" allowed={isFinance}><CustomerInvoicesPage /></ModuleGate>} />
+          <Route path="/delivery-notes" element={<ModuleGate tab="delivery-notes" allowed={isManager || isFinance}><DeliveryNotesPage /></ModuleGate>} />
           <Route path="/payments" element={<ModuleGate tab="payments" allowed={isFinance}><PaymentsPage /></ModuleGate>} />
           <Route path="/aging-report" element={<ModuleGate tab="aging-report" allowed={isFinance}><AgingReportPage /></ModuleGate>} />
           <Route path="/profit-margins" element={<ModuleGate tab="profit-margins" allowed={isFinance}><ProfitMarginPage /></ModuleGate>} />
@@ -184,6 +251,7 @@ function AppRoutes() {
           <Route path="/grn" element={<ModuleGate tab="grn" allowed={isManager || isFinance}><GRNPage /></ModuleGate>} />
           <Route path="/users" element={<ModuleGate tab="users" allowed={isManager || isFinance || isHR}><UsersPage /></ModuleGate>} />
           <Route path="/settings" element={<ModuleGate tab="settings" allowed={isAdmin}><SettingsPage /></ModuleGate>} />
+          <Route path="/onboarding" element={isAdmin ? <OnboardingPage /> : <Navigate to="/" />} />
           <Route path="/reports" element={<ModuleGate tab="reports" allowed={true}><ReportsPage /></ModuleGate>} />
           <Route path="/leave" element={<ModuleGate tab="leave" allowed={true}><LeavePage /></ModuleGate>} />
           <Route path="/resources" element={<ModuleGate tab="resources" allowed={true}><ResourcePage /></ModuleGate>} />
@@ -191,6 +259,8 @@ function AppRoutes() {
           <Route path="/timesheet-approvals" element={<ModuleGate tab="timesheet-approvals" allowed={true}><TimesheetApprovalPage /></ModuleGate>} />
           <Route path="/chat" element={<ModuleGate tab="chat" allowed={true}><ChatPage /></ModuleGate>} />
           <Route path="/data-assistant" element={<ModuleGate tab="data-assistant" allowed={true}><DataAssistantPage /></ModuleGate>} />
+          <Route path="/support" element={<ModuleGate tab="support" allowed={true}><SupportTicketsPage /></ModuleGate>} />
+          <Route path="/support/:id" element={<ModuleGate tab="support" allowed={true}><SupportTicketDetailPage /></ModuleGate>} />
           <Route path="/app-monitor" element={<ModuleGate tab="app-monitor" allowed={isAdmin}><AppMonitorPage /></ModuleGate>} />
           <Route path="/llm-monitor" element={<ModuleGate tab="llm-monitor" allowed={isAdmin}><LLMMonitorPage /></ModuleGate>} />
           <Route path="/content" element={<ModuleGate tab="content" allowed={isAdmin}><AdminContentPage /></ModuleGate>} />
@@ -198,6 +268,12 @@ function AppRoutes() {
               switch has no meaning for a feature that exists above every
               org. Gated purely on profile.is_super_admin. */}
           <Route path="/super-admin" element={profile?.is_super_admin ? <SuperAdminPage /> : <Navigate to="/" />} />
+          <Route path="/super-admin/organizations/:orgId" element={profile?.is_super_admin ? <OrganizationDetailPage /> : <Navigate to="/" />} />
+          <Route path="/super-admin/estimation" element={profile?.is_super_admin ? <EstimationPage /> : <Navigate to="/" />} />
+          <Route path="/super-admin/payment-setup" element={profile?.is_super_admin ? <PaymentGatewaySetupPage /> : <Navigate to="/" />} />
+          <Route path="/super-admin/partners" element={profile?.is_super_admin ? <PartnersPage /> : <Navigate to="/" />} />
+          <Route path="/super-admin/support" element={profile?.is_super_admin ? <SupportDeskPage /> : <Navigate to="/" />} />
+          <Route path="/super-admin/support/settings" element={profile?.is_super_admin ? <SupportDeskSettingsPage /> : <Navigate to="/" />} />
           <Route path="/login" element={<Navigate to="/" />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
@@ -258,10 +334,12 @@ function SetupScreen() {
 export default function App() {
   if (MISSING_ENV) return <SetupScreen />
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
-    </AuthProvider>
+    <BrandingProvider>
+      <AuthProvider>
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
+      </AuthProvider>
+    </BrandingProvider>
   )
 }

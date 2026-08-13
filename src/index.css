@@ -94,6 +94,10 @@ input, select, textarea { font-family: inherit }
 }
 .topbar-title {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 700;
   font-size: 16px;
   font-family: 'Playfair Display', serif;
@@ -514,6 +518,13 @@ tr:hover td { background: var(--surface) }
   0%   { opacity: 0; transform: translateY(6px) scale(.92) }
   100% { opacity: 1; transform: translateY(0) scale(1) }
 }
+@keyframes askbubble-mini-in {
+  0%   { opacity: 0; transform: translateY(10px) scale(.7) }
+  100% { opacity: 1; transform: translateY(0) scale(1) }
+}
+.askbubble-mini { animation: askbubble-mini-in .28s cubic-bezier(.34,1.56,.64,1) both; }
+.askbubble-mini button:hover { transform: scale(1.08); }
+.askbubble-mini button { transition: transform .15s ease, box-shadow .15s ease; }
 .askbubble-fab {
   animation: askbubble-fab-intro .45s cubic-bezier(.34,1.56,.64,1) both, askbubble-pulse 2.8s ease-in-out .45s infinite;
   transition: transform .18s ease;
@@ -606,6 +617,16 @@ tr:hover td { background: var(--surface) }
 
   /* Topbar */
   .topbar { padding: 0 16px }
+  .topbar-right { gap: 6px }
+
+  /* Deliberate backstop at the level that actually contains both the
+     topbar and the page content: any element still too wide (an
+     untamed table, a fixed-width block) gets clipped at the app
+     boundary instead of dragging the whole document sideways.
+     Elements with their own horizontal scroll (e.g. .table-wrap)
+     still scroll fine inside this — a child's overflow-x:auto isn't
+     affected by an ancestor's overflow setting. */
+  .app-shell { overflow-x: hidden }
 
   /* Grid collapse */
   .grid-2 { grid-template-columns: 1fr }

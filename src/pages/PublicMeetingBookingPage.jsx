@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { getPublicLandingLink } from '../lib/publicLeadForm'
 import { PublicLeadCaptureForm } from '../components/PublicLeadCaptureForm'
+import { useAppName } from '../context/BrandingContext'
 
 // Public, unauthenticated "book a call" page — pairs the same
 // Turnstile-verified lead form used at /l/:slug with an embedded
@@ -11,6 +12,7 @@ import { PublicLeadCaptureForm } from '../components/PublicLeadCaptureForm'
 // third-party JS ever runs on this page.
 export default function PublicMeetingBookingPage() {
   const { slug } = useParams()
+  const appName = useAppName()
   const [link, setLink] = useState(undefined) // undefined = loading, null = not found/wrong type
 
   useEffect(() => {
@@ -28,7 +30,7 @@ export default function PublicMeetingBookingPage() {
   return (
     <div style={{ minHeight: '100vh', background: '#f8fafc', fontFamily: "'Plus Jakarta Sans',sans-serif", padding: '32px 16px' }}>
       <div style={{ textAlign: 'center', marginBottom: 24 }}>
-        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, fontWeight: 800 }}>ThingsAlive <span style={{ color: '#6366f1' }}>NeoX</span></div>
+        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, fontWeight: 800 }}>{appName}</div>
       </div>
 
       {link === null ? (

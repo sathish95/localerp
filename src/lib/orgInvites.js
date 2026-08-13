@@ -11,6 +11,16 @@ export async function listInvites() {
   return data || []
 }
 
+// For a super admin's org-detail console — same RLS as listInvites()
+// (organization_invites_select already lets a super admin read any
+// org's rows), just filtered to one org here instead of client-side.
+export async function listInvitesForOrg(organizationId) {
+  const { data, error } = await supabase.from('organization_invites')
+    .select('*').eq('organization_id', organizationId).order('created_at', { ascending: false })
+  if (error) throw error
+  return data || []
+}
+
 export async function createInvite({ role = 'employee', maxUses = 1, expiresDays = 7, organizationId, createdBy }) {
   const payload = {
     role,

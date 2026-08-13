@@ -7,6 +7,8 @@ import {
   getProductBomDetail, getBomCompanySummary, getActiveVersionsByPart, getActiveBomEdges,
   saveNewBomVersion, getVersionComponents, wouldCreateCycle,
 } from '../lib/bom'
+import AIDockedPanel from '../components/AIDockedPanel'
+import { BomAiTab } from '../components/AIActionTabs'
 import { Loader, Empty, SearchBox, StatCard, Modal } from '../components/ui'
 import ExcelImport from '../components/ui/ExcelImport'
 import {
@@ -43,12 +45,14 @@ export default function BomManagementPage() {
   const [previewComponents, setPreviewComponents] = useState(null)
   const [stockByPart, setStockByPart] = useState({})
 
+  const [showAiPanel, setShowAiPanel] = useState(searchParams.get('ai') === '1')
+
   useEffect(() => { loadOverview() }, [])
 
   async function loadOverview() {
     setLoading(true)
     const [{ data: prods }, versions, comSummary] = await Promise.all([
-      supabase.from('products').select('id,part_number,name,standard_cost,is_serialized,reorder_level,reorder_qty').order('name'),
+      supabase.from('products').select('id,part_number,name,device_type,standard_cost,is_serialized,reorder_level,reorder_qty').order('name'),
       getActiveVersionsByPart(),
       getBomCompanySummary(),
     ])
@@ -132,7 +136,7 @@ export default function BomManagementPage() {
     setSubmitting(true); setErr('')
     try {
       await saveNewBomVersion(selectedPart, draft, profile.id, saveNotes)
-      setEditing(false)
+      setEditing(false); setAiSuggestedNew([])
       await Promise.all([loadDetail(selectedPart), loadOverview()])
     } catch (e) { setErr(e.message) }
     finally { setSubmitting(false) }
@@ -255,6 +259,7 @@ export default function BomManagementPage() {
               previewVersion={previewVersion} previewComponents={previewComponents}
               onOpenVersionPreview={openVersionPreview} onRestoreVersion={restoreVersion}
               products={products} stockByPart={stockByPart}
+              onOpenAiModal={() => setShowAiPanel(true)}
             />
           )}
         </div>
@@ -269,6 +274,10 @@ export default function BomManagementPage() {
           onClose={() => setShowImport(false)}
         />
       </Modal>
+
+      <AIDockedPanel open={showAiPanel} onClose={() => setShowAiPanel(false)} title="BOM AI" subtitle="Draft a Bill of Materials">
+        <BomAiTab profile={profile} onSaved={() => { loadDetail(selectedPart); loadOverview() }} />
+      </AIDockedPanel>
     </div>
   )
 }
@@ -277,6 +286,7 @@ function BomDetail({
   partNumber, detail, canEdit, editing, draft, err, submitting, saveNotes,
   availableToAdd, showImport, setShowImport, onStartEdit, onCancelEdit, onSave, setSaveNotes, onAddRow, onRemoveRow, onQtyChange,
   previewVersion, previewComponents, onOpenVersionPreview, onRestoreVersion, products, stockByPart,
+  onOpenAiModal,
 }) {
   const varianceSignificant = Math.abs(detail.variance) > 1 && detail.standardCost > 0 && Math.abs(detail.variance / detail.standardCost) > 0.05
   const productByPart = Object.fromEntries(products.map(p => [p.part_number, p]))
@@ -300,7 +310,12 @@ function BomDetail({
             <button className="btn btn-primary btn-sm" onClick={onSave} disabled={submitting || !draft.length}><Save size={13} /> {submitting ? 'Saving…' : 'Save as New Version'}</button>
           </div>
         ) : (
-          <button className="btn btn-outline btn-sm" onClick={onStartEdit}>Edit BOM</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-outline btn-sm" onClick={onOpenAiModal} style={{ background: 'linear-gradient(135deg,#8b5cf611,#22d3ee11)', borderColor: '#8b5cf644' }}>
+              <Sparkles size={13} /> Generate with AI
+            </button>
+            <button className="btn btn-outline btn-sm" onClick={onStartEdit}>Edit BOM</button>
+          </div>
         ))}
       </div>
 

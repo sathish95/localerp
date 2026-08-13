@@ -1,23 +1,38 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import {
   listOrganizations, createOrganization, setOrganizationActive,
-  setOrgBilling, listBillingRequests, dismissBillingRequest,
+  listBillingRequests, dismissBillingRequest, deleteOrganization, restoreOrganization,
+  platformDashboardStats, platformPlanDistribution,
+  setPaymentProviderActive, listRecentPaymentOrders,
 } from '../lib/superAdmin'
 import { listPlans } from '../lib/billing'
+import { listPaymentProviders } from '../lib/paymentGateway'
+import { superAdminListBundleRequests, superAdminSetOrgBundle, superAdminDismissBundleRequest } from '../lib/billingBundles'
 import { createInvite } from '../lib/orgInvites'
-import { rupee, dateFmt } from '../lib/supabase'
-import { Loader, Empty, Alert, Modal } from '../components/ui'
-import { Landmark, Plus, Users, Ban, CheckCircle2, KeyRound, CreditCard, Clock, XCircle } from 'lucide-react'
+import { updateAppName } from '../lib/platformSettings'
+import { useAppName, useRefreshAppName } from '../context/BrandingContext'
+import { dateFmt, rupee } from '../lib/supabase'
+import { Loader, Empty, Alert, Modal, StatCard } from '../components/ui'
+import {
+  Landmark, Plus, Users, Ban, CheckCircle2, KeyRound, CreditCard, Clock, XCircle,
+  UserCog, Trash2, RotateCcw, Archive, DollarSign, TrendingUp, Power, ChevronRight, Save, Tag,
+} from 'lucide-react'
 
 const STATUS_LABEL = { trialing: 'Trial', active: 'Active', past_due: 'Past Due', canceled: 'Canceled' }
 const STATUS_COLOR = { trialing: '#f59e0b', active: '#16a34a', past_due: '#ef4444', canceled: 'var(--ink-muted)' }
+const ORDER_STATUS_COLOR = { created: '#f59e0b', paid: '#16a34a', failed: '#ef4444', expired: 'var(--ink-muted)' }
+const PROVIDER_LABEL = { razorpay: 'Razorpay', stripe: 'Stripe', cashfree: 'Cashfree' }
 
 // Platform-level org management — reachable only by profiles.is_super_admin
-// (see App.jsx route + Layout.jsx nav gate). Not module-gated: this is a
-// platform capability, not a per-org feature toggle.
+// (see App.jsx route + Layout.jsx nav gate). This is the "show all
+// organizations" list; clicking into one goes to OrganizationDetailPage,
+// which is where employees/billing/transactions for that one org live
+// (one URL per org, tabbed, instead of modals stacked on this list).
 export default function SuperAdminPage() {
   const { profile } = useAuth()
+  const navigate = useNavigate()
   const [orgs, setOrgs] = useState([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
@@ -27,46 +42,94 @@ export default function SuperAdminPage() {
   const [adminInvite, setAdminInvite] = useState(null) // { orgName, code }
   const [plans, setPlans] = useState([])
   const [requests, setRequests] = useState([])
-  const [billingOrg, setBillingOrg] = useState(null) // org being edited, or null
-  const [billingForm, setBillingForm] = useState(null)
-  const [billingSaving, setBillingSaving] = useState(false)
+  const [deleteOrg, setDeleteOrg] = useState(null) // org pending soft-delete confirmation
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  const [deleting, setDeleting] = useState(false)
+  const [showArchived, setShowArchived] = useState(false)
+  const [bundleRequests, setBundleRequests] = useState([])
+  const [bundleActionId, setBundleActionId] = useState(null)
+  const [stats, setStats] = useState(null)
+  const [planDist, setPlanDist] = useState([])
+  const [paymentProviders, setPaymentProviders] = useState([])
+  const [providerToggling, setProviderToggling] = useState(null)
+  const [recentOrders, setRecentOrders] = useState([])
+  const currentAppName = useAppName()
+  const refreshAppName = useRefreshAppName()
+  const [appNameInput, setAppNameInput] = useState('')
+  const [appNameSaving, setAppNameSaving] = useState(false)
+  const [appNameSaved, setAppNameSaved] = useState(false)
 
   useEffect(() => { load() }, [])
+  useEffect(() => { setAppNameInput(currentAppName) }, [currentAppName])
 
   async function load() {
     setLoading(true); setErr('')
     try {
-      const [o, p, r] = await Promise.all([listOrganizations(), listPlans(), listBillingRequests()])
-      setOrgs(o); setPlans(p); setRequests(r)
+      const [o, p, r, br] = await Promise.all([listOrganizations(), listPlans(), listBillingRequests(), superAdminListBundleRequests()])
+      setOrgs(o); setPlans(p); setRequests(r); setBundleRequests(br)
     }
     catch (e) { setErr(e.message) }
     finally { setLoading(false) }
-  }
-
-  function openBilling(org, prefillRequest) {
-    setBillingOrg(org)
-    setBillingForm({
-      planKey: prefillRequest?.requested_plan_key || org.plan_key,
-      billingStatus: org.billing_status,
-      trialEndsAt: org.trial_ends_at ? org.trial_ends_at.slice(0, 10) : '',
-      seatLimitOverride: '',
-      requestId: prefillRequest?.id || null,
-    })
-  }
-
-  async function handleSaveBilling(e) {
-    e.preventDefault(); setBillingSaving(true); setErr('')
+    // Isolated from the main load above — a stats-query failure (e.g.
+    // STEP127 not yet applied) shouldn't take down the org list.
     try {
-      await setOrgBilling(billingOrg.id, {
-        planKey: billingForm.planKey,
-        billingStatus: billingForm.billingStatus,
-        trialEndsAt: billingForm.trialEndsAt ? new Date(billingForm.trialEndsAt).toISOString() : null,
-        seatLimitOverride: billingForm.seatLimitOverride === '' ? null : Number(billingForm.seatLimitOverride),
-        requestId: billingForm.requestId,
-      })
-      setBillingOrg(null); setBillingForm(null); load()
+      const [s, pd] = await Promise.all([platformDashboardStats(), platformPlanDistribution()])
+      setStats(s); setPlanDist(pd)
+    } catch { setStats(null); setPlanDist([]) }
+    // Same isolation for payment data (STEP128/STEP129 may not be applied yet).
+    try {
+      const [pp, ro] = await Promise.all([listPaymentProviders(), listRecentPaymentOrders(25)])
+      setPaymentProviders(pp); setRecentOrders(ro)
+    } catch { setPaymentProviders([]); setRecentOrders([]) }
+  }
+
+  async function handleSaveAppName(e) {
+    e.preventDefault(); setAppNameSaving(true); setErr(''); setAppNameSaved(false)
+    try {
+      await updateAppName(appNameInput)
+      await refreshAppName() // updates BrandingContext, so every page reading useAppName() re-renders immediately
+      setAppNameSaved(true); setTimeout(() => setAppNameSaved(false), 2500)
     } catch (e) { setErr(e.message) }
-    finally { setBillingSaving(false) }
+    finally { setAppNameSaving(false) }
+  }
+
+  async function handleToggleProvider(p) {
+    setProviderToggling(p.key)
+    try { await setPaymentProviderActive(p.key, !p.is_active); await load() }
+    catch (e) { setErr(e.message) }
+    finally { setProviderToggling(null) }
+  }
+
+  async function handleApproveBundleRequest(r) {
+    setBundleActionId(r.id); setErr('')
+    try {
+      await superAdminSetOrgBundle(r.organization_id, r.bundle_key, r.action === 'activate', r.id)
+      load()
+    } catch (e) { setErr(e.message) }
+    finally { setBundleActionId(null) }
+  }
+
+  async function handleDismissBundleRequest(id) {
+    await superAdminDismissBundleRequest(id); load()
+  }
+
+  function openDelete(org) {
+    setDeleteOrg(org); setDeleteConfirmText(''); setErr('')
+  }
+
+  async function handleConfirmDelete() {
+    setDeleting(true); setErr('')
+    try {
+      await deleteOrganization(deleteOrg.id)
+      setDeleteOrg(null); setDeleteConfirmText('')
+      load()
+    } catch (e) { setErr(e.message) }
+    finally { setDeleting(false) }
+  }
+
+  async function handleRestore(org) {
+    await restoreOrganization(org.id)
+    load()
   }
 
   async function handleDismissRequest(id) {
@@ -97,11 +160,14 @@ export default function SuperAdminPage() {
 
   if (loading) return <Loader />
 
+  const liveOrgs = orgs.filter(o => !o.deleted_at)
+  const archivedOrgs = orgs.filter(o => o.deleted_at)
+
   return (
     <div>
       <div className="page-header">
         <div>
-          <div className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Landmark size={22} /> Super Admin — Organizations</div>
+          <div className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Landmark size={22} /> Organizations</div>
           <div className="page-subtitle">Platform-wide view across every organization on this instance</div>
         </div>
         <button className="btn btn-primary" onClick={() => { setForm({ name: '', slug: '' }); setErr(''); setShowCreate(true) }}>
@@ -109,15 +175,74 @@ export default function SuperAdminPage() {
         </button>
       </div>
 
+      <div className="card" style={{ padding: '14px 18px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+        <Tag size={16} style={{ color: 'var(--ink-muted)' }} />
+        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase' }}>App Name</div>
+        <form onSubmit={handleSaveAppName} style={{ display: 'flex', gap: 8, alignItems: 'center', flex: 1, minWidth: 260 }}>
+          <input className="form-input" style={{ flex: 1, maxWidth: 320 }} value={appNameInput} onChange={e => setAppNameInput(e.target.value)} placeholder={currentAppName} />
+          <button className="btn btn-primary btn-sm" disabled={appNameSaving || !appNameInput.trim() || appNameInput.trim() === currentAppName}>
+            <Save size={13} /> {appNameSaving ? 'Saving…' : 'Save'}
+          </button>
+          {appNameSaved && <span style={{ fontSize: 12, color: '#16a34a', fontWeight: 700 }}>Saved — live everywhere now</span>}
+        </form>
+        <span style={{ fontSize: 11, color: 'var(--ink-muted)' }}>Shown platform-wide: sidebar, landing page, auth page, public forms.</span>
+      </div>
+
+      {stats && (
+        <>
+          <div className="stats-grid" style={{ marginBottom: 12 }}>
+            <StatCard label="Organizations" value={stats.total_orgs} icon={<Landmark size={17} />} accent="#6366f1" />
+            <StatCard label="Active" value={stats.active_orgs} icon={<CheckCircle2 size={17} />} accent="#15803d" />
+            <StatCard label="Trial" value={stats.trial_orgs} icon={<Clock size={17} />} accent="#b45309" />
+            <StatCard label="Past Due" value={stats.past_due_orgs} icon={<XCircle size={17} />} accent="#dc2626" />
+            <StatCard label="Suspended" value={stats.suspended_orgs} icon={<Ban size={17} />} accent="#64748b" />
+          </div>
+          <div className="stats-grid" style={{ marginBottom: 20 }}>
+            <StatCard label="Total Users" value={stats.total_users} icon={<Users size={17} />} accent="#0ea5e9" />
+            <StatCard label="Active Users" value={stats.active_users} icon={<UserCog size={17} />} accent="#0ea5e9" />
+            <StatCard label="MRR" value={rupee(stats.mrr)} icon={<DollarSign size={17} />} accent="#6366f1" />
+            <StatCard label="ARR" value={rupee(stats.arr)} icon={<TrendingUp size={17} />} accent="#4338ca" />
+          </div>
+          {planDist.length > 0 && (
+            <div className="card" style={{ padding: '14px 18px', marginBottom: 20, display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'center' }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase' }}>Plan Distribution</div>
+              {planDist.map(p => (
+                <div key={p.plan_key} style={{ fontSize: 13 }}><strong>{p.org_count}</strong> <span style={{ color: 'var(--ink-muted)' }}>{p.plan_name}</span></div>
+              ))}
+            </div>
+          )}
+          <div style={{ fontSize: 11, color: 'var(--ink-muted)', marginBottom: 20, marginTop: -8 }}>
+            MRR/ARR reflect configured plan + module pricing, not confirmed-collected revenue from the gateways below.
+          </div>
+        </>
+      )}
+
+      {paymentProviders.length > 0 && (
+        <div className="card" style={{ padding: '14px 18px', marginBottom: 20, display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase' }}><Power size={13} style={{ verticalAlign: -2, marginRight: 4 }} />Payment Gateways</div>
+          {paymentProviders.map(p => (
+            <label key={p.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: providerToggling === p.key ? 'wait' : 'pointer' }}>
+              <input type="checkbox" checked={p.is_active} disabled={providerToggling === p.key} onChange={() => handleToggleProvider(p)} />
+              {PROVIDER_LABEL[p.key] || p.name}
+              <span style={{ fontSize: 11, color: p.is_active ? '#16a34a' : 'var(--ink-muted)' }}>{p.is_active ? 'enabled' : 'disabled'}</span>
+            </label>
+          ))}
+          <span style={{ fontSize: 11, color: 'var(--ink-muted)' }}>Disabling a gateway here blocks new charges platform-wide, immediately.</span>
+          <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={() => navigate('/super-admin/payment-setup')}>
+            <KeyRound size={13} /> Configure API Keys
+          </button>
+        </div>
+      )}
+
       {err && <Alert type="error" message={err} />}
 
-      {orgs.length === 0 ? <Empty message="No organizations yet" /> : (
+      {liveOrgs.length === 0 ? <Empty message="No organizations yet" /> : (
         <div className="table-wrap">
           <table>
             <thead><tr><th>Organization</th><th>Slug</th><th>Members</th><th>Plan</th><th>Billing</th><th>Created</th><th>Active</th><th></th></tr></thead>
             <tbody>
-              {orgs.map(o => (
-                <tr key={o.id}>
+              {liveOrgs.map(o => (
+                <tr key={o.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/super-admin/organizations/${o.id}`)}>
                   <td className="td-bold">{o.name}</td>
                   <td style={{ color: 'var(--ink-muted)' }}>/{o.slug}</td>
                   <td><Users size={13} style={{ verticalAlign: -2, marginRight: 4 }} />{o.member_count}{o.seat_limit != null ? ` / ${o.seat_limit}` : ''}</td>
@@ -130,10 +255,15 @@ export default function SuperAdminPage() {
                   <td>{o.is_active
                     ? <span style={{ color: '#16a34a', fontWeight: 700, fontSize: 12 }}>Active</span>
                     : <span style={{ color: '#ef4444', fontWeight: 700, fontSize: 12 }}>Suspended</span>}</td>
-                  <td style={{ display: 'flex', gap: 6 }}>
-                    <button className="btn btn-ghost btn-sm" onClick={() => openBilling(o)}><CreditCard size={13} /> Billing</button>
+                  <td style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} onClick={e => e.stopPropagation()}>
+                    <button className="btn btn-primary btn-sm" onClick={() => navigate(`/super-admin/organizations/${o.id}`)}>View <ChevronRight size={13} /></button>
                     <button className="btn btn-ghost btn-sm" onClick={() => toggleActive(o)}>
                       {o.is_active ? <><Ban size={13} /> Suspend</> : <><CheckCircle2 size={13} /> Reactivate</>}
+                    </button>
+                    <button className="btn btn-ghost btn-sm" style={{ color: o.is_active ? 'var(--ink-muted)' : '#ef4444' }}
+                      disabled={o.is_active} title={o.is_active ? 'Suspend the organization before deleting it' : 'Delete this organization'}
+                      onClick={() => openDelete(o)}>
+                      <Trash2 size={13} /> Delete
                     </button>
                   </td>
                 </tr>
@@ -157,7 +287,7 @@ export default function SuperAdminPage() {
                     <td style={{ color: 'var(--ink-muted)' }}>{r.note || '—'}</td>
                     <td><Clock size={13} style={{ verticalAlign: -2, marginRight: 4 }} />{dateFmt(r.created_at)}</td>
                     <td style={{ display: 'flex', gap: 6 }}>
-                      <button className="btn btn-primary btn-sm" onClick={() => openBilling(orgs.find(o => o.id === r.organization_id), r)}>Review</button>
+                      <button className="btn btn-primary btn-sm" onClick={() => navigate(`/super-admin/organizations/${r.organization_id}?tab=billing`)}><CreditCard size={13} /> Review</button>
                       <button className="btn btn-ghost btn-sm" onClick={() => handleDismissRequest(r.id)}><XCircle size={13} /> Dismiss</button>
                     </td>
                   </tr>
@@ -168,35 +298,98 @@ export default function SuperAdminPage() {
         )}
       </div>
 
-      {billingOrg && billingForm && (
-        <Modal open title={`Billing — ${billingOrg.name}`} onClose={() => { setBillingOrg(null); setBillingForm(null) }}
+      <div style={{ marginTop: 32 }}>
+        <div className="page-subtitle" style={{ marginBottom: 10, fontWeight: 800, fontSize: '0.95rem', color: 'var(--ink)' }}>Pending Module Add-on Requests</div>
+        {bundleRequests.filter(r => r.status === 'pending').length === 0 ? <Empty message="No pending requests" /> : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Organization</th><th>Module</th><th>Action</th><th>Note</th><th>Requested</th><th></th></tr></thead>
+              <tbody>
+                {bundleRequests.filter(r => r.status === 'pending').map(r => (
+                  <tr key={r.id}>
+                    <td className="td-bold">{r.org_name}</td>
+                    <td>{r.bundle_name}</td>
+                    <td style={{ textTransform: 'capitalize' }}>{r.action}</td>
+                    <td style={{ color: 'var(--ink-muted)' }}>{r.note || '—'}</td>
+                    <td><Clock size={13} style={{ verticalAlign: -2, marginRight: 4 }} />{dateFmt(r.created_at)}</td>
+                    <td style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn btn-primary btn-sm" disabled={bundleActionId === r.id} onClick={() => handleApproveBundleRequest(r)}>
+                        {bundleActionId === r.id ? 'Applying…' : `Approve ${r.action === 'activate' ? 'Activation' : 'Deactivation'}`}
+                      </button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => handleDismissBundleRequest(r.id)}><XCircle size={13} /> Dismiss</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 32 }}>
+        <div className="page-subtitle" style={{ marginBottom: 10, fontWeight: 800, fontSize: '0.95rem', color: 'var(--ink)' }}>Recent Transactions (all organizations)</div>
+        {recentOrders.length === 0 ? <Empty message="No payment orders yet" /> : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Organization</th><th>Provider</th><th>Amount</th><th>Status</th><th>Created</th><th>Paid</th></tr></thead>
+              <tbody>
+                {recentOrders.map(t => (
+                  <tr key={t.id}>
+                    <td className="td-bold">{t.org?.name || '—'}</td>
+                    <td>{PROVIDER_LABEL[t.provider] || t.provider}</td>
+                    <td>{rupee(t.amount)}</td>
+                    <td><span style={{ color: ORDER_STATUS_COLOR[t.status] || 'var(--ink-muted)', fontWeight: 700, fontSize: 12, textTransform: 'capitalize' }}>{t.status}</span></td>
+                    <td style={{ fontSize: 12, color: 'var(--ink-muted)' }}>{dateFmt(t.created_at)}</td>
+                    <td style={{ fontSize: 12, color: 'var(--ink-muted)' }}>{t.paid_at ? dateFmt(t.paid_at) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 32 }}>
+        <button className="btn btn-ghost btn-sm" onClick={() => setShowArchived(s => !s)} style={{ marginBottom: 10 }}>
+          <Archive size={13} /> {showArchived ? 'Hide' : 'Show'} Archived Organizations {archivedOrgs.length > 0 && `(${archivedOrgs.length})`}
+        </button>
+        {showArchived && (
+          archivedOrgs.length === 0 ? <Empty message="No archived organizations" /> : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Organization</th><th>Slug</th><th>Deleted</th><th></th></tr></thead>
+                <tbody>
+                  {archivedOrgs.map(o => (
+                    <tr key={o.id}>
+                      <td className="td-bold">{o.name}</td>
+                      <td style={{ color: 'var(--ink-muted)' }}>/{o.slug}</td>
+                      <td>{dateFmt(o.deleted_at)}</td>
+                      <td><button className="btn btn-ghost btn-sm" onClick={() => handleRestore(o)}><RotateCcw size={13} /> Restore</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        )}
+      </div>
+
+      {deleteOrg && (
+        <Modal open title={`Delete ${deleteOrg.name}`} onClose={() => setDeleteOrg(null)}
           footer={<>
-            <button className="btn btn-ghost" onClick={() => { setBillingOrg(null); setBillingForm(null) }}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleSaveBilling} disabled={billingSaving}>{billingSaving ? 'Saving…' : 'Save'}</button>
+            <button className="btn btn-ghost" onClick={() => setDeleteOrg(null)}>Cancel</button>
+            <button className="btn btn-primary" style={{ background: '#ef4444', borderColor: '#ef4444' }}
+              disabled={deleting || deleteConfirmText !== deleteOrg.slug} onClick={handleConfirmDelete}>
+              {deleting ? 'Deleting…' : 'Delete Organization'}
+            </button>
           </>}>
-          <form onSubmit={handleSaveBilling}>
-            {err && <Alert type="error" message={err} />}
-            <div style={{ marginBottom: 12 }}>
-              <label className="form-label">Plan</label>
-              <select className="form-input" value={billingForm.planKey} onChange={e => setBillingForm(f => ({ ...f, planKey: e.target.value }))}>
-                {plans.map(p => <option key={p.key} value={p.key}>{p.name}{p.seat_limit ? ` (${p.seat_limit} seats)` : ' (unlimited)'}</option>)}
-              </select>
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              <label className="form-label">Status</label>
-              <select className="form-input" value={billingForm.billingStatus} onChange={e => setBillingForm(f => ({ ...f, billingStatus: e.target.value }))}>
-                {Object.keys(STATUS_LABEL).map(s => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
-              </select>
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              <label className="form-label">Trial Ends (leave blank if not on trial)</label>
-              <input className="form-input" type="date" value={billingForm.trialEndsAt} onChange={e => setBillingForm(f => ({ ...f, trialEndsAt: e.target.value }))} />
-            </div>
-            <div>
-              <label className="form-label">Seat Limit Override (blank = use plan default)</label>
-              <input className="form-input" type="number" min={1} value={billingForm.seatLimitOverride} onChange={e => setBillingForm(f => ({ ...f, seatLimitOverride: e.target.value }))} placeholder={billingOrg.seat_limit != null ? String(billingOrg.seat_limit) : '∞'} />
-            </div>
-          </form>
+          {err && <Alert type="error" message={err} />}
+          <p style={{ marginBottom: 12, fontSize: '0.88rem' }}>
+            This removes <strong>{deleteOrg.name}</strong> from every organization listing and blocks its members from
+            signing in. Its data is kept (soft delete) and this can be undone from "Archived Organizations" later.
+          </p>
+          <label className="form-label">Type <strong>{deleteOrg.slug}</strong> to confirm</label>
+          <input className="form-input" value={deleteConfirmText} onChange={e => setDeleteConfirmText(e.target.value)} placeholder={deleteOrg.slug} autoFocus />
         </Modal>
       )}
 

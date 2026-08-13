@@ -1,7 +1,18 @@
 import { useState, useRef } from 'react'
-import { supabase, rupee, dateFmt } from '../../lib/supabase'
+import { supabase, rupee, dateFmt, adminCreateUser } from '../../lib/supabase'
 import { useAuth } from '../../context/AuthContext'
-import { Upload, Download, X, CheckCircle, AlertTriangle, FileSpreadsheet } from 'lucide-react'
+import { Upload, Download, X, CheckCircle, AlertTriangle, FileSpreadsheet, KeyRound } from 'lucide-react'
+
+// Same 14-char generator UsersPage.jsx uses for the single "Add User"
+// flow — duplicated rather than imported since it's a five-line pure
+// function and importing it would mean exporting a page-local helper
+// out of a page component for a one-off reuse.
+function genTempPassword() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$'
+  let out = ''
+  for (let i = 0; i < 14; i++) out += chars[Math.floor(Math.random() * chars.length)]
+  return out
+}
 
 const TASK_TYPE_OPTIONS = ['task','bug','change_request','feature','improvement']
 const PRIORITY_OPTIONS  = ['critical','high','medium','low']
@@ -83,6 +94,19 @@ export const TEMPLATES = {
     ],
     notes: 'email must match an existing user\'s account — this updates existing profiles, it does not create new logins. Blank cells leave that field unchanged. department_name/reporting_manager_email must match an existing department/employee (case-insensitive) — leave blank to skip. employment_type: FTE/Contractor/Intern.',
   },
+  new_employees: {
+    label: 'New Employees (creates logins)',
+    table: null, // special-cased in doImport — creates a real auth account per row, not a table insert
+    formatCurrency: false,
+    columns: ['full_name','email','role','designation','department_name','reporting_manager_email','employment_type','phone','date_joined'],
+    required: ['full_name','email'],
+    types: {},
+    sample: [
+      ['Priya Sharma','priya.sharma@thingsalive.in','employee','Software Engineer','Engineering','rahul.verma@thingsalive.in','FTE','+91 9876543210','2026-01-15'],
+      ['Arjun Rao','arjun.rao@thingsalive.in','manager','Engineering Manager','Engineering','','FTE','+91 9876500000','2025-06-01'],
+    ],
+    notes: 'Creates a brand-new login for every row — this app has no admin bulk-create API (no service-role key), so each account is created one at a time via the same sign-up path as "Add User", with a random temp password. A results file with every temp password is offered for download at the end — that is the only place those passwords are shown. email must NOT already have an account. department_name/reporting_manager_email must match an existing department/employee (case-insensitive) — leave blank to skip. role defaults to "employee" if left blank.',
+  },
   employee_skills: {
     label: 'Employee Skills',
     table: 'employee_skills',
@@ -162,6 +186,20 @@ async function parseXLSX(file) {
     }
     reader.readAsArrayBuffer(file)
   })
+}
+
+/* ── Download the temp-password results after a new_employees import —
+ * the only place these passwords are ever shown, so this is the admin's
+ * one chance to capture them before distributing to each new hire. ── */
+function downloadCredentials(credentials) {
+  const header = 'full_name,email,temp_password,status'
+  const rows = credentials.map(c => [c.full_name, c.email, c.password, c.status].map(v => `"${v}"`).join(','))
+  const csv = [header, ...rows].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = 'new-employee-credentials.csv'
+  a.click()
 }
 
 /* ── Download template CSV ── */
@@ -353,6 +391,32 @@ export default function ExcelImport({ type, projectId, lookups, onSuccess, onClo
         }
       }
 
+      if (type === 'new_employees') {
+        const existing = (lookups?.users || []).find(u => u.email?.toLowerCase().trim() === obj.email.toLowerCase().trim())
+        if (existing) { warns.push(`Row ${rowNum}: "${obj.email}" already has an account — row skipped`); hasError = true }
+
+        if (!obj.role) obj.role = 'employee'
+
+        obj.department_id = null
+        if (obj.department_name) {
+          const d = (lookups?.departments || []).find(d => d.name?.toLowerCase().trim() === obj.department_name.toLowerCase().trim())
+          if (d) obj.department_id = d.id
+          else warns.push(`Row ${rowNum}: department "${obj.department_name}" not found — left blank`)
+        }
+
+        obj.reporting_manager_id = null
+        if (obj.reporting_manager_email) {
+          const m = (lookups?.users || []).find(u => u.email?.toLowerCase().trim() === obj.reporting_manager_email.toLowerCase().trim())
+          if (m) obj.reporting_manager_id = m.id
+          else warns.push(`Row ${rowNum}: manager "${obj.reporting_manager_email}" not found — left blank`)
+        }
+
+        if (obj.employment_type && !EMPLOYMENT_TYPE_OPTIONS.includes(obj.employment_type)) {
+          warns.push(`Row ${rowNum}: employment_type "${obj.employment_type}" not recognised — left blank`)
+          obj.employment_type = ''
+        }
+      }
+
       if (type === 'employee_skills') {
         obj.employee_id = null
         if (obj.employee_email) {
@@ -440,6 +504,40 @@ export default function ExcelImport({ type, projectId, lookups, onSuccess, onClo
         setResult({ success: rows.length, total: rows.length })
         setStep('result')
         if (onSuccess) onSuccess(rows.length)
+        return
+      }
+
+      // New employees: one supabase.auth.signUp() per row, sequential —
+      // not Promise.all, so one row's auth error can't be misattributed
+      // to another and so a duplicate-email or rate-limit error on row 3
+      // still lets rows 4+ complete instead of aborting the whole batch.
+      if (type === 'new_employees') {
+        const credentials = []
+        for (const r of rows) {
+          const tempPassword = genTempPassword()
+          try {
+            const { user } = await adminCreateUser(r.email, tempPassword, { full_name: r.full_name, role: r.role })
+            if (!user?.id) throw new Error('Account creation did not return a user')
+            const payload = {}
+            if (r.designation) payload.designation = r.designation
+            if (r.department_id) payload.department_id = r.department_id
+            if (r.reporting_manager_id) payload.reporting_manager_id = r.reporting_manager_id
+            if (r.employment_type) payload.employment_type = r.employment_type
+            if (r.phone) payload.phone = r.phone
+            if (r.date_joined) payload.date_joined = r.date_joined
+            if (Object.keys(payload).length > 0) {
+              const { error: updErr } = await supabase.from('profiles').update(payload).eq('id', user.id)
+              if (updErr) throw updErr
+            }
+            credentials.push({ full_name: r.full_name, email: r.email, password: tempPassword, status: 'created' })
+          } catch (e) {
+            credentials.push({ full_name: r.full_name, email: r.email, password: '', status: `failed: ${e.message}` })
+          }
+        }
+        const successCount = credentials.filter(c => c.status === 'created').length
+        setResult({ success: successCount, total: rows.length, credentials })
+        setStep('result')
+        if (onSuccess) onSuccess(successCount)
         return
       }
 
@@ -667,15 +765,46 @@ export default function ExcelImport({ type, projectId, lookups, onSuccess, onClo
 
       {/* ── STEP 3: RESULT ── */}
       {step==='result' && result && (
-        <div style={{ textAlign:'center', padding:'20px 0' }}>
-          <div style={{ width:64, height:64, borderRadius:'50%', background:'rgba(16,185,129,.12)', border:'2px solid rgba(16,185,129,.3)', display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 16px' }}>
-            <CheckCircle size={32} style={{ color:'var(--emerald)' }}/>
+        <div style={{ textAlign: result.credentials ? 'left' : 'center', padding: result.credentials ? '4px 0' : '20px 0' }}>
+          {!result.credentials && (
+            <div style={{ width:64, height:64, borderRadius:'50%', background:'rgba(16,185,129,.12)', border:'2px solid rgba(16,185,129,.3)', display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 16px' }}>
+              <CheckCircle size={32} style={{ color:'var(--emerald)' }}/>
+            </div>
+          )}
+          <div style={{ fontFamily:'var(--font-head)', fontWeight:800, fontSize: result.credentials ? 18 : 22, marginBottom:8, textAlign: result.credentials ? 'left' : 'center' }}>
+            {result.credentials ? 'Accounts created' : 'Import complete!'}
           </div>
-          <div style={{ fontFamily:'var(--font-head)', fontWeight:800, fontSize:22, marginBottom:8 }}>Import complete!</div>
           <div style={{ fontSize:14, color:'var(--text-muted)', marginBottom:20 }}>
-            Successfully imported <strong style={{ color:'var(--emerald)' }}>{result.success}</strong> of {result.total} rows into {tmpl.label}
+            Successfully {result.credentials ? 'created' : 'imported'} <strong style={{ color:'var(--emerald)' }}>{result.success}</strong> of {result.total} {result.credentials ? 'accounts' : 'rows'}{!result.credentials && ` into ${tmpl.label}`}
           </div>
-          <div style={{ display:'flex', gap:10, justifyContent:'center' }}>
+
+          {result.credentials && (
+            <>
+              <div style={{ padding:'10px 14px', borderRadius:8, background:'rgba(245,158,11,.08)', border:'1px solid rgba(245,158,11,.25)', fontSize:12, color:'var(--amber)', display:'flex', alignItems:'center', gap:8, marginBottom:14 }}>
+                <KeyRound size={14} style={{ flexShrink:0 }} /> These temporary passwords are shown once and not stored anywhere retrievable — download them now and share each one securely with that employee.
+              </div>
+              <div className="table-wrap" style={{ marginBottom:16, maxHeight:280, overflowY:'auto' }}>
+                <table>
+                  <thead><tr><th>Name</th><th>Email</th><th>Temp Password</th><th>Status</th></tr></thead>
+                  <tbody>
+                    {result.credentials.map((c,i) => (
+                      <tr key={i}>
+                        <td>{c.full_name}</td>
+                        <td style={{ color:'var(--ink-muted)' }}>{c.email}</td>
+                        <td style={{ fontFamily:'monospace', fontSize:12 }}>{c.password || '—'}</td>
+                        <td style={{ color: c.status === 'created' ? '#15803d' : '#dc2626', fontSize:12 }}>{c.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:16 }}>
+                <button className="btn btn-outline btn-sm" onClick={() => downloadCredentials(result.credentials)}><Download size={13}/> Download Credentials CSV</button>
+              </div>
+            </>
+          )}
+
+          <div style={{ display:'flex', gap:10, justifyContent: result.credentials ? 'flex-start' : 'center' }}>
             <button onClick={reset} style={{ padding:'9px 20px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surface-2)', cursor:'pointer', fontSize:13, fontFamily:'inherit', color:'var(--text-soft)' }}>
               Import more
             </button>

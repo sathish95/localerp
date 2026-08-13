@@ -80,6 +80,7 @@ export default function UsersPage() {
   const [err,      setErr]      = useState('')
   const [rolesErr, setRolesErr] = useState('')
   const [showImport, setShowImport] = useState(false)
+  const [showBulkCreate, setShowBulkCreate] = useState(false)
   const [createdUser, setCreatedUser] = useState(null)
 
   useEffect(() => { load() }, [])
@@ -377,8 +378,11 @@ export default function UsersPage() {
         </div>
         {canEdit && (
           <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-outline" onClick={()=>setShowBulkCreate(true)}>
+              <Upload size={14}/> Bulk Add New Employees
+            </button>
             <button className="btn btn-outline" onClick={()=>setShowImport(true)}>
-              <Upload size={14}/> Import Employees
+              <Upload size={14}/> Update Existing (Import)
             </button>
             <button className="btn btn-primary" onClick={()=>{setEditing(null);setForm(initForm());setErr('');setCreatedUser(null);setShowM(true)}}>
               <Plus size={15}/> Add User
@@ -475,7 +479,12 @@ export default function UsersPage() {
       </Modal>
       <Confirm open={!!delUser} message="Delete this user?" danger onConfirm={()=>deleteUser(delUser)} onCancel={()=>setDelUser(null)} />
 
-      <Modal open={showImport} onClose={()=>setShowImport(false)} title="Import Employees" size="xl">
+      <Modal open={showBulkCreate} onClose={()=>setShowBulkCreate(false)} title="Bulk Add New Employees" size="xl">
+        <ExcelImport type="new_employees" lookups={{ users, departments: depts }}
+          onSuccess={()=>{load()}} onClose={()=>setShowBulkCreate(false)}/>
+      </Modal>
+
+      <Modal open={showImport} onClose={()=>setShowImport(false)} title="Update Existing Employees" size="xl">
         <ExcelImport type="employees" lookups={{ users, departments: depts }}
           onSuccess={()=>{load()}} onClose={()=>setShowImport(false)}/>
       </Modal>

@@ -1,11 +1,14 @@
 import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase, rupee, dateFmt } from '../lib/supabase'
 import { Modal, StatusBadge, SearchBox, Loader, Empty } from '../components/ui'
 import { useProjects, ProjectSelect } from '../lib/useProjects.jsx'
 import { runMatchAndSave, applyOverride, getMatchTolerance } from '../lib/threeWayMatch'
 import { recordPayment, getPaymentsFor } from '../lib/payments'
-import { Plus, Edit2, FileText, Eye, DollarSign, Upload, ExternalLink, Paperclip, ShieldCheck, AlertTriangle } from 'lucide-react'
+import AIDockedPanel from '../components/AIDockedPanel'
+import { VendorInvoiceAiTab } from '../components/AIActionTabs'
+import { Plus, Edit2, FileText, Eye, DollarSign, Upload, ExternalLink, Paperclip, ShieldCheck, AlertTriangle, Sparkles } from 'lucide-react'
 
 const STATUSES = ['uploaded', 'processing', 'verified', 'matched', 'rejected', 'paid']
 // 'matched' stays in STATUSES only for backward-compatible display of old rows —
@@ -30,6 +33,7 @@ const initForm = () => ({
 
 export default function InvoicesPage() {
   const { profile } = useAuth()
+  const [searchParams] = useSearchParams()
   const [invoices, setInvoices] = useState([])
   const [vendors, setVendors] = useState([])
   const [loading, setLoading] = useState(true)
@@ -49,6 +53,8 @@ export default function InvoicesPage() {
   const [payments, setPayments] = useState([])
   const [paymentForm, setPaymentForm] = useState({ amount: '', payment_date: new Date().toISOString().slice(0, 10), payment_method: 'bank_transfer', reference_number: '' })
   const [recording, setRecording] = useState(false)
+
+  const [showAiPanel, setShowAiPanel] = useState(searchParams.get('ai') === '1')
 
   const role = profile?.role || 'employee'
   const canEdit = ['admin', 'ceo', 'finance'].includes(role)
@@ -197,7 +203,10 @@ export default function InvoicesPage() {
           <div className="page-title">Invoice Management</div>
           <div className="page-subtitle">Track and process vendor invoices</div>
         </div>
-        {canEdit && <button className="btn btn-primary" onClick={() => { setEditing(null); setForm(initForm()); setErr(''); setShowModal(true) }}><Plus size={15} /> Add Invoice</button>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          {canEdit && <button className="btn btn-outline" onClick={() => setShowAiPanel(true)} style={{ background: 'linear-gradient(135deg,#8b5cf611,#22d3ee11)', borderColor: '#8b5cf644' }}><Sparkles size={15} /> Generate with AI</button>}
+          {canEdit && <button className="btn btn-primary" onClick={() => { setEditing(null); setForm(initForm()); setErr(''); setShowModal(true) }}><Plus size={15} /> Add Invoice</button>}
+        </div>
       </div>
 
       <div className="stats-grid" style={{ marginBottom: 20 }}>
@@ -285,7 +294,10 @@ export default function InvoicesPage() {
         )}
       </div>
 
-      {/* Create/Edit Modal */}
+      <AIDockedPanel open={showAiPanel} onClose={() => setShowAiPanel(false)} title="Vendor Invoice AI" subtitle="Draft a vendor invoice">
+        <VendorInvoiceAiTab profile={profile} onSaved={load} />
+      </AIDockedPanel>
+
       <Modal open={showModal} onClose={() => setShowModal(false)} title={editing ? 'Edit Invoice' : 'Add Invoice'} size="lg"
         footer={<>
           <button className="btn btn-ghost" onClick={() => setShowModal(false)}>Cancel</button>

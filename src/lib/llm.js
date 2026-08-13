@@ -309,7 +309,7 @@ async function readLines(res, onLine) {
   if (buf) onLine(buf)
 }
 
-async function callDeepSeekChat(systemPrompt, userPrompt, modelDef, onToken) {
+async function callDeepSeekChat(systemPrompt, userPrompt, modelDef, onToken, maxTokens = 700) {
   const apiKey = await resolveApiKey('VITE_DEEPSEEK_API_KEY', 'deepseek_api_key')
   if (!apiKey || apiKey === 'your-deepseek-api-key-here') throw new Error('DeepSeek API key not set — add it in Settings → AI / LLM Keys, or VITE_DEEPSEEK_API_KEY in .env')
 
@@ -322,7 +322,7 @@ async function callDeepSeekChat(systemPrompt, userPrompt, modelDef, onToken) {
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
-      max_tokens: 700,
+      max_tokens: maxTokens,
       temperature: 0.2,
       ...(onToken ? { stream: true, stream_options: { include_usage: true } } : {}),
     }),
@@ -357,7 +357,7 @@ async function callDeepSeekChat(systemPrompt, userPrompt, modelDef, onToken) {
   return { text: fullText, usage }
 }
 
-async function callGeminiChat(systemPrompt, userPrompt, modelDef, onToken) {
+async function callGeminiChat(systemPrompt, userPrompt, modelDef, onToken, maxTokens = 700) {
   const apiKey = await resolveApiKey('VITE_GEMINI_API_KEY', 'gemini_api_key')
   if (!apiKey || apiKey === 'your-gemini-api-key-here') throw new Error('Gemini API key not set — add it in Settings → AI / LLM Keys, or VITE_GEMINI_API_KEY in .env')
 
@@ -370,7 +370,7 @@ async function callGeminiChat(systemPrompt, userPrompt, modelDef, onToken) {
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
-      max_tokens: 700,
+      max_tokens: maxTokens,
       temperature: 0.2,
       ...(onToken ? { stream: true, stream_options: { include_usage: true } } : {}),
     }),
@@ -405,7 +405,7 @@ async function callGeminiChat(systemPrompt, userPrompt, modelDef, onToken) {
   return { text: fullText, usage }
 }
 
-async function callOllamaChat(systemPrompt, userPrompt, model, onToken) {
+async function callOllamaChat(systemPrompt, userPrompt, model, onToken, maxTokens = 700) {
   const baseUrl = await resolveOllamaUrl()
 
   let res
@@ -423,7 +423,7 @@ async function callOllamaChat(systemPrompt, userPrompt, model, onToken) {
         // Same num_ctx fix as callOllama above — without it Ollama's 2048-token
         // default silently truncates the data snapshot before the model ever
         // sees most of it, which is why local models were "missing data".
-        options: { temperature: 0.2, num_predict: 700, num_ctx: 8192 },
+        options: { temperature: 0.2, num_predict: maxTokens, num_ctx: 8192 },
       }),
     })
   } catch {
@@ -469,7 +469,7 @@ async function callOllamaChat(systemPrompt, userPrompt, model, onToken) {
 // anthropic-dangerous-direct-browser-access is required to call this API from
 // browser JS at all — without it the request is blocked before CORS headers
 // are even considered, since the API isn't intended to be called client-side.
-async function callClaudeChat(systemPrompt, userPrompt, modelDef, onToken) {
+async function callClaudeChat(systemPrompt, userPrompt, modelDef, onToken, maxTokens = 1024) {
   const apiKey = await resolveApiKey('VITE_CLAUDE_API_KEY', 'claude_api_key')
   if (!apiKey || apiKey === 'your-claude-api-key-here') throw new Error('Claude API key not set — add it in Settings → AI / LLM Keys, or VITE_CLAUDE_API_KEY in .env')
 
@@ -483,7 +483,7 @@ async function callClaudeChat(systemPrompt, userPrompt, modelDef, onToken) {
     },
     body: JSON.stringify({
       model: modelDef.model,
-      max_tokens: 1024,
+      max_tokens: maxTokens,
       system: systemPrompt,
       output_config: { effort: 'low' },
       messages: [{ role: 'user', content: userPrompt }],
@@ -566,6 +566,41 @@ export async function askDataAssistant(question, dataIndex, modelId = 'deepseek-
     return result.text.trim()
   } catch (err) {
     await logLLMUsage({ userId, source: 'data_assistant', provider, model: actualModel, question, latencyMs: Date.now() - start, success: false, errorMessage: err?.message })
+    throw err
+  }
+}
+
+// ── Generic structured-JSON generation — the shared engine behind BOM AI,
+// Product AI, and prompt-based task actions. Unlike analyzeRequirements()
+// (hardcoded Neo Task AI SYSTEM_PROMPT, forced json_object response mode),
+// this takes an arbitrary system prompt and relies on parseJSON()'s
+// 3-strategy fallback instead of provider-level JSON mode, since
+// callClaudeChat (Claude has no OpenAI-style response_format option) needs
+// to go through the same path as the others. Always non-streaming — every
+// caller needs the complete object before it can render anything, not a
+// token stream. ──
+export async function generateStructured(systemPrompt, userPrompt, modelId = 'deepseek-v3', ollamaModel = '', userId = null, source = 'ai_generate', maxTokens = 2000) {
+  const modelDef = getModel(modelId)
+  const provider = PROVIDER_BY_MODEL_ID[modelDef.id] || modelDef.id
+  const actualModel = modelDef.id === 'ollama-local' ? (ollamaModel || modelDef.model) : modelDef.model
+  const start = Date.now()
+
+  try {
+    let result
+    if (modelDef.id === 'ollama-local') {
+      result = await callOllamaChat(systemPrompt, userPrompt, ollamaModel || modelDef.model, null, maxTokens)
+    } else if (modelDef.id === 'gemini-2.5-pro') {
+      result = await callGeminiChat(systemPrompt, userPrompt, modelDef, null, maxTokens)
+    } else if (modelDef.id === 'claude-opus-5') {
+      result = await callClaudeChat(systemPrompt, userPrompt, modelDef, null, maxTokens)
+    } else {
+      result = await callDeepSeekChat(systemPrompt, userPrompt, modelDef, null, maxTokens)
+    }
+    await logLLMUsage({ userId, source, provider, model: actualModel, question: userPrompt.slice(0, 200), usage: result.usage, latencyMs: Date.now() - start, success: true })
+    if (!result.text) throw new Error('AI returned an empty response')
+    return parseJSON(result.text)
+  } catch (err) {
+    await logLLMUsage({ userId, source, provider, model: actualModel, question: userPrompt.slice(0, 200), latencyMs: Date.now() - start, success: false, errorMessage: err?.message })
     throw err
   }
 }

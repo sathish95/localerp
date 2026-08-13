@@ -48,6 +48,7 @@ const STATUS_MAP = {
   closed:         { label: 'Closed',        bg: '#f1f5f9', color: '#475569' },
   cancelled:      { label: 'Cancelled',     bg: '#f1f5f9', color: '#475569' },
   active:         { label: 'Active',        bg: '#dcfce7', color: '#15803d' },
+  evaluation:     { label: 'Evaluation',     bg: '#fef3c7', color: '#b45309' },
   inactive:       { label: 'Inactive',      bg: '#fee2e2', color: '#dc2626' },
   blacklisted:    { label: 'Blacklisted',   bg: '#fee2e2', color: '#7f1d1d' },
   uploaded:       { label: 'Uploaded',      bg: '#ede9fe', color: '#6d28d9' },
@@ -65,6 +66,15 @@ const STATUS_MAP = {
   delivered:      { label: 'Delivered',     bg: '#dcfce7', color: '#15803d' },
   requested:      { label: 'Requested',     bg: '#fef3c7', color: '#b45309' },
   completed:      { label: 'Completed',     bg: '#dbeafe', color: '#1d4ed8' },
+  simulated:        { label: 'Simulated',        bg: '#dbeafe', color: '#1d4ed8' },
+  under_review:     { label: 'Under Review',     bg: '#fef3c7', color: '#b45309' },
+  changes_requested:{ label: 'Changes Requested',bg: '#fce7f3', color: '#be185d' },
+  executed:         { label: 'Executed',         bg: '#dcfce7', color: '#15803d' },
+  superseded:       { label: 'Superseded',       bg: '#f1f5f9', color: '#475569' },
+  open:               { label: 'Open',              bg: '#fef3c7', color: '#b45309' },
+  in_progress:        { label: 'In Progress',       bg: '#dbeafe', color: '#1d4ed8' },
+  waiting_on_customer:{ label: 'Waiting on You',    bg: '#fce7f3', color: '#be185d' },
+  resolved:           { label: 'Resolved',          bg: '#dcfce7', color: '#15803d' },
 }
 
 export function StatusBadge({ status }) {
@@ -169,6 +179,52 @@ export function Progress({ value, max, color = 'var(--c1)' }) {
         <div className="progress-fill" style={{ width:`${pct}%`, background:color }} />
       </div>
       <div style={{ display:'flex', justifyContent:'flex-end', fontSize:11, color:'var(--ink-muted)', marginTop:2 }}>{pct}%</div>
+    </div>
+  )
+}
+
+// ── Stepper (wizard progress) ──
+// allowJumpAhead: false (default) matches the award wizard's needs —
+// later steps depend on earlier ones actually being saved, so clicking
+// ahead isn't safe. Pass true for a wizard like onboarding where every
+// step is independently optional and skippable in any order.
+//
+// doneSteps: optional boolean[] (same length as `steps`) giving each
+// step's REAL completion state. Without allowJumpAhead, "steps before
+// the active one are done" is a safe assumption (that's how you got
+// here) — but once a wizard allows skipping ahead, a skipped earlier
+// step must not render a checkmark it hasn't earned. Omit it and the
+// index-based fallback below is unchanged from before this prop existed.
+export function Stepper({ steps = [], activeIndex = 0, onStepClick, allowJumpAhead = false, doneSteps }) {
+  return (
+    <div style={{ display:'flex', alignItems:'flex-start', marginBottom:28, overflowX:'auto' }}>
+      {steps.map((label, i) => {
+        const isDone = doneSteps ? !!doneSteps[i] : i < activeIndex
+        const isActive = i === activeIndex
+        const clickable = typeof onStepClick === 'function' && (allowJumpAhead || i <= activeIndex)
+        return (
+          <div key={label} style={{ display:'flex', alignItems:'flex-start', flex: i === steps.length - 1 ? '0 0 auto' : '1 1 auto' }}>
+            <div style={{ display:'flex', flexDirection:'column', alignItems:'center', minWidth:88, cursor: clickable ? 'pointer' : 'default' }}
+              onClick={() => clickable && onStepClick(i)}>
+              <div style={{
+                width:30, height:30, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center',
+                fontSize:13, fontWeight:700, flexShrink:0,
+                background: isDone ? 'var(--c1)' : isActive ? 'var(--c1)' : 'var(--surface)',
+                color: isDone || isActive ? '#fff' : 'var(--ink-muted)',
+                border: isActive ? '2px solid var(--c1)' : '1px solid var(--border)',
+              }}>
+                {isDone ? '✓' : i + 1}
+              </div>
+              <div style={{ fontSize:11.5, fontWeight: isActive ? 700 : 500, color: isActive ? 'var(--c1)' : 'var(--ink-muted)', textAlign:'center', marginTop:6, maxWidth:100 }}>
+                {label}
+              </div>
+            </div>
+            {i < steps.length - 1 && (
+              <div style={{ height:2, flex:1, background: isDone ? 'var(--c1)' : 'var(--border)', marginTop:15, minWidth:24 }} />
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

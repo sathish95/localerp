@@ -4,8 +4,11 @@ import { useAuth } from '../context/AuthContext'
 import { supabase, rupee, dateFmt, nextNum } from '../lib/supabase'
 import { useProjects, ProjectSelect } from '../lib/useProjects.jsx'
 import { recordPayment, getPaymentsFor } from '../lib/payments'
+import { exportCustomerInvoicePDF } from '../lib/customerInvoiceExport'
 import { Modal, StatusBadge, SearchBox, Loader, Empty } from '../components/ui'
-import { Plus, Edit2, FileCheck, Eye, DollarSign } from 'lucide-react'
+import AIDockedPanel from '../components/AIDockedPanel'
+import { CustomerInvoiceAiTab } from '../components/AIActionTabs'
+import { Plus, Edit2, FileCheck, Eye, DollarSign, Sparkles, Download } from 'lucide-react'
 
 const STATUSES = ['draft', 'sent', 'partially_paid', 'paid', 'cancelled']
 const statusColors = { draft: '#94a3b8', sent: '#6366f1', partially_paid: '#f59e0b', paid: '#10b981', cancelled: '#ef4444' }
@@ -34,6 +37,10 @@ export default function CustomerInvoicesPage() {
   const [payments, setPayments] = useState([])
   const [paymentForm, setPaymentForm] = useState(initPayment())
   const [recording, setRecording] = useState(false)
+  const [exportingId, setExportingId] = useState(null)
+  const [exportPreview, setExportPreview] = useState(null)
+
+  const [showAiPanel, setShowAiPanel] = useState(searchParams.get('ai') === '1')
 
   const role = profile?.role || 'employee'
   const canEdit = ['admin', 'ceo', 'finance'].includes(role)
@@ -124,6 +131,39 @@ export default function CustomerInvoicesPage() {
     setPayments(await getPaymentsFor('customer', inv.id))
   }
 
+  // Opens a review step instead of exporting straight from the database
+  // row — lets a reviewer fix a wrong description/amount/note before the
+  // PDF is generated, without editing the invoice record itself.
+  function handleExport(inv) {
+    const defaultDescription = inv.milestone?.title
+      ? `Milestone billing — ${inv.milestone.title}`
+      : inv.project?.name ? `Project billing — ${inv.project.name}` : (inv.notes || 'Services rendered')
+    setExportPreview({
+      invoice: inv,
+      description: defaultDescription,
+      subtotal: inv.subtotal ?? Math.max(0, (inv.total_amount || 0) - (inv.gst_amount || 0)),
+      gst_amount: inv.gst_amount ?? 0,
+      total_amount: inv.total_amount ?? 0,
+      notes: inv.notes || '',
+    })
+  }
+
+  async function confirmExport() {
+    const { invoice, ...overrides } = exportPreview
+    setExportingId(invoice.id)
+    try {
+      await exportCustomerInvoicePDF(invoice.id, profile?.org?.name, {
+        description: overrides.description,
+        subtotal: parseFloat(overrides.subtotal) || 0,
+        gst_amount: parseFloat(overrides.gst_amount) || 0,
+        total_amount: parseFloat(overrides.total_amount) || 0,
+        notes: overrides.notes,
+      })
+      setExportPreview(null)
+    } catch (e) { alert(e.message) }
+    finally { setExportingId(null) }
+  }
+
   async function submitPayment() {
     if (!paymentForm.amount) return
     setRecording(true)
@@ -154,7 +194,10 @@ export default function CustomerInvoicesPage() {
           <div className="page-title">Customer Invoices</div>
           <div className="page-subtitle">Bill projects & milestones, track receivables</div>
         </div>
-        {canEdit && <button className="btn btn-primary" onClick={() => { setEditing(null); setForm(initForm()); setErr(''); setShowModal(true) }}><Plus size={15} /> New Invoice</button>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          {canEdit && <button className="btn btn-outline" onClick={() => setShowAiPanel(true)} style={{ background: 'linear-gradient(135deg,#8b5cf611,#22d3ee11)', borderColor: '#8b5cf644' }}><Sparkles size={15} /> Generate with AI</button>}
+          {canEdit && <button className="btn btn-primary" onClick={() => { setEditing(null); setForm(initForm()); setErr(''); setShowModal(true) }}><Plus size={15} /> New Invoice</button>}
+        </div>
       </div>
 
       <div className="stats-grid" style={{ marginBottom: 20 }}>
@@ -208,6 +251,7 @@ export default function CustomerInvoicesPage() {
                   <td>
                     <div style={{ display: 'flex', gap: 6 }}>
                       <button className="btn btn-ghost btn-sm btn-icon" onClick={() => openDetail(inv)} title="View"><Eye size={13} /></button>
+                      <button className="btn btn-ghost btn-sm btn-icon" onClick={() => handleExport(inv)} disabled={exportingId === inv.id} title="Download PDF"><Download size={13} /></button>
                       {canEdit && <button className="btn btn-ghost btn-sm btn-icon" onClick={() => openEdit(inv)} title="Edit"><Edit2 size={13} /></button>}
                     </div>
                   </td>
@@ -217,6 +261,10 @@ export default function CustomerInvoicesPage() {
           </table>
         )}
       </div>
+
+      <AIDockedPanel open={showAiPanel} onClose={() => setShowAiPanel(false)} title="Customer Invoice AI" subtitle="Draft a customer invoice">
+        <CustomerInvoiceAiTab profile={profile} onSaved={load} />
+      </AIDockedPanel>
 
       {/* Create/Edit Modal */}
       <Modal open={showModal} onClose={() => setShowModal(false)} title={editing ? 'Edit Invoice' : 'New Customer Invoice'} size="lg"
@@ -277,7 +325,10 @@ export default function CustomerInvoicesPage() {
 
       {/* Detail Modal */}
       <Modal open={!!showDetail} onClose={() => setShowDetail(null)} title="Invoice Details" size="lg"
-        footer={<><button className="btn btn-ghost" onClick={() => setShowDetail(null)}>Close</button></>}>
+        footer={<>
+          <button className="btn btn-ghost" onClick={() => setShowDetail(null)}>Close</button>
+          <button className="btn btn-primary" onClick={() => handleExport(showDetail)} disabled={exportingId === showDetail?.id}><Download size={14} /> {exportingId === showDetail?.id ? 'Preparing…' : 'Download PDF'}</button>
+        </>}>
         {showDetail && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
@@ -321,6 +372,34 @@ export default function CustomerInvoicesPage() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Export Preview — review/edit what actually prints before generating
+          the PDF; changes here never touch the invoice record itself. */}
+      <Modal open={!!exportPreview} onClose={() => setExportPreview(null)} title="Review Before Downloading" size="lg"
+        footer={<>
+          <button className="btn btn-ghost" onClick={() => setExportPreview(null)}>Cancel</button>
+          <button className="btn btn-primary" onClick={confirmExport} disabled={exportingId === exportPreview?.invoice?.id}>
+            <Download size={14} /> {exportingId === exportPreview?.invoice?.id ? 'Generating…' : 'Generate PDF'}
+          </button>
+        </>}>
+        {exportPreview && (
+          <div>
+            <p style={{ fontSize: 12.5, color: 'var(--ink-muted)', marginBottom: 16 }}>
+              This only changes what prints on the PDF for <b>{exportPreview.invoice.invoice_number}</b> — the saved invoice record is not modified.
+            </p>
+            <div className="form-group">
+              <label className="form-label">Description Line</label>
+              <input className="form-input" value={exportPreview.description} onChange={e => setExportPreview(p => ({ ...p, description: e.target.value }))} />
+            </div>
+            <div className="form-row">
+              <div className="form-group"><label className="form-label">Subtotal</label><input className="form-input" type="number" value={exportPreview.subtotal} onChange={e => setExportPreview(p => ({ ...p, subtotal: e.target.value }))} /></div>
+              <div className="form-group"><label className="form-label">GST</label><input className="form-input" type="number" value={exportPreview.gst_amount} onChange={e => setExportPreview(p => ({ ...p, gst_amount: e.target.value }))} /></div>
+            </div>
+            <div className="form-group"><label className="form-label">Total Amount</label><input className="form-input" type="number" value={exportPreview.total_amount} onChange={e => setExportPreview(p => ({ ...p, total_amount: e.target.value }))} /></div>
+            <div className="form-group"><label className="form-label">Notes</label><textarea className="form-textarea" rows={3} value={exportPreview.notes} onChange={e => setExportPreview(p => ({ ...p, notes: e.target.value }))} /></div>
           </div>
         )}
       </Modal>

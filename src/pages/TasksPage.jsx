@@ -6,8 +6,10 @@ import { sendNotif } from '../lib/notifications'
 import { Modal, Loader, Empty, Confirm, SearchBox } from '../components/ui'
 import ExcelImport from '../components/ui/ExcelImport'
 import CustomDashboardsPanel from '../components/CustomDashboardsPanel'
+import AIDockedPanel from '../components/AIDockedPanel'
+import { TaskActionsTab } from '../components/AIActionTabs'
 import { Plus, Edit2, Trash2, LayoutGrid, List, BarChart2,
-  Filter, X, Target, Zap, UserPlus, Shield, Save, ChevronDown, ChevronRight, Eye, Clock, TrendingUp, AlertTriangle, CheckCircle2, Upload, MessageSquare, Send } from 'lucide-react'
+  Filter, X, Target, Zap, UserPlus, Shield, Save, ChevronDown, ChevronRight, Eye, Clock, TrendingUp, AlertTriangle, CheckCircle2, Upload, MessageSquare, Send, Sparkles } from 'lucide-react'
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 
 /* ─── Constants ─────────────────────────────────────────── */
@@ -425,6 +427,12 @@ export default function TasksPage() {
   const [groupBy,   setGroupBy]  = useState('none')
 
   const [showTask,   setShowTask]  = useState(false); const [editTask,  setEditTask]  = useState(null); const [taskForm,  setTaskForm]  = useState({}); const [subTask,  setSubTask]  = useState(false); const [delTask,  setDelTask]  = useState(null)
+
+  // Prompt-based task actions (create / status update) — docked AI panel,
+  // same TaskActionsTab component the AskBubble chat capability uses (see
+  // AIActionTabs.jsx). AI only ever parses intent; nothing writes until
+  // the user reviews a resolved confirm card and clicks Confirm.
+  const [showAiPanel, setShowAiPanel] = useState(searchParams.get('ai') === '1')
   const [detailTask, setDetailTask]= useState(null)
   const openDetail=t=>setDetailTask(t)
   const [showStory,  setShowStory] = useState(false); const [editStory, setEditStory] = useState(null); const [storyForm, setStoryForm] = useState({}); const [subStory, setSubStory] = useState(false); const [delStory, setDelStory] = useState(null)
@@ -564,11 +572,18 @@ export default function TasksPage() {
     setPermSaved(true); setTimeout(()=>setPermSaved(false),2500)
   }
 
-  async function saveTask(e) {
+  // overrideForm (used by the AI-confirm path below) bypasses both the
+  // taskForm state AND the editTask check — passed as a direct argument
+  // rather than through setTaskForm()+await, since a just-called
+  // setTaskForm() hasn't landed in this render's closure yet and reading
+  // taskForm here would still see the stale pre-update value.
+  async function saveTask(e, overrideForm) {
     e.preventDefault(); setSubTask(true)
     try {
-      const p={task_name:taskForm.task_name,task_type:taskForm.task_type||'task',description:taskForm.description||null,module_name:taskForm.module_name||null,priority:taskForm.priority||'medium',assigned_to:taskForm.assigned_to||null,status:taskForm.status||'backlog',planned_start_date:taskForm.planned_start_date||null,planned_end_date:taskForm.planned_end_date||null,estimated_hours:parseFloat(taskForm.estimated_hours)||null,actual_hours:parseFloat(taskForm.actual_hours)||null,user_story_id:taskForm.user_story_id||null,sprint_id:taskForm.sprint_id||null,change_request_id:taskForm.change_request_id||null,project_id:taskForm.project_id||selProj||projects[0]?.id}
-      if(editTask){
+      const src = overrideForm || taskForm
+      const isEdit = !overrideForm && editTask
+      const p={task_name:src.task_name,task_type:src.task_type||'task',description:src.description||null,module_name:src.module_name||null,priority:src.priority||'medium',assigned_to:src.assigned_to||null,status:src.status||'backlog',planned_start_date:src.planned_start_date||null,planned_end_date:src.planned_end_date||null,estimated_hours:parseFloat(src.estimated_hours)||null,actual_hours:parseFloat(src.actual_hours)||null,user_story_id:src.user_story_id||null,sprint_id:src.sprint_id||null,change_request_id:src.change_request_id||null,project_id:src.project_id||selProj||projects[0]?.id}
+      if(isEdit){
         const wasAssignedTo = editTask.assigned_to
         await supabase.from('project_tasks').update(p).eq('id',editTask.id)
         // Notify if assignee changed
@@ -722,6 +737,7 @@ export default function TasksPage() {
           {isMgr&&<button className="btn btn-ghost btn-sm" style={{display:'flex',alignItems:'center',gap:5}} onClick={()=>{setEditSprint(null);setSprintForm({project_id:selProj||projects[0]?.id,name:'',goal:'',start_date:'',end_date:'',status:'planning'});setShowSprint(true)}}><Zap size={13}/> Sprint</button>}
           {myPerm.can_create&&<button className="btn btn-outline btn-sm" style={{display:'flex',alignItems:'center',gap:5}} onClick={()=>{setEditStory(null);setStoryForm({project_id:selProj||projects[0]?.id,priority:'medium',status:'open',story_points:0,story_type:'story'});setShowStory(true)}}><Target size={13}/> Story</button>}
           {myPerm.can_create&&<button className="btn btn-outline btn-sm" title="Bulk-import tasks from Excel/CSV" style={{display:'flex',alignItems:'center',gap:5}} onClick={()=>{setImportProj(selProj||projects[0]?.id||'');setShowImport(true)}}><Upload size={13}/> Import Tasks</button>}
+          {(myPerm.can_create||myPerm.can_change_status)&&<button className="btn btn-outline btn-sm" style={{display:'flex',alignItems:'center',gap:5,background:'linear-gradient(135deg,#8b5cf611,#22d3ee11)',borderColor:'#8b5cf644'}} onClick={()=>setShowAiPanel(true)}><Sparkles size={13}/> AI Actions</button>}
           {myPerm.can_create&&<button className="btn btn-primary" style={{display:'flex',alignItems:'center',gap:5}} onClick={()=>{setEditTask(null);setTaskForm({project_id:selProj||projects[0]?.id,priority:'medium',status:'backlog',task_type:'task'});setShowTask(true)}}><Plus size={14}/> New Task</button>}
         </div>
       </div>
@@ -1157,6 +1173,10 @@ export default function TasksPage() {
               onSuccess={()=>{loadAll()}} onClose={()=>setShowImport(false)}/>
           : <div style={{padding:'20px 0',textAlign:'center',color:'var(--text-muted)',fontSize:12}}>Choose a project above to start importing tasks into its Backlog.</div>}
       </Modal>
+
+      <AIDockedPanel open={showAiPanel} onClose={()=>setShowAiPanel(false)} title="Task Actions" subtitle="Create or update tasks by prompt">
+        <TaskActionsTab profile={profile} onSaved={loadAll} />
+      </AIDockedPanel>
 
       <Confirm open={!!delTask} message="Delete this task?" danger onConfirm={async()=>{await supabase.from('project_tasks').delete().eq('id',delTask);setDelTask(null);loadAll()}} onCancel={()=>setDelTask(null)}/>
       <Confirm open={!!delStory} message="Delete this story? Tasks remain." danger onConfirm={async()=>{await supabase.from('user_stories').delete().eq('id',delStory);setDelStory(null);loadAll()}} onCancel={()=>setDelStory(null)}/>
