@@ -91,6 +91,7 @@ import EstimationPage from './pages/EstimationPage'
 import PaymentGatewaySetupPage from './pages/PaymentGatewaySetupPage'
 import PartnersPage from './pages/PartnersPage'
 import OrgSuspendedPage from './pages/OrgSuspendedPage'
+import AccountDeactivatedPage from './pages/AccountDeactivatedPage'
 import VendorDashboardPage from './pages/VendorDashboardPage'
 import ScenarioDashboardPage from './pages/ScenarioDashboardPage'
 import MyScenariosPage from './pages/MyScenariosPage'
@@ -141,6 +142,15 @@ function AppRoutes() {
   // being suspended must never lock the platform operator out.
   if (profile?.org && !profile.is_super_admin && (profile.org.deleted_at || profile.org.is_active === false)) {
     return <OrgSuspendedPage />
+  }
+
+  // Per-member deactivation (profiles.is_active) — set by an org admin from
+  // Users, or a platform super admin from the /super-admin org Manage
+  // drawer (super_admin_set_member_active()). Previously this flag was
+  // display-only; a deactivated member could still use the whole app.
+  // Same super-admin exemption as the org-suspend check above.
+  if (profile && !profile.is_super_admin && profile.is_active === false) {
+    return <AccountDeactivatedPage />
   }
 
   // Vendor accounts (STEP134) are not organization members in any real
