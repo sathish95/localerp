@@ -312,6 +312,16 @@ input, select, textarea { font-family: inherit }
   flex-wrap: wrap;
 }
 table { width: 100%; border-collapse: collapse; overflow-x: auto; display: block }
+
+/* Cost Sections tables: fill the container like a normal table instead of the
+   global display:block/overflow-x:auto behaviour, so narrow tables don't show
+   a phantom horizontal scrollbar. The wrapper still scrolls if the table
+   genuinely can't fit (very narrow viewport). */
+.cost-table-wrap { overflow-x: auto }
+.cost-table-wrap > table {
+  display: table; width: 100%; min-width: 460px; overflow-x: visible;
+}
+
 thead { background: var(--surface) }
 th {
   padding: 10px 14px; text-align: left;

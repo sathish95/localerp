@@ -9,6 +9,7 @@ import { Loader } from './components/ui'
 
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
+import OrgHomePage from './pages/OrgHomePage'
 import KnowledgeBasePage from './pages/KnowledgeBasePage'
 import ExpensesPage from './pages/ExpensesPage'
 import ApprovalsPage from './pages/ApprovalsPage'
@@ -191,6 +192,7 @@ function AppRoutes() {
       <Layout>
         <Routes>
           <Route path="/" element={<ModuleGate tab="dashboard" allowed={true}><DashboardPage /></ModuleGate>} />
+          <Route path="/org-home" element={<ModuleGate tab="org-home" allowed={true}><OrgHomePage /></ModuleGate>} />
           <Route path="/knowledge-base" element={<ModuleGate tab="knowledge-base" allowed={true}><KnowledgeBasePage /></ModuleGate>} />
           <Route path="/expenses" element={<ModuleGate tab="expenses" allowed={true}><ExpensesPage /></ModuleGate>} />
           <Route path="/travel" element={<ModuleGate tab="travel" allowed={true}><TravelPage /></ModuleGate>} />

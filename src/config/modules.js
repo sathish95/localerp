@@ -7,6 +7,7 @@
 // need its own third, independently-drifting copy of the tab list.
 export const MODULES = [
   { key: 'dashboard', label: 'Dashboard', section: 'Overview' },
+  { key: 'org-home', label: 'Company Home', section: 'Overview' },
   { key: 'knowledge-base', label: 'Knowledge Base', section: 'Overview' },
 
   { key: 'expenses', label: 'Expenses', section: 'Expenses & Travel' },

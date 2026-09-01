@@ -40,6 +40,45 @@ export function pdfCurrency(n, currency = 'INR') {
   return currency === 'INR' ? `Rs. ${formatted}` : `${currency} ${formatted}`
 }
 
+// Indian-system amount in words ("Fifteen Lakh Thirty-Four Thousand"),
+// prefixed with the currency unit and suffixed "Only" — the exact phrasing
+// used on the tax-invoice / quotation PDF layout. Paise, when present,
+// render as "... And Fifty Paise Only".
+const _ONES = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen']
+const _TENS = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety']
+function _twoDigits(n) {
+  if (n < 20) return _ONES[n]
+  const t = Math.floor(n / 10), o = n % 10
+  return _TENS[t] + (o ? '-' + _ONES[o] : '')
+}
+function _threeDigits(n) {
+  const h = Math.floor(n / 100), r = n % 100
+  return (h ? _ONES[h] + ' Hundred' + (r ? ' ' : '') : '') + (r ? _twoDigits(r) : '')
+}
+function _inWordsIndian(n) {
+  if (n < 1000) return _threeDigits(n)
+  const crore = Math.floor(n / 10000000)
+  const lakh = Math.floor((n % 10000000) / 100000)
+  const thousand = Math.floor((n % 100000) / 1000)
+  const rest = n % 1000
+  const p = []
+  if (crore) p.push(_inWordsIndian(crore) + ' Crore')
+  if (lakh) p.push(_threeDigits(lakh) + ' Lakh')
+  if (thousand) p.push(_threeDigits(thousand) + ' Thousand')
+  if (rest) p.push(_threeDigits(rest))
+  return p.join(' ')
+}
+export function amountInWords(amount, currency = 'INR') {
+  const abs = Math.abs(Number(amount) || 0)
+  const whole = Math.floor(abs)
+  const paise = Math.round((abs - whole) * 100)
+  const unit = currency === 'INR' ? 'Indian Rupee' : currency
+  const wholeWords = whole === 0 ? 'Zero' : _inWordsIndian(whole)
+  return paise
+    ? `${unit} ${wholeWords} And ${_twoDigits(paise)} Paise Only`
+    : `${unit} ${wholeWords} Only`
+}
+
 // Draws text wrapped to maxWidth and returns the y position right after
 // the last line actually drawn. This is the fix for the overlap bug that
 // hit every "draw wrapped text, then advance y by a fixed guess" call

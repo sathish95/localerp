@@ -119,7 +119,7 @@ export default function ProposalsPage() {
       <div className="page-header">
         <div>
           <div className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ width: 38, height: 38, borderRadius: 10, background: 'linear-gradient(135deg,#f97316,#ea580c)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
+            <span style={{ width: 38, height: 38, borderRadius: 10, background: 'var(--c1)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
               <FileText size={19} />
             </span>
             Proposals
@@ -140,7 +140,7 @@ export default function ProposalsPage() {
 
       <>
           <div className="stats-grid" style={{ marginBottom: 16 }}>
-            <StatCard label="Total Proposals" value={proposals.length} icon={<FileText size={17} />} accent="#f97316" />
+            <StatCard label="Total Proposals" value={proposals.length} icon={<FileText size={17} />} accent="#6366f1" />
             <StatCard label="Ready for Approval" value={proposals.filter(p => p.status === 'Ready for Approval').length} icon={<ShieldCheck size={17} />} accent="#4338ca" />
             <StatCard label="Won" value={proposals.filter(p => p.status === 'Won').length} icon={<CheckCircle size={17} />} accent="#15803d" />
             <StatCard label="In Negotiation" value={proposals.filter(p => p.status === 'In Negotiation').length} icon={<Clock size={17} />} accent="#b45309" />
@@ -260,22 +260,28 @@ function ProposalDetail({ proposalId, profile, role, canEdit, canViewInternal, i
         </div>
       </div>
 
-      {/* Horizontal tab bar */}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 18, paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
+      {/* Segmented tab control — single row, no wrap, active segment reads as an
+          inset white/accent chip inside a light track (enterprise console pattern,
+          replaces the old filled-pill rail which wrapped onto multiple lines). */}
+      <div style={{
+        display: 'flex', gap: 2, flexWrap: 'nowrap', overflowX: 'auto', marginBottom: 18,
+        background: 'var(--surface-2, #f1f5f9)', border: '1px solid var(--border)', borderRadius: 12, padding: 4,
+      }}>
         {DETAIL_TABS.map(t => {
           const Icon = t.icon
           const active = tab === t.id
           return (
             <button key={t.id} onClick={() => setTab(t.id)}
               style={{
-                display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 999, border: 'none',
-                cursor: 'pointer', fontFamily: 'inherit', fontSize: 12.5, fontWeight: active ? 700 : 500,
-                background: active ? '#f97316' : 'var(--surface-2, #f1f5f9)', color: active ? '#fff' : 'var(--text-soft, #334155)',
+                display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 9, border: 'none',
+                cursor: 'pointer', fontFamily: 'inherit', fontSize: 12.5, fontWeight: active ? 700 : 500, flexShrink: 0,
+                background: active ? '#fff' : 'transparent', color: active ? 'var(--c1)' : 'var(--text-soft, #334155)',
+                boxShadow: active ? '0 1px 3px rgba(0,0,0,.1), 0 1px 2px rgba(0,0,0,.06)' : 'none',
               }}>
               <Icon size={14} style={{ flexShrink: 0 }} />
               <span>{t.label}</span>
               {t.id === 'versions' && versions.length > 1 && (
-                <span style={{ fontSize: 10, background: active ? 'rgba(255,255,255,.25)' : 'var(--border)', padding: '1px 6px', borderRadius: 999 }}>{versions.length}</span>
+                <span style={{ fontSize: 10, background: active ? 'var(--c1)' : 'var(--border)', color: active ? '#fff' : 'inherit', padding: '1px 6px', borderRadius: 999 }}>{versions.length}</span>
               )}
             </button>
           )
@@ -286,11 +292,11 @@ function ProposalDetail({ proposalId, profile, role, canEdit, canViewInternal, i
       <div style={{ minWidth: 0 }}>
         {/* Sticky-feeling KPI strip, always visible regardless of tab */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 18 }}>
-          <MiniKpi label="Customer Price" value={summary ? rupee(summary.total_customer_price) : '—'} accent="#f97316" />
-          {canViewInternal && summary && <MiniKpi label="Internal Cost" value={rupee(summary.total_internal_cost)} accent="#64748b" />}
-          {canViewInternal && summary && <MiniKpi label="Margin" value={`${summary.projected_margin_percent}%`} accent="#4338ca" />}
-          <MiniKpi label="Devices Required" value={totalDevicesRequired} accent="#0ea5e9" icon={<Monitor size={12} />} />
-          <MiniKpi label="SaaS Lines" value={saasLinesCount} accent="#8b5cf6" />
+          <MiniKpi label="Customer Price" value={summary ? rupee(summary.total_customer_price) : '—'} accent="#6366f1" icon={<Wallet size={15} />} />
+          {canViewInternal && summary && <MiniKpi label="Internal Cost" value={rupee(summary.total_internal_cost)} accent="#64748b" icon={<Lock size={15} />} />}
+          {canViewInternal && summary && <MiniKpi label="Margin" value={`${summary.projected_margin_percent}%`} accent="#8b5cf6" icon={<TrendingUp size={15} />} />}
+          <MiniKpi label="Devices Required" value={totalDevicesRequired} accent="#0ea5e9" icon={<Monitor size={15} />} />
+          <MiniKpi label="SaaS Lines" value={saasLinesCount} accent="#14b8a6" icon={<Cloud size={15} />} />
         </div>
 
         {err && <div className="alert alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
@@ -331,9 +337,10 @@ function ProposalDetail({ proposalId, profile, role, canEdit, canViewInternal, i
 
 function MiniKpi({ label, value, accent, icon }) {
   return (
-    <div style={{ padding: '10px 14px', borderRadius: 10, background: `${accent}0d`, border: `1px solid ${accent}25` }}>
-      <div style={{ fontSize: 10, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '.04em', display: 'flex', alignItems: 'center', gap: 4 }}>{icon}{label}</div>
-      <div style={{ fontSize: 16, fontWeight: 800, marginTop: 3 }}>{value}</div>
+    <div className="stat-card" style={{ borderTop: '1.5px solid var(--border)', borderLeft: `4px solid ${accent}`, padding: '12px 14px' }}>
+      <div style={{ width: 28, height: 28, borderRadius: 8, background: accent, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', marginBottom: 8 }}>{icon}</div>
+      <div style={{ fontSize: 17, fontWeight: 800, color: accent }}>{value}</div>
+      <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '.04em', marginTop: 2 }}>{label}</div>
     </div>
   )
 }
@@ -551,26 +558,40 @@ function domainKpis(section) {
 }
 
 function CategoryCostOverview({ sections }) {
+  const [open, setOpen] = useState(false)
   const rows = PROPOSAL_CATEGORIES.map(cat => ({ category: cat, total: sectionTotal(sections.find(x => x.category === cat) || {}), theme: CATEGORY_THEME[cat] }))
   const max = Math.max(1, ...rows.map(r => r.total))
+  const grandTotal = rows.reduce((s, r) => s + r.total, 0)
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 9, marginBottom: 20, padding: 16, borderRadius: 12, border: '1px solid var(--border)', background: 'var(--surface-2, #f8fafc)' }}>
-      <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '.04em' }}>Cost Distribution</div>
-      {rows.map(r => {
-        const Icon = r.theme.icon
-        const pct = max > 0 ? (r.total / max) * 100 : 0
-        return (
-          <div key={r.category} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ width: 200, fontSize: 11.5, fontWeight: 600, color: '#334155', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              <Icon size={12} color={r.theme.color} style={{ flexShrink: 0 }} /> {r.category}
-            </div>
-            <div style={{ flex: 1, height: 8, borderRadius: 999, background: '#e2e8f0', overflow: 'hidden' }}>
-              <div style={{ width: `${pct}%`, height: '100%', background: r.theme.color, borderRadius: 999, transition: 'width .3s' }} />
-            </div>
-            <div style={{ width: 100, fontSize: 11.5, fontWeight: 700, textAlign: 'right', flexShrink: 0 }}>{rupee(r.total)}</div>
-          </div>
-        )
-      })}
+    <div style={{ marginBottom: 16, borderRadius: 10, border: '1px solid var(--border)', background: 'var(--surface-2, #f8fafc)' }}>
+      <button type="button" onClick={() => setOpen(o => !o)}
+        style={{
+          width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', cursor: 'pointer',
+          background: 'none', border: 'none', fontFamily: 'inherit',
+        }}>
+        <ChevronRight size={14} style={{ flexShrink: 0, transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .15s', color: 'var(--ink-muted)' }} />
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Cost Distribution</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12.5, fontWeight: 800 }}>{rupee(grandTotal)}</span>
+      </button>
+      {open && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '4px 14px 14px' }}>
+          {rows.map(r => {
+            const Icon = r.theme.icon
+            const pct = max > 0 ? (r.total / max) * 100 : 0
+            return (
+              <div key={r.category} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 190, fontSize: 11.5, fontWeight: 600, color: 'var(--text-soft, #334155)', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <Icon size={12} style={{ flexShrink: 0, color: 'var(--ink-muted)' }} /> {r.category}
+                </div>
+                <div style={{ flex: 1, height: 6, borderRadius: 999, background: 'var(--border)', overflow: 'hidden' }}>
+                  <div style={{ width: `${pct}%`, height: '100%', background: 'var(--c1)', borderRadius: 999, transition: 'width .3s' }} />
+                </div>
+                <div style={{ width: 100, fontSize: 11.5, fontWeight: 700, textAlign: 'right', flexShrink: 0 }}>{rupee(r.total)}</div>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -589,27 +610,29 @@ function CostSectionsTab({ proposalId, sections, canEdit, onChanged }) {
 
   const section = sections.find(s => s.category === openCategory) || sections[0]
   const allResourcePlans = useMemo(() => sections.flatMap(s => (s.resourcePlans || []).map(r => ({ ...r, category: s.category }))), [sections])
-  const theme = CATEGORY_THEME[section?.category] || { icon: FileText, color: '#6366f1' }
+  const theme = CATEGORY_THEME[section?.category] || { icon: FileText }
   const Icon = theme.icon
 
   return (
     <div>
-      {/* Top pill rail */}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 20, paddingBottom: 14, borderBottom: '1px solid var(--border)' }}>
+      {/* Underlined category sub-tabs — single scrollable row; active category
+          reads via a single --c1 underline + label weight, no per-category
+          colour coding (matches the flat outer segmented tab bar). */}
+      <div style={{ display: 'flex', gap: 22, overflowX: 'auto', marginBottom: 16, borderBottom: '1px solid var(--border)' }}>
         {PROPOSAL_CATEGORIES.map(cat => {
           const s = sections.find(x => x.category === cat)
           const total = s ? sectionTotal(s) : 0
           const active = section?.category === cat
-          const t = CATEGORY_THEME[cat]
-          const CatIcon = t.icon
+          const CatIcon = CATEGORY_THEME[cat].icon
           return (
             <button key={cat} onClick={() => setOpenCategory(cat)}
               style={{
-                display: 'flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit',
-                border: `1.5px solid ${active ? t.color : 'var(--border)'}`, background: active ? t.color : 'transparent',
-                color: active ? '#fff' : t.color, fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap',
+                display: 'flex', alignItems: 'center', gap: 7, padding: '0 2px 9px', cursor: 'pointer', fontFamily: 'inherit',
+                background: 'none', border: 'none', borderBottom: `2px solid ${active ? 'var(--c1)' : 'transparent'}`, flexShrink: 0,
               }}>
-              <CatIcon size={13} /> {cat} <span style={{ opacity: .85, fontWeight: 600 }}>· {rupee(total)}</span>
+              <CatIcon size={13} style={{ flexShrink: 0, color: active ? 'var(--c1)' : 'var(--ink-muted)' }} />
+              <span style={{ fontSize: 12.5, fontWeight: active ? 700 : 500, color: active ? 'var(--c1)' : 'var(--text-soft, #334155)', whiteSpace: 'nowrap' }}>{cat}</span>
+              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink-muted, #94a3b8)', whiteSpace: 'nowrap' }}>{rupee(total)}</span>
             </button>
           )
         })}
@@ -619,35 +642,36 @@ function CostSectionsTab({ proposalId, sections, canEdit, onChanged }) {
 
       {section && (
         <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10, flexWrap: 'wrap', gap: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ width: 36, height: 36, borderRadius: 10, background: `${theme.color}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: theme.color, flexShrink: 0 }}>
-                <Icon size={17} />
+              <span style={{ width: 30, height: 30, borderRadius: 8, background: 'var(--surface-2, #f1f5f9)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--c1)', flexShrink: 0 }}>
+                <Icon size={15} />
               </span>
               <div>
-                <div style={{ fontWeight: 800, fontSize: 16 }}>{section.category}</div>
-                {section.category === 'Hardware Design & Production' && <div style={{ fontSize: 11, color: '#94a3b8' }}>Design/engineering labor plus installation, assembly and other production cost — separate from the raw device cost under Hardware.</div>}
-                {section.category === 'ERP Integration' && <div style={{ fontSize: 11, color: '#94a3b8' }}>Pick which ERP system below, then the resource plan for the integration effort.</div>}
+                <div style={{ fontWeight: 800, fontSize: 15 }}>{section.category}</div>
+                {section.category === 'Hardware Design & Production' && <div style={{ fontSize: 11, color: 'var(--ink-muted)' }}>Design/engineering labor plus installation, assembly and other production cost — separate from the raw device cost under Hardware.</div>}
+                {section.category === 'ERP Integration' && <div style={{ fontSize: 11, color: 'var(--ink-muted)' }}>Pick which ERP system below, then the resource plan for the integration effort.</div>}
               </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b' }}>Margin Override %</label>
+              <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)' }}>Margin Override %</label>
               <input className="form-input" style={{ width: 80, fontSize: 12 }} type="number" step="0.1" disabled={!canEdit}
                 placeholder="default" value={section.margin_percent ?? ''}
                 onChange={async e => { await updateCostSection(section.id, { margin_percent: e.target.value === '' ? null : Number(e.target.value), notes: section.notes }); onChanged() }} />
             </div>
           </div>
 
-          {/* Domain-specific KPI strip */}
+          {/* Domain KPIs — one compact inline row, not a padded card grid. */}
           <div style={{
-            display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 22,
-            padding: 16, borderRadius: 12, background: `linear-gradient(135deg, ${theme.color}14, ${theme.color}05)`, border: `1px solid ${theme.color}25`,
+            display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '4px 0', marginBottom: 14,
+            fontSize: 12, color: 'var(--text-soft, #334155)',
           }}>
-            {domainKpis(section).map(k => (
-              <div key={k.label} style={{ padding: '8px 12px', borderRadius: 9, background: '#fff', border: `1px solid ${theme.color}20` }}>
-                <div style={{ fontSize: 10, fontWeight: 700, color: theme.color, textTransform: 'uppercase', letterSpacing: '.04em' }}>{k.label}</div>
-                <div style={{ fontSize: 17, fontWeight: 800, marginTop: 3 }}>{k.value}</div>
-              </div>
+            {domainKpis(section).map((k, i) => (
+              <span key={k.label} style={{ display: 'inline-flex', alignItems: 'baseline', gap: 5 }}>
+                {i > 0 && <span style={{ margin: '0 10px', color: 'var(--border)' }}>|</span>}
+                <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '.03em' }}>{k.label}</span>
+                <span style={{ fontWeight: 700 }}>{k.value}</span>
+              </span>
             ))}
           </div>
 
@@ -737,11 +761,11 @@ function ResourceTable({ section, canEdit, designations, onChanged }) {
   }
 
   return (
-    <div style={{ marginBottom: 24 }}>
+    <div style={{ marginBottom: 16 }}>
       <SectionLabel icon={<Users size={13} />}>Resource Plan</SectionLabel>
       {err && <div className="alert alert-danger" style={{ marginBottom: 10 }}>{err}</div>}
-      <div className="table-wrap">
-        <table>
+      <div className="table-wrap cost-table-wrap">
+        <table className="cost-table">
           <thead><tr><th>Designation</th><th>Count</th><th>Weeks</th><th>Rate/hr</th><th>Cost</th><th style={{ width: 70 }}></th></tr></thead>
           <tbody>
             {rows.map(r => editingId === r.id ? (
@@ -785,7 +809,7 @@ function ResourceTable({ section, canEdit, designations, onChanged }) {
             ) : (
               <tr><td colSpan={6}><button type="button" className="btn btn-ghost btn-sm" onClick={startNew}><Plus size={12} /> Add resource</button></td></tr>
             ))}
-            {rows.length === 0 && editingId !== 'new' && <tr><td colSpan={6} style={{ textAlign: 'center', color: '#94a3b8', padding: 12, fontSize: 12 }}>No resources added yet.</td></tr>}
+            {rows.length === 0 && editingId !== 'new' && <tr><td colSpan={6} style={{ textAlign: 'center', color: '#94a3b8', padding: 16, fontSize: 12 }}><Users size={16} style={{ opacity: .4, display: 'block', margin: '0 auto 6px' }} />No resources added yet.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -820,11 +844,11 @@ function HardwareTable({ section, canEdit, products, onChanged }) {
   }
 
   return (
-    <div style={{ marginBottom: 24 }}>
+    <div style={{ marginBottom: 16 }}>
       <SectionLabel icon={<Package size={13} />}>Hardware Lines</SectionLabel>
       {err && <div className="alert alert-danger" style={{ marginBottom: 10 }}>{err}</div>}
-      <div className="table-wrap">
-        <table>
+      <div className="table-wrap cost-table-wrap">
+        <table className="cost-table">
           <thead><tr><th>Product</th><th>Description</th><th>Qty</th><th>On Hand</th><th>Unit Cost</th><th>Subtotal</th><th style={{ width: 70 }}></th></tr></thead>
           <tbody>
             {rows.map(r => {
@@ -890,7 +914,7 @@ function HardwareTable({ section, canEdit, products, onChanged }) {
             ) : (
               <tr><td colSpan={7}><button type="button" className="btn btn-ghost btn-sm" onClick={startNew}><Plus size={12} /> Add hardware line</button></td></tr>
             ))}
-            {rows.length === 0 && editingId !== 'new' && <tr><td colSpan={7} style={{ textAlign: 'center', color: '#94a3b8', padding: 12, fontSize: 12 }}>No hardware lines added yet.</td></tr>}
+            {rows.length === 0 && editingId !== 'new' && <tr><td colSpan={7} style={{ textAlign: 'center', color: '#94a3b8', padding: 16, fontSize: 12 }}><Package size={16} style={{ opacity: .4, display: 'block', margin: '0 auto 6px' }} />No hardware lines added yet.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -923,11 +947,11 @@ function SoftwareTable({ section, canEdit, softwareSuggestions, onChanged }) {
   }
 
   return (
-    <div style={{ marginBottom: 24 }}>
+    <div style={{ marginBottom: 16 }}>
       <SectionLabel icon={<Wallet size={13} />}>Software / SaaS / Third-Party Lines</SectionLabel>
       {err && <div className="alert alert-danger" style={{ marginBottom: 10 }}>{err}</div>}
-      <div className="table-wrap">
-        <table>
+      <div className="table-wrap cost-table-wrap">
+        <table className="cost-table">
           <thead><tr><th>Item</th><th>Type</th><th>Unit Cost</th><th>Duration (mo)</th><th>Cost</th><th style={{ width: 70 }}></th></tr></thead>
           <tbody>
             {rows.map(r => editingId === r.id ? (
@@ -977,7 +1001,7 @@ function SoftwareTable({ section, canEdit, softwareSuggestions, onChanged }) {
             ) : (
               <tr><td colSpan={6}><button type="button" className="btn btn-ghost btn-sm" onClick={startNew}><Plus size={12} /> Add software / SaaS line</button></td></tr>
             ))}
-            {rows.length === 0 && editingId !== 'new' && <tr><td colSpan={6} style={{ textAlign: 'center', color: '#94a3b8', padding: 12, fontSize: 12 }}>No software lines added yet.</td></tr>}
+            {rows.length === 0 && editingId !== 'new' && <tr><td colSpan={6} style={{ textAlign: 'center', color: '#94a3b8', padding: 16, fontSize: 12 }}><Wallet size={16} style={{ opacity: .4, display: 'block', margin: '0 auto 6px' }} />No software lines added yet.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1011,11 +1035,11 @@ function MiscTable({ section, canEdit, allResourcePlans, onChanged }) {
   }
 
   return (
-    <div style={{ marginBottom: 24 }}>
+    <div style={{ marginBottom: 16 }}>
       <SectionLabel icon={isMisc ? <Plane size={13} /> : <FileText size={13} />}>{title}</SectionLabel>
       {err && <div className="alert alert-danger" style={{ marginBottom: 10 }}>{err}</div>}
-      <div className="table-wrap">
-        <table>
+      <div className="table-wrap cost-table-wrap">
+        <table className="cost-table">
           <thead><tr><th>Item</th><th>Type</th>{isMisc && <th>Tagged Resource</th>}<th>Cost</th><th style={{ width: 70 }}></th></tr></thead>
           <tbody>
             {rows.map(r => editingId === r.id ? (
@@ -1077,7 +1101,12 @@ function MiscTable({ section, canEdit, allResourcePlans, onChanged }) {
             ) : (
               <tr><td colSpan={isMisc ? 5 : 4}><button type="button" className="btn btn-ghost btn-sm" onClick={startNew}><Plus size={12} /> Add line</button></td></tr>
             ))}
-            {rows.length === 0 && editingId !== 'new' && <tr><td colSpan={isMisc ? 5 : 4} style={{ textAlign: 'center', color: '#94a3b8', padding: 12, fontSize: 12 }}>None added yet.</td></tr>}
+            {rows.length === 0 && editingId !== 'new' && (
+              <tr><td colSpan={isMisc ? 5 : 4} style={{ textAlign: 'center', color: '#94a3b8', padding: 16, fontSize: 12 }}>
+                {isMisc ? <Plane size={16} style={{ opacity: .4, display: 'block', margin: '0 auto 6px' }} /> : <FileText size={16} style={{ opacity: .4, display: 'block', margin: '0 auto 6px' }} />}
+                None added yet.
+              </td></tr>
+            )}
           </tbody>
         </table>
         {isErp && <datalist id="erp-systems">{ERP_SYSTEM_OPTIONS.map(s => <option key={s} value={s} />)}</datalist>}
@@ -1353,7 +1382,7 @@ function ValueSummaryTab({ summary, proposal, sections, canViewInternal, busy, o
 
       <div className="stats-grid" style={{ marginBottom: 20 }}>
         {canViewInternal && <StatCard label="Total Internal Cost (Estimate)" value={rupee(summary.total_internal_cost)} icon={<Wallet size={17} />} accent="#64748b" />}
-        <StatCard label="Total Customer Price" value={rupee(summary.total_customer_price)} icon={<TrendingUp size={17} />} accent="#f97316" />
+        <StatCard label="Total Customer Price" value={rupee(summary.total_customer_price)} icon={<TrendingUp size={17} />} accent="#6366f1" />
         {canViewInternal && <StatCard label="Projected Profit" value={rupee(summary.projected_profit)} icon={<CheckCircle size={17} />} accent="#15803d" />}
         {canViewInternal && <StatCard label="Margin % / Markup %" value={`${summary.projected_margin_percent}% / ${summary.blended_markup_percent}%`} icon={<ShieldCheck size={17} />} accent="#4338ca" />}
       </div>
@@ -1373,7 +1402,7 @@ function ValueSummaryTab({ summary, proposal, sections, canViewInternal, busy, o
             <Tooltip formatter={v => rupee(v)} contentStyle={{ borderRadius: 10, fontSize: 12 }} />
             <Legend wrapperStyle={{ fontSize: 11 }} />
             {canViewInternal && <Bar dataKey="internalCost" name="Internal Cost" fill="#94a3b8" radius={[4, 4, 0, 0]} />}
-            <Bar dataKey="customerPrice" name="Customer Price" fill="#f97316" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="customerPrice" name="Customer Price" fill="#6366f1" radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       </div>
@@ -1794,7 +1823,9 @@ function ExportModeSection({ title, desc, accent, template, mode, busy, run }) {
       <TemplateBadgeRow template={template} />
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <ExportFormatCard icon={FileText} iconBg="#fee2e2" iconColor="#dc2626" title="PDF Document"
-          desc="Formatted cover page, cost table and delivery timeline — ready to send as-is."
+          desc={mode === 'internal'
+            ? 'Quotation-format PDF (landscape) with Internal Cost, Margin % and Profit columns — not for customer distribution.'
+            : 'Quotation-format PDF — letterhead, Bill/Ship To, itemized lines, GST and amount in words. Ready to send as-is.'}
           isBusy={busy === `${mode}-pdf`} disabled={!!busy} onClick={() => run(exportProposalPDF, mode, `${mode}-pdf`)} />
         <ExportFormatCard icon={FileSpreadsheet} iconBg="#dcfce7" iconColor="#15803d" title="Excel Workbook"
           desc="Cost summary and timeline as editable sheets — for further analysis or re-formatting."

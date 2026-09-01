@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { supabase, rupee, dateFmt } from '../lib/supabase'
 import { Modal, Loader, Empty, Confirm, SearchBox, StatusBadge } from '../components/ui'
 import AllocationGantt from '../components/AllocationGantt'
+import GanttChart from '../components/GanttChart'
 import { recomputeForProject, getActualCostSnapshot, getBurnRate } from '../lib/actualCost'
 import { MARGIN_VISIBLE_ROLES, recomputeMargin, getMargin } from '../lib/profitMargin'
 import { findOpportunityForProject, recomputeSalesProfitAttribution } from '../lib/salesFinance'
@@ -16,6 +17,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 /* ─── constants ─────────────────────────────────────── */
 const SC   = { active:'#10b981', on_hold:'#f59e0b', completed:'#3b82f6', cancelled:'#e11d48' }
 const MSC  = { pending:'#94a3b8', in_progress:'#d97706', completed:'#059669', delayed:'#e11d48' }
+const TSC  = { backlog:'#64748b', todo:'#3b82f6', in_progress:'#f59e0b', delayed:'#e11d48', qa:'#8b5cf6', ready_for_demo:'#10b981', closed:'#94a3b8' }
 const MOS  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 const CCLR = ['#3b82f6','#10b981','#f59e0b','#e11d48','#8b5cf6','#14b8a6','#f43f5e','#a855f7']
 const SW0  = ['server','third_party','saas','license','other']
@@ -274,7 +276,7 @@ export default function ProjectsPage() {
     setDetail(proj);setDDLoad(true);setDD(null);setFinanceLoaded(false)
     setSearchParams(prev=>{const p=new URLSearchParams(prev);p.set('pname',proj.name);p.set('pid',proj.id);if(!p.get('view'))p.set('view','overview');return p},{replace:true})
     try {
-      const[eR,lR,mR,swR,hwR,suR,raR,rtR,emR,crR,alR,invR,warrantySummary]=await Promise.all([
+      const[eR,lR,mR,swR,hwR,suR,raR,rtR,emR,crR,alR,invR,warrantySummary,tkR,spR]=await Promise.all([
         supabase.from('expense_requests').select('amount,total_amount,status,expense_date,category,requester:profiles!requested_by(full_name)').eq('project_id',proj.id),
         supabase.from('time_logs').select('hours_worked,work_date,employee:profiles!employee_id(id,full_name)').eq('project_id',proj.id),
         supabase.from('project_milestones').select('*').eq('project_id',proj.id).order('due_date'),
@@ -288,8 +290,10 @@ export default function ProjectsPage() {
         supabase.from('allocations').select('*,employee:profiles!employee_id(full_name,role)').eq('project_id',proj.id).order('start_date'),
         supabase.from('invoices').select('*,vendor:vendors(name)').eq('project_id',proj.id).order('created_at',{ascending:false}),
         getWarrantyCostSummaryForProject(proj.id).catch(()=>null),
+        supabase.from('project_tasks').select('id,task_name,status,planned_start_date,planned_end_date,progress_pct,sprint_id,assignee:profiles!assigned_to(full_name)').eq('project_id',proj.id),
+        supabase.from('sprints').select('id,name').eq('project_id',proj.id).order('start_date'),
       ])
-      setDD({expenses:eR.data||[],timelogs:lR.data||[],milestones:mR.data||[],sw:swR.data||[],hw:hwR.data||[],sup:suR.data||[],ra:raR.data||[],rates:rtR.data||[],employees:emR.data||[],changereqs:crR.data||[],allocations:alR.data||[],invoices:invR.data||[],warranty:warrantySummary})
+      setDD({expenses:eR.data||[],timelogs:lR.data||[],milestones:mR.data||[],sw:swR.data||[],hw:hwR.data||[],sup:suR.data||[],ra:raR.data||[],rates:rtR.data||[],employees:emR.data||[],changereqs:crR.data||[],allocations:alR.data||[],invoices:invR.data||[],warranty:warrantySummary,tasks:tkR.data||[],sprints:spR.data||[]})
     }catch(e){console.error(e)}
     setDDLoad(false)
   }
@@ -626,6 +630,19 @@ export default function ProjectsPage() {
         )}
 
         {/* ── MILESTONES ── */}
+        {!ddLoad&&tab==='gantt'&&(()=>{
+          const tasks=dd?.tasks||[]
+          const sprints=dd?.sprints||[]
+          const msRows=ms.map(m=>({id:m.id,label:m.title,start:m.start_date||m.due_date,end:m.due_date||m.start_date,progress:m.status==='completed'?100:m.status==='in_progress'?50:0,color:MSC[m.status]||'#94a3b8'}))
+          const taskRows=t=>t.map(x=>({id:x.id,label:x.task_name,sub:x.assignee?.full_name,start:x.planned_start_date,end:x.planned_end_date,progress:x.progress_pct||0,color:TSC[x.status]||'#64748b'}))
+          const groups=[
+            {title:'Milestones',rows:msRows},
+            ...sprints.map(s=>({title:`Sprint: ${s.name}`,rows:taskRows(tasks.filter(x=>x.sprint_id===s.id))})),
+            {title:'Backlog / No Sprint',rows:taskRows(tasks.filter(x=>!x.sprint_id))},
+          ]
+          return <GanttChart groups={groups}/>
+        })()}
+
         {!ddLoad&&tab==='milestones'&&(
           <div>
             <div style={{display:'flex',justifyContent:'flex-end',marginBottom:12}}>

@@ -35,6 +35,7 @@ const roleLabel = {
 const ALL_NAV = [
   { section: 'Overview', items: [
     { to: '/', tab: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { to: '/org-home', tab: 'org-home', label: 'Company Home', icon: Megaphone },
     { to: '/knowledge-base', tab: 'knowledge-base', label: 'Knowledge Base', icon: BookOpen },
   ]},
   { section: 'Expenses & Travel', items: [
@@ -45,6 +46,7 @@ const ALL_NAV = [
   { section: 'Operations', items: [
     { to: '/projects', tab: 'projects', label: 'Projects', icon: FolderOpen, subTabs: [
       { id: 'overview', label: 'Overview', icon: '📊' },
+      { id: 'gantt', label: 'Gantt', icon: '📅' },
       { id: 'milestones', label: 'Milestones', icon: '🏁' },
       { id: 'resources', label: 'Resources', icon: '👥' },
       { id: 'resourcing', label: 'Resourcing', icon: '📈' },
