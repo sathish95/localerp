@@ -16,3 +16,9 @@ Thumbs.db
 # Editor
 .vscode/settings.json
 *.log
+
+# Build / tool leftovers
+__pycache__/
+*.pyc
+neox-dist.zip
+mobile/.shot.png

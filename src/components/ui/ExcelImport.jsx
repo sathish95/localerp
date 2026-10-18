@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react'
-import { supabase, rupee, dateFmt, adminCreateUser } from '../../lib/supabase'
+import { supabase, rupee, dateFmt, adminCreateUser, adminFinalizeNewProfile } from '../../lib/supabase'
+import { createDeviceWarranty } from '../../lib/warranty'
 import { useAuth } from '../../context/AuthContext'
 import { Upload, Download, X, CheckCircle, AlertTriangle, FileSpreadsheet, KeyRound } from 'lucide-react'
 
@@ -18,6 +19,7 @@ const TASK_TYPE_OPTIONS = ['task','bug','change_request','feature','improvement'
 const PRIORITY_OPTIONS  = ['critical','high','medium','low']
 const EMPLOYMENT_TYPE_OPTIONS = ['FTE','Contractor','Intern']
 const PROFICIENCY_OPTIONS = ['Beginner','Intermediate','Expert','Master']
+const DEVICE_STATUS_OPTIONS = ['deployed','in_storage','faulty','replaced','decommissioned']
 
 /* ── Template definitions ── */
 export const TEMPLATES = {
@@ -149,6 +151,60 @@ export const TEMPLATES = {
     ],
     notes: 'Only component_part_number and required_quantity_for_product are actually read — component_name/component_id/per_unit_cost/quantity_stock are reference-only and always re-fetched live from the Products catalog, never trusted from the file. component_part_number must match an existing Product part number (case-insensitive) — unmatched rows are skipped. Rows are staged into the edit form; you still need to click "Save as New Version" to commit. Use "Download Template" while a product is selected to get a ready-made sheet listing every real component with its current cost.',
   },
+  devices: {
+    label: 'Device Instances',
+    table: 'device_instances',
+    formatCurrency: false,
+    columns: ['device_code', 'part_number', 'serial_number', 'customer_name', 'project_name', 'status', 'installed_date', 'current_location', 'equipment_id', 'equipment_name', 'equipment_category', 'firmware_version', 'sensors', 'notes'],
+    required: ['part_number', 'serial_number'],
+    types: {},
+    sample: [
+      ['', 'CMP-1001', 'SN-2026-00123', 'CemIndia Cement Ltd', 'CemIndia Fleet IoT Rollout', 'deployed', '2026-01-15', 'Chandrapur Quarry', 'DT-12', 'Dumper Truck #12', 'Dumper', '2.4.1', 'Fuel level sensor; Engine coolant temperature sensor', ''],
+      ['', 'CMP-1001', 'SN-2026-00124', '', '', 'in_storage', '', 'Main Warehouse', '', '', '', '', '', ''],
+    ],
+    notes: 'Rows whose device_code (or, failing that, serial_number) matches an existing device UPDATE that device — so Export → edit → Import round-trips; blank cells clear the field, except status (blank keeps the current one). Other rows are created as new devices. firmware_version: from the product’s firmware release list (other versions are saved but flagged). sensors: sensor names from the Sensor catalog separated by ";" — the device’s sensor list is set to exactly these (missing ones added, unlisted ones marked removed); leave blank to keep its sensors as they are (a new device still gets its equipment category’s defaults). equipment_id / equipment_name / equipment_category: the machine the device is fitted to (e.g. DT-12 / "Dumper Truck #12" / Dumper) — copied onto go-live enrollments. device_code is auto-generated if left blank. part_number must match an existing serialized Product (case-insensitive) — unmatched rows are skipped. customer_name/project_name match by exact name (case-insensitive) — leave blank to skip. status: deployed/in_storage/faulty/replaced/decommissioned (defaults to in_storage). If installed_date is set, the warranty clock starts automatically — warranty_start/warranty_end are computed from the matched Product’s Warranty Policy (or its default warranty_months, or 12 months if neither exists), same as registering a device one at a time.',
+  },
+}
+
+// Excel cells formatted as dates come back from SheetJS's sheet_to_csv()
+// rendered in whatever display format the sheet used (commonly DD-MM-YYYY
+// or DD/MM/YYYY outside the US) — Postgres' date parser expects ISO or
+// MM-DD-YYYY and throws "date/time field value out of range" (22008) the
+// moment the day part exceeds 12, e.g. "17-09-2026". This normalizes any
+// recognisable input to YYYY-MM-DD before it ever reaches Supabase; ISO
+// datestyle is assumed as the app-wide convention (matches dateFmt()'s
+// en-IN "DD MMM YYYY" *display* format, but every date column elsewhere
+// is already stored/sent as ISO).
+function normalizeDate(val) {
+  if (!val) return ''
+  const s = String(val).trim()
+  if (!s) return ''
+
+  // Already ISO (optionally with a time part SheetJS sometimes appends)
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`
+
+  // DD-MM-YYYY / DD/MM/YYYY (and the MM-first variant, disambiguated
+  // whenever one part is unambiguously > 12)
+  const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/)
+  if (dmy) {
+    let [, a, b, y] = dmy
+    let day = +a, month = +b
+    if (day > 12 && month <= 12) { /* a is day, b is month — as parsed */ }
+    else if (month > 12 && day <= 12) { day = +b; month = +a }
+    // else ambiguous (both <= 12) — default to DD-MM (this app's locale)
+    if (day < 1 || day > 31 || month < 1 || month > 12) return ''
+    return `${y}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  }
+
+  // Excel serial date number (epoch 1899-12-30, i.e. day 0)
+  if (/^\d{4,6}$/.test(s)) {
+    const d = new Date(Date.UTC(1899, 11, 30) + (+s) * 86400000)
+    if (!isNaN(d)) return d.toISOString().slice(0, 10)
+  }
+
+  const d = new Date(s)
+  return isNaN(d) ? '' : d.toISOString().slice(0, 10)
 }
 
 /* ── Parse CSV text ── */
@@ -222,6 +278,14 @@ function downloadTemplate(type, lookups) {
       })
   }
 
+  // Devices: use real serialized part numbers from the Products catalog
+  // instead of made-up placeholders — a device_instances row must match an
+  // actual serialized Product, so a template built from fictional part
+  // numbers (e.g. "CMP-1001") would fail validation on every row.
+  if (type === 'devices' && lookups?.products?.length) {
+    sampleRows = lookups.products.slice(0, 10).map(p => ['', p.part_number || '', '', '', '', 'in_storage', '', '', '', '', '', '', '', ''])
+  }
+
   const header = tmpl.columns.join(',')
   const rows   = sampleRows.map(r => r.map(v => `"${v}"`).join(','))
   const csv    = [header, ...rows].join('\n')
@@ -276,6 +340,7 @@ export default function ExcelImport({ type, projectId, lookups, onSuccess, onClo
 
   function validateAndPreview(rawRows) {
     const errs = [], warns = [], cleaned = []
+    const seenDevices = new Set()
 
     rawRows.forEach((row, i) => {
       const rowNum = i + 2  // 1-indexed + header
@@ -322,9 +387,11 @@ export default function ExcelImport({ type, projectId, lookups, onSuccess, onClo
 
       if (type === 'expenses') {
         if (!obj.category) obj.category = 'other'
-        // Validate date format
-        if (obj.expense_date && !/^\d{4}-\d{2}-\d{2}/.test(obj.expense_date)) {
-          warns.push(`Row ${rowNum}: expense_date "${obj.expense_date}" — ensure format is YYYY-MM-DD`)
+        if (obj.expense_date) {
+          const norm = normalizeDate(obj.expense_date)
+          if (!norm) { warns.push(`Row ${rowNum}: expense_date "${obj.expense_date}" — unrecognised date, left blank`); }
+          else if (norm !== obj.expense_date) warns.push(`Row ${rowNum}: expense_date "${obj.expense_date}" read as ${norm}`)
+          obj.expense_date = norm
         }
       }
 
@@ -362,7 +429,12 @@ export default function ExcelImport({ type, projectId, lookups, onSuccess, onClo
         }
 
         for (const d of ['planned_start_date','planned_end_date']) {
-          if (obj[d] && !/^\d{4}-\d{2}-\d{2}/.test(obj[d])) warns.push(`Row ${rowNum}: ${d} "${obj[d]}" — ensure format is YYYY-MM-DD`)
+          if (obj[d]) {
+            const norm = normalizeDate(obj[d])
+            if (!norm) warns.push(`Row ${rowNum}: ${d} "${obj[d]}" — unrecognised date, left blank`)
+            else if (norm !== obj[d]) warns.push(`Row ${rowNum}: ${d} "${obj[d]}" read as ${norm}`)
+            obj[d] = norm
+          }
         }
       }
 
@@ -389,6 +461,13 @@ export default function ExcelImport({ type, projectId, lookups, onSuccess, onClo
           warns.push(`Row ${rowNum}: employment_type "${obj.employment_type}" not recognised — left unchanged`)
           obj.employment_type = ''
         }
+
+        if (obj.date_joined) {
+          const norm = normalizeDate(obj.date_joined)
+          if (!norm) warns.push(`Row ${rowNum}: date_joined "${obj.date_joined}" — unrecognised date, left unchanged`)
+          else if (norm !== obj.date_joined) warns.push(`Row ${rowNum}: date_joined "${obj.date_joined}" read as ${norm}`)
+          obj.date_joined = norm
+        }
       }
 
       if (type === 'new_employees') {
@@ -414,6 +493,13 @@ export default function ExcelImport({ type, projectId, lookups, onSuccess, onClo
         if (obj.employment_type && !EMPLOYMENT_TYPE_OPTIONS.includes(obj.employment_type)) {
           warns.push(`Row ${rowNum}: employment_type "${obj.employment_type}" not recognised — left blank`)
           obj.employment_type = ''
+        }
+
+        if (obj.date_joined) {
+          const norm = normalizeDate(obj.date_joined)
+          if (!norm) warns.push(`Row ${rowNum}: date_joined "${obj.date_joined}" — unrecognised date, left blank`)
+          else if (norm !== obj.date_joined) warns.push(`Row ${rowNum}: date_joined "${obj.date_joined}" read as ${norm}`)
+          obj.date_joined = norm
         }
       }
 
@@ -459,6 +545,74 @@ export default function ExcelImport({ type, projectId, lookups, onSuccess, onClo
           }
           const reqQty = Number(String(obj.required_quantity_for_product).replace(/[₹,\s]/g, ''))
           obj.required_quantity_for_product = (!reqQty || reqQty <= 0) ? 1 : reqQty
+        }
+      }
+
+      if (type === 'devices') {
+        // existing device → update (by device_code, then serial_number)
+        const lc = v => String(v ?? '').toLowerCase().trim()
+        const all = lookups?.devices || []
+        const byCode = lc(obj.device_code) ? all.find(d => lc(d.device_code) === lc(obj.device_code)) : null
+        const bySerial = all.find(d => lc(d.serial_number) === lc(obj.serial_number))
+        if (lc(obj.device_code) && !byCode) { warns.push(`Row ${rowNum}: device_code "${obj.device_code}" not found — ${bySerial ? `matched ${bySerial.device_code} by serial number` : 'created as a new device with that code'}`) }
+        const existing = byCode || bySerial || null
+        if (existing && bySerial && bySerial.id !== existing.id) {
+          errs.push(`Row ${rowNum}: serial number "${obj.serial_number}" already belongs to ${bySerial.device_code}, not ${existing.device_code} — row skipped`); hasError = true
+        }
+        const key = existing?.id || `new:${lc(obj.serial_number)}`
+        if (seenDevices.has(key)) { errs.push(`Row ${rowNum}: ${existing?.device_code || obj.serial_number} appears more than once in the file — only the first row is used`); hasError = true }
+        seenDevices.add(key)
+        obj._existing = existing
+
+        const partKey = (obj.part_number || '').toLowerCase().trim()
+        const match = (lookups?.products || []).find(p => p.part_number?.toLowerCase().trim() === partKey)
+        if (match) obj.part_number = match.part_number
+        // an existing device keeps its part number even if that product is no longer active
+        else if (existing && lc(existing.part_number) === partKey) obj.part_number = existing.part_number
+        else { warns.push(`Row ${rowNum}: part number "${obj.part_number}" not found among serialized Products — row skipped`); hasError = true }
+
+        obj.customer_id = null
+        if (obj.customer_name) {
+          const c = (lookups?.customers || []).find(c => c.name?.toLowerCase().trim() === obj.customer_name.toLowerCase().trim())
+          if (c) obj.customer_id = c.id
+          else if (existing) { obj.customer_id = existing.customer_id || null; warns.push(`Row ${rowNum}: customer "${obj.customer_name}" not found — kept the current customer`) }
+          else warns.push(`Row ${rowNum}: customer "${obj.customer_name}" not found — left unassigned`)
+        }
+
+        obj.project_id = null
+        if (obj.project_name) {
+          const pr = (lookups?.projects || []).find(p => p.name?.toLowerCase().trim() === obj.project_name.toLowerCase().trim())
+          if (pr) obj.project_id = pr.id
+          else if (existing) { obj.project_id = existing.project_id || null; warns.push(`Row ${rowNum}: project "${obj.project_name}" not found — kept the current project`) }
+          else warns.push(`Row ${rowNum}: project "${obj.project_name}" not found — left unassigned`)
+        }
+
+        let st = (obj.status || existing?.status || 'in_storage').toLowerCase().trim()
+        if (!DEVICE_STATUS_OPTIONS.includes(st)) { warns.push(`Row ${rowNum}: status "${obj.status}" not recognised, defaulted to "in_storage"`); st = 'in_storage' }
+        obj.status = st
+
+        if (obj.firmware_version) {
+          obj.firmware_version = String(obj.firmware_version).trim()
+          const list = (lookups?.releases || []).filter(r => r.part_number === obj.part_number)
+          if (list.length && !list.some(r => r.version === obj.firmware_version)) warns.push(`Row ${rowNum}: firmware "${obj.firmware_version}" is not in ${obj.part_number}'s release list — saved and flagged`)
+          else if (list.find(r => r.version === obj.firmware_version)?.status === 'DEPRECATED') warns.push(`Row ${rowNum}: firmware ${obj.firmware_version} is deprecated`)
+        }
+        obj._sensorTypeIds = null
+        if (String(obj.sensors || '').trim()) {
+          const names = String(obj.sensors).split(/[;\n]+/).map(x => x.trim()).filter(Boolean)
+          const ids = []
+          for (const n of names) {
+            const t = (lookups?.sensorTypes || []).find(t => t.name.toLowerCase() === n.toLowerCase())
+            if (t) ids.push(t.id); else warns.push(`Row ${rowNum}: sensor "${n}" is not in the Sensor catalog — skipped`)
+          }
+          obj._sensorTypeIds = [...new Set(ids)]
+        }
+
+        if (obj.installed_date) {
+          const norm = normalizeDate(obj.installed_date)
+          if (!norm) warns.push(`Row ${rowNum}: installed_date "${obj.installed_date}" — unrecognised date, left blank`)
+          else if (norm !== obj.installed_date) warns.push(`Row ${rowNum}: installed_date "${obj.installed_date}" read as ${norm}`)
+          obj.installed_date = norm
         }
       }
 
@@ -518,17 +672,21 @@ export default function ExcelImport({ type, projectId, lookups, onSuccess, onClo
           try {
             const { user } = await adminCreateUser(r.email, tempPassword, { full_name: r.full_name, role: r.role })
             if (!user?.id) throw new Error('Account creation did not return a user')
-            const payload = {}
-            if (r.designation) payload.designation = r.designation
-            if (r.department_id) payload.department_id = r.department_id
-            if (r.reporting_manager_id) payload.reporting_manager_id = r.reporting_manager_id
-            if (r.employment_type) payload.employment_type = r.employment_type
-            if (r.phone) payload.phone = r.phone
-            if (r.date_joined) payload.date_joined = r.date_joined
-            if (Object.keys(payload).length > 0) {
-              const { error: updErr } = await supabase.from('profiles').update(payload).eq('id', user.id)
-              if (updErr) throw updErr
-            }
+            // adminCreateUser()'s signUp() carries no org_mode metadata, so
+            // the handle_new_user() trigger lands this profile in
+            // 'default-org', not the importing admin's real org — and a
+            // plain .update() from here can't fix that (RLS blocks it).
+            // admin_finalize_new_profile (STEP196) reassigns the org AND
+            // applies the extra fields in one call — always run it, even
+            // with zero extra fields, since the org fix alone is required.
+            await adminFinalizeNewProfile(user.id, {
+              designation: r.designation || null,
+              department_id: r.department_id || null,
+              reporting_manager_id: r.reporting_manager_id || null,
+              employment_type: r.employment_type || null,
+              phone: r.phone || null,
+              date_joined: r.date_joined || null,
+            })
             credentials.push({ full_name: r.full_name, email: r.email, password: tempPassword, status: 'created' })
           } catch (e) {
             credentials.push({ full_name: r.full_name, email: r.email, password: '', status: `failed: ${e.message}` })
@@ -558,6 +716,91 @@ export default function ExcelImport({ type, projectId, lookups, onSuccess, onClo
         setResult({ success: inserted, total: rows.length })
         setStep('result')
         if (onSuccess) onSuccess(inserted)
+        return
+      }
+
+      if (type === 'devices') {
+        // Whitelist real device_instances columns — customer_name/project_name
+        // are display-only lookups already resolved into customer_id/project_id.
+        const fields = r => {
+          const p = {
+            part_number: r.part_number, serial_number: r.serial_number,
+            customer_id: r.customer_id || null, project_id: r.project_id || null,
+            status: r.status, installed_date: r.installed_date || null,
+            current_location: r.current_location || null, equipment_id: r.equipment_id || null, equipment_name: r.equipment_name || null,
+            equipment_category: r.equipment_category || null, notes: r.notes || null,
+          }
+          // firmware (STEP242) only when the file uses it, so imports keep working before that step is run
+          if (r.firmware_version || r._existing?.firmware_version) p.firmware_version = r.firmware_version || null
+          Object.keys(p).forEach(k => { if (p[k] === '') p[k] = null })
+          return p
+        }
+        const sensorPlan = [] // [deviceId, sensorTypeIds]
+        const warrantyFor = []
+        let inserted = 0, updated = 0
+        const fresh = rows.filter(r => !r._existing).map((r, i) => ({ ...fields(r), device_code: r.device_code || `DEV-${Date.now().toString().slice(-6)}-${i}`, created_by: profile.id }))
+        const CHUNK = 100
+        for (let i = 0; i < fresh.length; i += CHUNK) {
+          const chunk = fresh.slice(i, i + CHUNK)
+          const { data, error } = await supabase.from(tmpl.table).insert(chunk).select('id, installed_date, project_id, serial_number')
+          if (error) throw new Error(`Batch ${Math.floor(i / CHUNK) + 1}: ${error.message}`)
+          inserted += chunk.length
+          const newRows = rows.filter(r => !r._existing)
+          ;(data || []).forEach(d => { const r = newRows.find(x => x.serial_number === d.serial_number); if (r?._sensorTypeIds) sensorPlan.push([d.id, r._sensorTypeIds]) })
+          warrantyFor.push(...(data || []).filter(d => d.installed_date))
+        }
+        const failed = []
+        for (const r of rows.filter(r => r._existing)) {
+          const ex = r._existing
+          const patch = fields(r)
+          const { error } = await supabase.from(tmpl.table).update(patch).eq('id', ex.id)
+          if (error) { failed.push(`${ex.device_code}: ${error.message}`); continue }
+          updated++
+          if (r._sensorTypeIds) sensorPlan.push([ex.id, r._sensorTypeIds])
+          // install date set for the first time → start the warranty clock, as on insert
+          if (patch.installed_date && !ex.installed_date) warrantyFor.push({ id: ex.id, installed_date: patch.installed_date, project_id: patch.project_id })
+        }
+
+        // Installation date present at import -> the warranty clock starts
+        // immediately, same as the single "Register Device" form's behavior
+        // (see DevicesPage.jsx). Sequential and best-effort per row: one
+        // device's warranty failure can never roll back the import itself.
+        for (const d of warrantyFor) {
+          try {
+            await createDeviceWarranty({ deviceId: d.id, deploymentDate: d.installed_date, projectId: d.project_id || null, profileId: profile.id })
+          } catch (e) { console.error('Warranty activation failed for device', d.id, e) }
+        }
+        // sensor lists: add what's listed and missing, reactivate removed ones, mark unlisted ones removed
+        let sensorChanges = 0
+        if (sensorPlan.length) {
+          try {
+            const { data: current, error: sErr } = await supabase.from('device_sensors').select('id,device_id,sensor_type_id,status').in('device_id', sensorPlan.map(([id]) => id))
+            if (sErr) throw sErr
+            for (const [deviceId, want] of sensorPlan) {
+              const mine = (current || []).filter(x => x.device_id === deviceId)
+              for (const typeId of want) {
+                const live = mine.find(x => x.sensor_type_id === typeId && x.status !== 'REMOVED')
+                if (live) continue
+                const gone = mine.find(x => x.sensor_type_id === typeId)
+                const { error: e2 } = gone
+                  ? await supabase.from('device_sensors').update({ status: 'ACTIVE' }).eq('id', gone.id)
+                  : await supabase.from('device_sensors').insert({ device_id: deviceId, sensor_type_id: typeId, source: 'MANUAL' })
+                if (e2) throw e2
+                sensorChanges++
+              }
+              const drop = mine.filter(x => x.status !== 'REMOVED' && !want.includes(x.sensor_type_id)).map(x => x.id)
+              if (drop.length) {
+                const { error: e3 } = await supabase.from('device_sensors').update({ status: 'REMOVED' }).in('id', drop)
+                if (e3) throw e3
+                sensorChanges += drop.length
+              }
+            }
+          } catch (e) { failed.push(`Sensors: ${/does not exist|schema cache/i.test(e.message) ? 'run sql/STEP243_device_sensors.sql first' : e.message}`) }
+        }
+        if (failed.length) setErrors(prev => [...prev, ...failed.map(f => `Update failed — ${f}`)])
+        setResult({ success: inserted + updated, total: rows.length, inserted, updated, failed, sensorChanges })
+        setStep('result')
+        if (onSuccess) onSuccess(inserted + updated)
         return
       }
 
@@ -695,7 +938,7 @@ export default function ExcelImport({ type, projectId, lookups, onSuccess, onClo
             <div style={{ display:'flex', alignItems:'center', gap:7, padding:'6px 12px', borderRadius:7, background:'var(--surface-2)', border:'1px solid var(--border)', fontSize:12 }}>
               <FileSpreadsheet size={14} style={{ color:'var(--c1)' }}/> {fileName}
             </div>
-            <div style={{ fontSize:12, color:'var(--text-muted)' }}>{rows.length} valid row{rows.length!==1?'s':''} ready to import</div>
+            <div style={{ fontSize:12, color:'var(--text-muted)' }}>{rows.length} valid row{rows.length!==1?'s':''} ready to import{type==='devices' && ` — ${rows.filter(r=>!r._existing).length} new, ${rows.filter(r=>r._existing).length} update existing devices`}</div>
             <button onClick={reset} style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:5, padding:'5px 10px', borderRadius:6, border:'1px solid var(--border)', background:'transparent', cursor:'pointer', fontSize:11, color:'var(--text-muted)', fontFamily:'inherit' }}>
               <X size={11}/> Change file
             </button>
@@ -776,6 +1019,8 @@ export default function ExcelImport({ type, projectId, lookups, onSuccess, onClo
           </div>
           <div style={{ fontSize:14, color:'var(--text-muted)', marginBottom:20 }}>
             Successfully {result.credentials ? 'created' : 'imported'} <strong style={{ color:'var(--emerald)' }}>{result.success}</strong> of {result.total} {result.credentials ? 'accounts' : 'rows'}{!result.credentials && ` into ${tmpl.label}`}
+            {result.updated != null && <div style={{ fontSize:12, marginTop:6 }}>{result.inserted} new · {result.updated} updated{result.sensorChanges ? ` · ${result.sensorChanges} sensor change${result.sensorChanges === 1 ? '' : 's'}` : ''}</div>}
+            {result.failed?.length > 0 && <div style={{ fontSize:12, marginTop:6, color:'var(--rose)' }}>{result.failed.map((f,i)=><div key={i}>{f}</div>)}</div>}
           </div>
 
           {result.credentials && (

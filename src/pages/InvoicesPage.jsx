@@ -413,6 +413,7 @@ export default function InvoicesPage() {
                 </div>
               ))}
             </div>
+            {showDetail?.source_attachment_id && <EmailSource invoice={showDetail} />}
             {showDetail?.document_url && (
               <div style={{ marginTop: 16 }}>
                 <a href={showDetail.document_url} target="_blank" rel="noreferrer"
@@ -476,6 +477,35 @@ export default function InvoicesPage() {
           </div>
         )}
       </Modal>
+    </div>
+  )
+}
+
+// Invoices that came in through Email Intelligence (STEP265): the original
+// email and file (private bucket, short-lived signed link) and intake notes.
+function EmailSource({ invoice }) {
+  const [src, setSrc] = useState(null)
+  useEffect(() => {
+    Promise.all([
+      supabase.from('ei_attachments').select('file_name, storage_path, doc_type_code, config_version').eq('id', invoice.source_attachment_id).maybeSingle(),
+      supabase.from('outlook_email_messages').select('subject, sender_email, received_at, web_link').eq('id', invoice.source_email_id).maybeSingle(),
+    ]).then(([a, m]) => setSrc({ att: a.data, msg: m.data }))
+  }, [invoice.source_attachment_id, invoice.source_email_id])
+  if (!src) return null
+  async function openFile() {
+    const { data } = await supabase.storage.from('email-attachments').createSignedUrl(src.att.storage_path, 300)
+    if (data?.signedUrl) window.open(data.signedUrl, '_blank', 'noopener')
+  }
+  return (
+    <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 10, border: '1px solid var(--border)', background: '#fff' }}>
+      <div style={{ fontSize: 11, color: 'var(--ink-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>Received by email</div>
+      {src.msg && <div style={{ fontSize: 13 }}><b>{src.msg.subject || '(no subject)'}</b> — {src.msg.sender_email} · {dateFmt(src.msg.received_at)}</div>}
+      {invoice.intake_notes && <div style={{ fontSize: 12, color: 'var(--ink-muted)', marginTop: 4 }}>{invoice.intake_notes}</div>}
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+        {src.att?.storage_path && <button className="btn btn-ghost btn-sm" onClick={openFile}><Paperclip size={12} /> {src.att.file_name}</button>}
+        {src.msg?.web_link && <a className="btn btn-ghost btn-sm" href={src.msg.web_link} target="_blank" rel="noreferrer"><ExternalLink size={12} /> Open email in Outlook</a>}
+        {src.att?.config_version && <span style={{ fontSize: 11.5, color: 'var(--ink-muted)', alignSelf: 'center' }}>processed with configuration v{src.att.config_version}</span>}
+      </div>
     </div>
   )
 }

@@ -1,5 +1,7 @@
 import { useEffect, useState, useRef, useMemo } from 'react'
 import { useAuth } from '../context/AuthContext'
+import { useWorkspace } from '../context/WorkspaceContext'
+import { isWidgetVisible } from '../lib/workspaceDashboardWidgets'
 import { supabase, rupee, dateFmt } from '../lib/supabase'
 import { Loader } from '../components/ui'
 import CheckInWidget from '../components/CheckInWidget'
@@ -269,6 +271,13 @@ const HERO = {
 
 export default function DashboardPage() {
   const { profile } = useAuth()
+  // Industry-Adaptive Platform — Phase 8. `keys` is null for every org
+  // that hasn't opened Settings -> Workspace and explicitly saved a
+  // widget selection (STEP185's column default) — isWidgetVisible()
+  // resolves that to "show everything", so this is a no-op for every
+  // existing org today.
+  const { workspace } = useWorkspace()
+  const widgetKeys = workspace?.dashboard_widget_keys
   const role     = profile?.role || 'employee'
   const hero     = HERO[role] || HERO.employee
   const isEmp    = role === 'employee'
@@ -1131,6 +1140,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Invoice breakdown pie */}
+      {isWidgetVisible(widgetKeys, 'finance_invoice_breakdown') && (
       <div className="dash-grid-1-1">
         <ChartCard title="Invoice Payment Status">
           <PieChart>
@@ -1153,8 +1163,10 @@ export default function DashboardPage() {
           </BarChart>
         </ChartCard>
       </div>
+      )}
 
       {/* 3-month forecast */}
+      {isWidgetVisible(widgetKeys, 'finance_forecast') && (
       <div style={{ background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', overflow:'hidden', boxShadow:CARD_SHADOW }}>
         <div style={{ padding:'14px 20px', borderBottom:'1px solid #f1f5f9', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
           <div>
@@ -1186,6 +1198,7 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+      )}
     </div>
   )
 
@@ -1211,6 +1224,7 @@ export default function DashboardPage() {
       )}
 
       {/* Process Command Center */}
+      {isWidgetVisible(widgetKeys, 'ceo_process_command_center') && (
       <div>
         <SectionHeader title="Process Command Center" sub="Live view of how every department, project, payment, resource and procurement request is moving"/>
 
@@ -1281,8 +1295,10 @@ export default function DashboardPage() {
             ]}/>
         </div>
       </div>
+      )}
 
       {/* People & HR */}
+      {isWidgetVisible(widgetKeys, 'ceo_people_hr') && (
       <div>
         <SectionHeader title="People & HR" action={<Link to="/users" style={{ fontSize:12, color:'#6366f1', fontWeight:700, textDecoration:'none' }}>View All →</Link>}/>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:10, marginBottom:14 }}>
@@ -1315,8 +1331,10 @@ export default function DashboardPage() {
           </ChartCard>
         </div>
       </div>
+      )}
 
       {/* Finance */}
+      {isWidgetVisible(widgetKeys, 'ceo_finance') && (
       <div>
         <SectionHeader title="Finance" action={<Link to="/fundflow" style={{ fontSize:12, color:'#059669', fontWeight:700, textDecoration:'none' }}>View Fund Flow →</Link>}/>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:10, marginBottom:14 }}>
@@ -1350,8 +1368,10 @@ export default function DashboardPage() {
           </ChartCard>
         </div>
       </div>
+      )}
 
       {/* Operations & Procurement */}
+      {isWidgetVisible(widgetKeys, 'ceo_operations_procurement') && (
       <div>
         <SectionHeader title="Operations & Procurement" action={<Link to="/projects" style={{ fontSize:12, color:'#3b82f6', fontWeight:700, textDecoration:'none' }}>View Projects →</Link>}/>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:10, marginBottom:14 }}>
@@ -1391,8 +1411,10 @@ export default function DashboardPage() {
           </ChartCard>
         </div>
       </div>
+      )}
 
       {/* Technology & Delivery */}
+      {isWidgetVisible(widgetKeys, 'ceo_technology_delivery') && (
       <div>
         <SectionHeader title="Technology & Delivery" action={<Link to="/devices" style={{ fontSize:12, color:'#be123c', fontWeight:700, textDecoration:'none' }}>View Devices →</Link>}/>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:10, marginBottom:14 }}>
@@ -1419,6 +1441,7 @@ export default function DashboardPage() {
           </PieChart>
         </ChartCard>
       </div>
+      )}
 
       <QuickActions role={role} isMgr={true} isFin={true}/>
     </div>

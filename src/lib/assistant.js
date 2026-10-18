@@ -23,6 +23,22 @@ export function setPreferredModel(id) {
   try { localStorage.setItem(MODEL_KEY, id) } catch {}
 }
 
+// LLM ⇄ Non-LLM (DB-only) mode — shared the same way as the model
+// preference above. In 'db' mode the caller (AskBubble/DataAssistantPage)
+// never calls answerQuestion() at all: typed text is matched against
+// quickAnswers.js's canned question set (matchQuestion) and answered
+// straight from Supabase, or told plainly that no DB-backed answer exists
+// for it — never a guess dressed up as one.
+const MODE_KEY = 'nx_assistant_mode'
+
+export function getAskMode() {
+  try { return localStorage.getItem(MODE_KEY) === 'db' ? 'db' : 'llm' } catch { return 'llm' }
+}
+
+export function setAskMode(mode) {
+  try { localStorage.setItem(MODE_KEY, mode === 'db' ? 'db' : 'llm') } catch {}
+}
+
 // Shared "ask anything" flow used by both AskBubble (corner widget) and
 // DataAssistantPage (full page). The fixed QUESTIONS chips still answer
 // instantly by calling their own .run() directly (see AskBubble/DataAssistantPage's

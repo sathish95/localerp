@@ -11,13 +11,15 @@ import { listPlans } from '../lib/billing'
 import { listPaymentProviders } from '../lib/paymentGateway'
 import { superAdminListBundleRequests, superAdminSetOrgBundle, superAdminDismissBundleRequest } from '../lib/billingBundles'
 import { createInvite } from '../lib/orgInvites'
-import { updateAppName } from '../lib/platformSettings'
+import { updateAppName, getMaintenanceMode, setMaintenanceMode } from '../lib/platformSettings'
 import { useAppName, useRefreshAppName } from '../context/BrandingContext'
-import { dateFmt, rupee } from '../lib/supabase'
+import { useMaintenance } from '../context/MaintenanceContext'
+import { dateFmt, rupee, supabase } from '../lib/supabase'
 import { Loader, Empty, Alert, Modal, StatCard } from '../components/ui'
+import AnnouncementsSection from '../components/settings/AnnouncementsSection'
 import {
   Landmark, Plus, Users, Ban, CheckCircle2, KeyRound, CreditCard, Clock, XCircle,
-  UserCog, Trash2, RotateCcw, Archive, DollarSign, TrendingUp, Power, ChevronRight, Save, Tag,
+  UserCog, Trash2, RotateCcw, Archive, DollarSign, TrendingUp, Power, ChevronRight, Save, Tag, Wrench,
 } from 'lucide-react'
 
 const STATUS_LABEL = { trialing: 'Trial', active: 'Active', past_due: 'Past Due', canceled: 'Canceled' }
@@ -59,8 +61,28 @@ export default function SuperAdminPage() {
   const [appNameSaving, setAppNameSaving] = useState(false)
   const [appNameSaved, setAppNameSaved] = useState(false)
 
+  const { refresh: refreshMaintenance } = useMaintenance()
+  const [maintEnabled, setMaintEnabled] = useState(false)
+  const [maintMessage, setMaintMessage] = useState('')
+  const [maintGifUrl, setMaintGifUrl] = useState('')
+  const [maintSaving, setMaintSaving] = useState(false)
+  const [maintSaved, setMaintSaved] = useState(false)
+  // Diagnostic: what the DATABASE thinks of the current session, straight
+  // from the same function the write RLS policy calls — vs profile?.is_super_admin,
+  // which is only the CLIENT's cached copy from login. If these two ever
+  // disagree, the write policy silently blocking (PGRST116) is coming from
+  // a stale session, not from the DB flag itself being wrong.
+  const [serverIsSuperAdmin, setServerIsSuperAdmin] = useState(null)
+  const [annNotice, setAnnNotice] = useState(null)
+
   useEffect(() => { load() }, [])
   useEffect(() => { setAppNameInput(currentAppName) }, [currentAppName])
+  useEffect(() => { getMaintenanceMode().then(({ enabled, message, gifUrl }) => { setMaintEnabled(enabled); setMaintMessage(message); setMaintGifUrl(gifUrl) }) }, [])
+  useEffect(() => {
+    supabase.rpc('is_platform_super_admin').then(({ data, error }) => {
+      setServerIsSuperAdmin(error ? `error: ${error.message}` : data)
+    })
+  }, [])
 
   async function load() {
     setLoading(true); setErr('')
@@ -91,6 +113,28 @@ export default function SuperAdminPage() {
       setAppNameSaved(true); setTimeout(() => setAppNameSaved(false), 2500)
     } catch (e) { setErr(e.message) }
     finally { setAppNameSaving(false) }
+  }
+
+  async function handleToggleMaintenance() {
+    setMaintSaving(true); setErr('')
+    try {
+      const next = !maintEnabled
+      await setMaintenanceMode(next, maintMessage, maintGifUrl)
+      setMaintEnabled(next)
+      await refreshMaintenance()
+      setMaintSaved(true); setTimeout(() => setMaintSaved(false), 2500)
+    } catch (e) { setErr(e.message) }
+    finally { setMaintSaving(false) }
+  }
+
+  async function handleSaveMaintMessage() {
+    setMaintSaving(true); setErr('')
+    try {
+      await setMaintenanceMode(maintEnabled, maintMessage, maintGifUrl)
+      await refreshMaintenance()
+      setMaintSaved(true); setTimeout(() => setMaintSaved(false), 2500)
+    } catch (e) { setErr(e.message) }
+    finally { setMaintSaving(false) }
   }
 
   async function handleToggleProvider(p) {
@@ -187,6 +231,41 @@ export default function SuperAdminPage() {
         </form>
         <span style={{ fontSize: 11, color: 'var(--ink-muted)' }}>Shown platform-wide: sidebar, landing page, auth page, public forms.</span>
       </div>
+
+      <div className="card" style={{ padding: '14px 18px', marginBottom: 20, display: 'flex', flexDirection: 'column', gap: 12, border: maintEnabled ? '1px solid #f59e0b60' : undefined, background: maintEnabled ? '#f59e0b0a' : undefined }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          <Wrench size={16} style={{ color: maintEnabled ? '#b45309' : 'var(--ink-muted)' }} />
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase' }}>Maintenance Mode</div>
+          <button className="btn btn-sm" style={{ background: maintEnabled ? '#f59e0b' : 'var(--bg-3)', color: maintEnabled ? '#fff' : 'var(--ink-soft)', border: 'none' }}
+            disabled={maintSaving} onClick={handleToggleMaintenance}>
+            <Power size={13} /> {maintEnabled ? 'ON — turn off' : 'OFF — turn on'}
+          </button>
+          {maintSaved && <span style={{ fontSize: 12, color: '#16a34a', fontWeight: 700 }}>Saved — live everywhere now</span>}
+          <span style={{ fontSize: 11, color: 'var(--ink-muted)', flex: 1, minWidth: 200 }}>
+            Blocks every organization for every role except admin/ceo/hr (and platform super admins) with a full-page notice, applied instantly to any open session.
+          </span>
+        </div>
+        <div style={{ fontSize: 10.5, color: serverIsSuperAdmin === true ? '#16a34a' : serverIsSuperAdmin === false ? '#dc2626' : 'var(--ink-muted)' }}>
+          Server sees this session as platform super admin: <strong>{serverIsSuperAdmin === null ? 'checking…' : String(serverIsSuperAdmin)}</strong>
+          {' · '}client profile.is_super_admin: <strong>{String(!!profile?.is_super_admin)}</strong>
+          {serverIsSuperAdmin === false && <span> — this is why saving fails; sign out and back in, or check profiles.is_super_admin for this account.</span>}
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input className="form-input" style={{ flex: 1 }} value={maintMessage} onChange={e => setMaintMessage(e.target.value)}
+            placeholder="Optional custom message shown to blocked users (default: generic maintenance notice)" />
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input className="form-input" style={{ flex: 1 }} value={maintGifUrl} onChange={e => setMaintGifUrl(e.target.value)}
+            placeholder="Optional GIF/image URL shown above the message (leave blank for the default icon)" />
+          <button className="btn btn-outline btn-sm" disabled={maintSaving} onClick={handleSaveMaintMessage}><Save size={13} /> Save Message &amp; GIF</button>
+        </div>
+        {maintGifUrl && <img src={maintGifUrl} alt="" style={{ maxWidth: 120, maxHeight: 120, borderRadius: 8 }} onError={e => { e.currentTarget.style.display = 'none' }} />}
+      </div>
+
+      {/* Email notices to organisations (STEP233) — maintenance windows, product updates. Email only. */}
+      {annNotice && <div className={`alert alert-${annNotice.type}`} style={{ marginBottom: 12 }}>{annNotice.text}</div>}
+      <AnnouncementsSection orgId={null} profile={profile} orgs={liveOrgs}
+        flash={(type, text) => { setAnnNotice({ type, text }); setTimeout(() => setAnnNotice(null), 6000) }} />
 
       {stats && (
         <>

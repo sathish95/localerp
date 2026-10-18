@@ -7,6 +7,7 @@
     "icon": "./assets/images/icon.png",
     "scheme": "thingsaliveneox",
     "userInterfaceStyle": "automatic",
+    "runtimeVersion": { "policy": "appVersion" },
     "ios": {
       "icon": "./assets/expo.icon",
       "bundleIdentifier": "com.thingsaliveneo",
@@ -15,7 +16,7 @@
     "android": {
       "package": "com.thingsaliveneo",
       "adaptiveIcon": {
-        "backgroundColor": "#0a0a0f",
+        "backgroundColor": "#6366f1",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -31,7 +32,7 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#0a0a0f",
+          "backgroundColor": "#6366f1",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 140
         }
@@ -43,7 +44,20 @@
           "cameraPermission": "Allow ThingsAlive NeoX to use the camera to photograph expense receipts."
         }
       ],
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      "expo-secure-store",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow ThingsAlive NeoX to unlock with Face ID."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#6366f1"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

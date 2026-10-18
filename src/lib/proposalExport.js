@@ -1,10 +1,11 @@
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { rupee, dateFmt } from './supabase'
-import { getProposal, getCostSections, getValueSummary, listTimeline, PROPOSAL_CATEGORIES } from './proposals'
+import { getProposal, getCostSections, getValueSummary, listTimeline } from './proposals'
 import { getActiveTemplate } from './documentTemplates'
 import { getDocumentSettings } from './documentSettings'
 import { writeWrapped, pdfCurrency, amountInWords } from './pdfKit'
+import { ensureXLSX } from './xlsxLoader'
 
 // Customer-facing and internal-review builders are genuinely separate
 // functions, not one template with a visibility flag — the customer
@@ -12,10 +13,16 @@ import { writeWrapped, pdfCurrency, amountInWords } from './pdfKit'
 // all, so there's no toggle to misconfigure that could leak those numbers
 // into a customer export.
 
-function orderedCategories(sectionOrder) {
-  if (!sectionOrder?.length) return PROPOSAL_CATEGORIES
-  const rest = PROPOSAL_CATEGORIES.filter(c => !sectionOrder.includes(c))
-  return [...sectionOrder.filter(c => PROPOSAL_CATEGORIES.includes(c)), ...rest]
+// The order comes from whatever cost sections actually exist on this
+// proposal — including custom domains added via STEP215 — never from the
+// fixed PROPOSAL_CATEGORIES list, which would silently drop any custom
+// section from every export. A template's preferred section_order (if set)
+// just reorders the categories that are present; it can't add or remove any.
+function orderedCategories(sectionOrder, sections) {
+  const present = sections.map(s => s.category)
+  if (!sectionOrder?.length) return present
+  const rest = present.filter(c => !sectionOrder.includes(c))
+  return [...sectionOrder.filter(c => present.includes(c)), ...rest]
 }
 
 // Every individual line in a section, each priced at that section's own
@@ -83,7 +90,7 @@ function sectionLineItems(section, marginPct) {
 }
 
 function buildLineRows({ summary, sections, template, mode, hsn, gstRate, currency }) {
-  const order = orderedCategories(template?.config?.section_order)
+  const order = orderedCategories(template?.config?.section_order, sections)
   const internal = mode === 'internal'
   const nCols = internal ? (gstRate ? 11 : 9) : (gstRate ? 8 : 6)
   const body = []
@@ -312,24 +319,11 @@ export async function exportProposalPDF(proposalId, mode = 'customer') {
   doc.save(`${proposal.proposal_number}-${mode}.pdf`)
 }
 
-// Excel export reuses the same window.XLSX (SheetJS) library ExcelImport.jsx
-// already loads from CDN for imports — that build includes writeFile too,
-// so no separate export-only dependency is needed.
-async function ensureXLSX() {
-  if (window.XLSX) return
-  await new Promise((resolve, reject) => {
-    const s = document.createElement('script')
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'
-    s.onload = resolve; s.onerror = reject
-    document.head.appendChild(s)
-  })
-}
-
 export async function exportProposalExcel(proposalId, mode = 'customer') {
   await ensureXLSX()
   const { proposal, sections, summary, timeline, template } = await loadExportData(proposalId, mode)
   const XLSX = window.XLSX
-  const order = orderedCategories(template?.config?.section_order)
+  const order = orderedCategories(template?.config?.section_order, sections)
 
   let rows
   if (mode === 'customer' && template?.config?.show_line_item_detail) {

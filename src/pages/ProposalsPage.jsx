@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts'
@@ -6,7 +6,8 @@ import { supabase, rupee, dateFmt } from '../lib/supabase'
 import {
   PROPOSAL_CATEGORIES, RESOURCE_PLAN_CATEGORIES, MISC_CAPABLE_CATEGORIES, ERP_SYSTEM_OPTIONS, MISC_LINE_TYPES, HOURS_PER_WEEK,
   listProposals, getProposal, getProposalVersions, createProposal, updateProposal, createRevision,
-  getCostSections, updateCostSection,
+  getCostSections, updateCostSection, addCostSection, deleteCostSection, BUDGET_CATEGORIES,
+  listBudgetCategories, getBudgetCategoryMap,
   addResourcePlan, updateResourcePlan, deleteResourcePlan,
   addHardwareLine, updateHardwareLine, deleteHardwareLine,
   addSoftwareLine, updateSoftwareLine, deleteSoftwareLine,
@@ -14,10 +15,15 @@ import {
   listVendorCosts, addVendorCost, deleteVendorCost,
   listTimeline, addTimelinePhase, updateTimelinePhase, deleteTimelinePhase,
   computeValueSummary, getValueSummary, markWon, markLost, markExpired,
-  listDesignationOptions, listProductOptions, listSoftwareItemSuggestions,
+  listDesignationOptions, listProductOptions, listSoftwareItemSuggestions, listEmployeeOptions,
+  duplicateProposal,
 } from '../lib/proposals'
 import * as proposalApproval from '../lib/proposalApproval'
 import { exportProposalPDF, exportProposalExcel } from '../lib/proposalExport'
+import {
+  shareLinkUrl, getOrCreateShareLink, listShareLinks, setShareLinkExpiry, revokeShareLink,
+  listChangeRequests, reviewChangeRequest,
+} from '../lib/proposalShare'
 import { createProjectFromProposal } from '../lib/proposalConvert'
 import { getActiveTemplate } from '../lib/documentTemplates'
 import { Modal, SearchBox, Loader, Empty, Confirm, StatCard, ApprovalChain } from '../components/ui'
@@ -25,7 +31,8 @@ import {
   FileText, Plus, Edit2, Trash2, Download, ShieldCheck, CheckCircle, XCircle, X, Save,
   ChevronRight, Users, Package, Wallet, TrendingUp, Clock, LayoutGrid,
   CalendarRange, Truck, GitBranch, Settings2, ArrowLeft, Monitor, Plane,
-  Code2, Cpu, Wrench, Database, Cloud, FileSpreadsheet, Lock,
+  Code2, Cpu, Wrench, Database, Cloud, FileSpreadsheet, Lock, Layers,
+  Link2, Copy, Ban, Inbox,
 } from 'lucide-react'
 
 const STATUS_COLOR = {
@@ -47,6 +54,7 @@ const DETAIL_TABS = [
   { id: 'vendors', label: 'Vendor Costs', icon: Truck },
   { id: 'approval', label: 'Approval', icon: ShieldCheck },
   { id: 'export', label: 'Export', icon: Download },
+  { id: 'share', label: 'Client Link', icon: Link2 },
   { id: 'versions', label: 'Versions', icon: GitBranch },
 ]
 
@@ -72,6 +80,8 @@ export default function ProposalsPage() {
   const [createForm, setCreateForm] = useState({ proposal_name: '', customer_name: '', customer_contact: '', validity_until_date: '', overall_margin_percent: 20, currency: 'INR' })
   const [creating, setCreating] = useState(false)
   const [createErr, setCreateErr] = useState('')
+  const [duplicatingId, setDuplicatingId] = useState('')
+  const [dupErr, setDupErr] = useState('')
 
   useEffect(() => { loadList() }, [])
   useEffect(() => { proposalApproval.warmChains() }, [])
@@ -83,6 +93,19 @@ export default function ProposalsPage() {
   }
 
   function selectProposal(id) { setSearchParams(id ? { id } : {}) }
+
+  // Full standalone copy — new proposal_group_id/id, version 1, Draft, no
+  // approval history/linked project. Jumps straight into the new copy so
+  // the user can rename it and start editing right away.
+  async function duplicate(id) {
+    setDuplicatingId(id); setDupErr('')
+    try {
+      const newId = await duplicateProposal(id, profile.id)
+      await loadList()
+      selectProposal(newId)
+    } catch (e) { setDupErr(e.message) }
+    finally { setDuplicatingId('') }
+  }
 
   async function handleCreate(e) {
     e.preventDefault()
@@ -154,6 +177,8 @@ export default function ProposalsPage() {
             </select>
           </div>
 
+          {dupErr && <div className="alert alert-danger" style={{ marginBottom: 12 }}>{dupErr}</div>}
+
           {filtered.length === 0 ? (
             <div className="card" style={{ padding: '20px 24px' }}>
               <Empty icon={<FileText size={40} />} title="No proposals match" desc="Adjust your search or filter, or create a new proposal" />
@@ -161,17 +186,27 @@ export default function ProposalsPage() {
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(270px, 1fr))', gap: 14 }}>
               {filtered.map(p => (
-                <button key={p.id} onClick={() => selectProposal(p.id)} className="card" style={{
+                <div key={p.id} onClick={() => selectProposal(p.id)} role="button" tabIndex={0}
+                  onKeyDown={e => { if (e.key === 'Enter') selectProposal(p.id) }} className="card" style={{
                   textAlign: 'left', padding: 16, cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 8,
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                     <div style={{ fontWeight: 700, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.proposal_name}>{p.proposal_name}</div>
-                    <StatusPill status={p.status} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      <StatusPill status={p.status} />
+                      {isSalesLead && (
+                        <button type="button" title="Duplicate this proposal" disabled={duplicatingId === p.id}
+                          onClick={e => { e.stopPropagation(); duplicate(p.id) }}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', padding: 2, display: 'flex' }}>
+                          <Copy size={14} />
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{p.proposal_number} · v{p.version}</div>
                   <div style={{ fontSize: 12.5, color: '#475569', display: 'flex', alignItems: 'center', gap: 6 }}><Users size={12} /> {p.customer_name}</div>
                   {p.validity_until_date && <div style={{ fontSize: 11, color: '#94a3b8' }}>Valid until {dateFmt(p.validity_until_date)}</div>}
-                </button>
+                </div>
               ))}
             </div>
           )}
@@ -230,9 +265,14 @@ function ProposalDetail({ proposalId, profile, role, canEdit, canViewInternal, i
 
   useEffect(() => { load() }, [load])
 
-  async function recompute() {
+  // force=true is required once the proposal has left Draft/In Negotiation —
+  // computeValueSummary() otherwise returns the frozen snapshot as-is (by
+  // design, so a sent quotation can't silently drift). A margin edited from
+  // the Approval tab's Cost Breakdown panel is a deliberate reviewer action
+  // during "Ready for Approval", so that one path always forces a recompute.
+  async function recompute(force = false) {
     setBusy(true)
-    try { setSummary(await computeValueSummary(proposalId)) }
+    try { setSummary(await computeValueSummary(proposalId, { force })) }
     catch (e) { setErr(e.message) }
     finally { setBusy(false) }
   }
@@ -308,6 +348,7 @@ function ProposalDetail({ proposalId, profile, role, canEdit, canViewInternal, i
 
         {tab === 'sections' && (
           <CostSectionsTab proposalId={proposalId} sections={sections} canEdit={canEdit && isDraftLike}
+            defaultMargin={proposal.overall_margin_percent}
             onChanged={async () => { await load(); await recompute() }} />
         )}
 
@@ -323,11 +364,20 @@ function ProposalDetail({ proposalId, profile, role, canEdit, canViewInternal, i
         {tab === 'vendors' && <VendorCostsTab proposalId={proposalId} vendorCosts={vendorCosts} canEdit={canEdit && isDraftLike} onChanged={load} />}
 
         {tab === 'approval' && (
-          <ApprovalTab proposal={proposal} summary={summary} profile={profile} role={role} canEdit={canEdit} canActOnCurrentStage={canActOnCurrentStage}
-            isFinanceOrAbove={isFinanceOrAbove} onChanged={refreshAll} onSelectProposal={onSelectProposal} />
+          <ApprovalTab proposal={proposal} summary={summary} sections={sections} canViewInternal={canViewInternal}
+            profile={profile} role={role} canEdit={canEdit} canActOnCurrentStage={canActOnCurrentStage}
+            isFinanceOrAbove={isFinanceOrAbove} onChanged={refreshAll} onSelectProposal={onSelectProposal}
+            onSectionsChanged={async () => { await load(); await recompute(true) }} />
         )}
 
         {tab === 'export' && <ExportTab proposal={proposal} summary={summary} canViewInternal={canViewInternal} />}
+
+        {tab === 'share' && (
+          <ShareTab proposalId={proposalId} profile={profile} canEdit={canEdit}
+            sections={sections} canViewInternal={canViewInternal} defaultMargin={proposal.overall_margin_percent}
+            marginEditable={['Draft', 'In Negotiation', 'Ready for Approval'].includes(proposal.status)}
+            onChangesApplied={async () => { await load(); await recompute(true) }} />
+        )}
 
         {tab === 'versions' && <VersionsTab versions={versions} />}
       </div>
@@ -463,17 +513,24 @@ function DomainMarginPanel({ sections, defaultMargin, canEdit, onChanged }) {
       <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 14 }}>Override the margin per cost category — leave blank to use the {defaultMargin ?? 0}% default above.</div>
       {err && <div className="alert alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10 }}>
-        {PROPOSAL_CATEGORIES.map(cat => {
+        {orderedCategories(sections).map((cat, i) => {
           const section = sections.find(s => s.category === cat)
-          const t = CATEGORY_THEME[cat]
+          const isStandard = PROPOSAL_CATEGORIES.includes(cat)
+          const t = themeFor(cat, isStandard ? 0 : sections.filter(s => !PROPOSAL_CATEGORIES.includes(s.category)).findIndex(s => s.category === cat))
           const Icon = t.icon
           if (!section) return null
           return (
             <div key={cat} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderRadius: 10, border: `1px solid ${t.color}25`, background: `${t.color}0a` }}>
               <span style={{ width: 26, height: 26, borderRadius: 8, background: `${t.color}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: t.color, flexShrink: 0 }}><Icon size={13} /></span>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={cat}>{cat}</div>
-                <div style={{ fontSize: 10, color: '#94a3b8' }}>{sectionTotal(section) > 0 ? rupee(sectionTotal(section)) : 'no cost yet'}</div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={cat}>
+                  {cat}{!isStandard && <span style={{ marginLeft: 5, fontSize: 8.5, fontWeight: 700, textTransform: 'uppercase', color: 'var(--c1)', border: '1px solid var(--c1)', borderRadius: 3, padding: '0 4px' }}>Custom</span>}
+                </div>
+                <div style={{ fontSize: 10, color: '#94a3b8' }}>
+                  {sectionTotal(section) > 0 ? (
+                    <>Cost {rupee(sectionTotal(section))} → Price {rupee(categorySectionPrice(section, defaultMargin))}</>
+                  ) : 'no cost yet'}
+                </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
                 <input className="form-input" style={{ width: 56, fontSize: 12, padding: '4px 6px' }} type="number" step="0.1" disabled={!canEdit || savingId === section.id}
@@ -502,6 +559,24 @@ const CATEGORY_THEME = {
   'Software/SaaS/Third-Party': { icon: Cloud, color: '#ec4899' },
   'Miscellaneous': { icon: Plane, color: '#64748b' },
 }
+// Custom sections (STEP215) cycle through a small fixed palette by index
+// rather than all sharing one look, so several custom categories on the
+// same proposal stay visually distinguishable in the pill rail/overview.
+const CUSTOM_THEME_PALETTE = [
+  { icon: Layers, color: '#0891b2' }, { icon: Layers, color: '#d946ef' }, { icon: Layers, color: '#65a30d' },
+  { icon: Layers, color: '#ea580c' }, { icon: Layers, color: '#4f46e5' },
+]
+function themeFor(cat, customIndex = 0) {
+  return CATEGORY_THEME[cat] || CUSTOM_THEME_PALETTE[customIndex % CUSTOM_THEME_PALETTE.length]
+}
+/** Standard 7 first (canonical order), then any custom sections this proposal has added. */
+function orderedCategories(sections) {
+  const customCats = sections.map(s => s.category).filter(c => !PROPOSAL_CATEGORIES.includes(c))
+  return [...PROPOSAL_CATEGORIES, ...customCats]
+}
+// Quick-pick suggestions for "+ Add Cost Section" — still fully free-text,
+// this just saves retyping the org's own common IoT-project categories.
+const CUSTOM_CATEGORY_SUGGESTIONS = ['IoT Logger', 'Sensors', 'SaaS Platform', 'Dev & Maintenance', 'QR Device', 'Installation']
 
 function sectionTotal(section) {
   const r = (section.resourcePlans || []).reduce((s, x) => s + (Number(x.computed_cost) || 0), 0)
@@ -511,9 +586,43 @@ function sectionTotal(section) {
   return r + h + sw + m
 }
 
-function domainKpis(section) {
+// Cost (internal) marked up by this section's own margin override, falling
+// back to the proposal's overall margin — same rule computeValueSummary()
+// applies for the proposal-wide total, just surfaced per-category here so
+// the Cost tab shows Cost AND the resulting customer Price side by side,
+// not just internal cost.
+function categorySectionPrice(section, defaultMargin) {
+  const cost = sectionTotal(section)
+  const margin = Number(section.margin_percent ?? defaultMargin ?? 0)
+  return cost * (1 + margin / 100)
+}
+
+// Appends a "Total Price" KPI (cost marked up by this section's own
+// margin, or the proposal default) to whatever branch-specific KPIs
+// domainKpisBase returns below — kept as a thin wrapper so the branch
+// logic itself (unchanged) doesn't need touching in five places.
+function domainKpis(section, defaultMargin) {
+  const kpis = domainKpisBase(section)
+  const cost = sectionTotal(section)
+  const price = categorySectionPrice(section, defaultMargin)
+  if (Math.round(price * 100) !== Math.round(cost * 100)) kpis.push({ label: 'Total Price', value: rupee(price) })
+  return kpis
+}
+
+function domainKpisBase(section) {
   const cat = section.category
   const total = sectionTotal(section)
+  if (!PROPOSAL_CATEGORIES.includes(cat)) {
+    const lineCount = (section.hardwareLines || []).length + (section.softwareLines || []).length + (section.miscLines || []).length
+    const units = (section.hardwareLines || []).reduce((s, h) => s + (Number(h.estimated_quantity) || 0), 0)
+    const headcount = (section.resourcePlans || []).reduce((s, p) => s + (Number(p.estimated_count) || 0), 0)
+    return [
+      { label: 'Headcount', value: headcount },
+      { label: 'Line Items', value: lineCount },
+      { label: 'Units', value: units },
+      { label: 'Total Cost', value: rupee(total) },
+    ]
+  }
   if (RESOURCE_PLAN_CATEGORIES.includes(cat)) {
     const plans = section.resourcePlans || []
     const resourceCost = plans.reduce((s, p) => s + (Number(p.computed_cost) || 0), 0)
@@ -540,7 +649,7 @@ function domainKpis(section) {
   }
   if (cat === 'Software/SaaS/Third-Party') {
     const lines = section.softwareLines || []
-    const mrr = lines.filter(s => s.cost_type === 'Monthly').reduce((s, x) => s + (Number(x.unit_cost) || 0), 0)
+    const mrr = lines.filter(s => s.cost_type === 'Monthly').reduce((s, x) => s + (Number(x.unit_cost) || 0) * (Number(x.qty) || 1), 0)
     return [
       { label: 'Subscriptions', value: lines.length },
       { label: 'Monthly Recurring', value: rupee(mrr) },
@@ -559,7 +668,12 @@ function domainKpis(section) {
 
 function CategoryCostOverview({ sections }) {
   const [open, setOpen] = useState(false)
-  const rows = PROPOSAL_CATEGORIES.map(cat => ({ category: cat, total: sectionTotal(sections.find(x => x.category === cat) || {}), theme: CATEGORY_THEME[cat] }))
+  const cats = orderedCategories(sections)
+  let customIdx = 0
+  const rows = cats.map(cat => {
+    const theme = themeFor(cat, PROPOSAL_CATEGORIES.includes(cat) ? 0 : customIdx++)
+    return { category: cat, total: sectionTotal(sections.find(x => x.category === cat) || {}), theme }
+  })
   const max = Math.max(1, ...rows.map(r => r.total))
   const grandTotal = rows.reduce((s, r) => s + r.total, 0)
   return (
@@ -596,48 +710,106 @@ function CategoryCostOverview({ sections }) {
   )
 }
 
-function CostSectionsTab({ proposalId, sections, canEdit, onChanged }) {
+// Grouped left-hand nav (Standard categories, then Custom) instead of one
+// long horizontal scrolling tab row — the same fix applied to ROI
+// Planning's tab strip: a flat row of N standard + M custom categories
+// (each carrying an icon + name + amount) overflows fast and forces
+// horizontal scrolling. A vertical, grouped list doesn't.
+function CostSectionNav({ cats, sections, active, onChange, canEdit, onAddClick, defaultMargin }) {
+  const standard = cats.filter(c => PROPOSAL_CATEGORIES.includes(c))
+  const custom = cats.filter(c => !PROPOSAL_CATEGORIES.includes(c))
+
+  function Row({ cat }) {
+    const s = sections.find(x => x.category === cat)
+    const cost = s ? sectionTotal(s) : 0
+    const price = s ? categorySectionPrice(s, defaultMargin) : 0
+    const isActive = active === cat
+    const CatIcon = themeFor(cat).icon
+    return (
+      <button key={cat} onClick={() => onChange(cat)} style={{
+        display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
+        padding: '8px 10px', borderRadius: 7, border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+        background: isActive ? 'var(--c1)' : 'transparent', color: isActive ? '#fff' : 'inherit',
+      }}>
+        <CatIcon size={13} style={{ flexShrink: 0, color: isActive ? '#fff' : 'var(--ink-muted)' }} />
+        <span style={{ fontSize: 12.5, fontWeight: isActive ? 700 : 500, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cat}</span>
+        <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', flexShrink: 0 }}>
+          <span style={{ fontSize: 10.5, fontWeight: 600, opacity: isActive ? 0.9 : 0.7 }}>{rupee(cost)}</span>
+          {price !== cost && <span style={{ fontSize: 9, fontWeight: 600, opacity: isActive ? 0.85 : 0.6 }}>→ {rupee(price)}</span>}
+        </span>
+      </button>
+    )
+  }
+
+  return (
+    <nav style={{ width: 230, flexShrink: 0, position: 'sticky', top: 16, display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div>
+        <div style={{ fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--text-muted, #94a3b8)', marginBottom: 6, padding: '0 10px' }}>Standard Categories</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {standard.map(cat => <Row key={cat} cat={cat} />)}
+        </div>
+      </div>
+      <div>
+        <div style={{ fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--text-muted, #94a3b8)', marginBottom: 6, padding: '0 10px' }}>Custom Categories</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {custom.length === 0 && <div style={{ fontSize: 11, color: 'var(--ink-muted)', padding: '4px 10px' }}>None yet</div>}
+          {custom.map(cat => <Row key={cat} cat={cat} />)}
+        </div>
+        {canEdit && (
+          <button onClick={onAddClick} style={{
+            display: 'flex', alignItems: 'center', gap: 6, width: '100%', marginTop: 6,
+            padding: '8px 10px', borderRadius: 7, border: '1px dashed var(--border)', cursor: 'pointer',
+            background: 'transparent', color: 'var(--c1)', fontSize: 12.5, fontWeight: 700, fontFamily: 'inherit',
+          }}>
+            <Plus size={14} /> Add Cost Section
+          </button>
+        )}
+      </div>
+    </nav>
+  )
+}
+
+function CostSectionsTab({ proposalId, sections, canEdit, defaultMargin, onChanged }) {
   const [openCategory, setOpenCategory] = useState(sections[0]?.category)
   const [designations, setDesignations] = useState([])
+  const [employees, setEmployees] = useState([])
   const [products, setProducts] = useState([])
   const [softwareSuggestions, setSoftwareSuggestions] = useState([])
+  const [showAddSection, setShowAddSection] = useState(false)
 
   useEffect(() => {
     listDesignationOptions().then(setDesignations)
+    listEmployeeOptions().then(setEmployees)
     listProductOptions().then(setProducts)
     listSoftwareItemSuggestions().then(setSoftwareSuggestions)
   }, [])
 
+  const cats = orderedCategories(sections)
   const section = sections.find(s => s.category === openCategory) || sections[0]
+  const isCustomSection = section && !PROPOSAL_CATEGORIES.includes(section.category)
   const allResourcePlans = useMemo(() => sections.flatMap(s => (s.resourcePlans || []).map(r => ({ ...r, category: s.category }))), [sections])
-  const theme = CATEGORY_THEME[section?.category] || { icon: FileText }
+  const theme = themeFor(section?.category)
   const Icon = theme.icon
 
-  return (
-    <div>
-      {/* Underlined category sub-tabs — single scrollable row; active category
-          reads via a single --c1 underline + label weight, no per-category
-          colour coding (matches the flat outer segmented tab bar). */}
-      <div style={{ display: 'flex', gap: 22, overflowX: 'auto', marginBottom: 16, borderBottom: '1px solid var(--border)' }}>
-        {PROPOSAL_CATEGORIES.map(cat => {
-          const s = sections.find(x => x.category === cat)
-          const total = s ? sectionTotal(s) : 0
-          const active = section?.category === cat
-          const CatIcon = CATEGORY_THEME[cat].icon
-          return (
-            <button key={cat} onClick={() => setOpenCategory(cat)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 7, padding: '0 2px 9px', cursor: 'pointer', fontFamily: 'inherit',
-                background: 'none', border: 'none', borderBottom: `2px solid ${active ? 'var(--c1)' : 'transparent'}`, flexShrink: 0,
-              }}>
-              <CatIcon size={13} style={{ flexShrink: 0, color: active ? 'var(--c1)' : 'var(--ink-muted)' }} />
-              <span style={{ fontSize: 12.5, fontWeight: active ? 700 : 500, color: active ? 'var(--c1)' : 'var(--text-soft, #334155)', whiteSpace: 'nowrap' }}>{cat}</span>
-              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink-muted, #94a3b8)', whiteSpace: 'nowrap' }}>{rupee(total)}</span>
-            </button>
-          )
-        })}
-      </div>
+  async function handleDeleteSection() {
+    if (!window.confirm(`Remove the "${section.category}" cost section and all its lines? This cannot be undone.`)) return
+    await deleteCostSection(section.id)
+    setOpenCategory(sections.find(s => s.id !== section.id)?.category)
+    onChanged()
+  }
 
+  return (
+    <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+      <CostSectionNav cats={cats} sections={sections} active={section?.category} onChange={setOpenCategory}
+        canEdit={canEdit} onAddClick={() => setShowAddSection(true)} defaultMargin={defaultMargin} />
+
+      {showAddSection && (
+        <AddCostSectionModal proposalId={proposalId} existingCategories={sections.map(s => s.category)}
+          onClose={() => setShowAddSection(false)}
+          onAdded={(cat) => { setShowAddSection(false); setOpenCategory(cat); onChanged() }} />
+      )}
+
+      <div style={{ flex: '1 1 420px', minWidth: 320 }}>
       <CategoryCostOverview sections={sections} />
 
       {section && (
@@ -648,16 +820,27 @@ function CostSectionsTab({ proposalId, sections, canEdit, onChanged }) {
                 <Icon size={15} />
               </span>
               <div>
-                <div style={{ fontWeight: 800, fontSize: 15 }}>{section.category}</div>
+                <div style={{ fontWeight: 800, fontSize: 15, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {section.category}
+                  {isCustomSection && <span style={{ fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', color: 'var(--c1)', border: '1px solid var(--c1)', borderRadius: 4, padding: '1px 6px' }}>Custom</span>}
+                </div>
                 {section.category === 'Hardware Design & Production' && <div style={{ fontSize: 11, color: 'var(--ink-muted)' }}>Design/engineering labor plus installation, assembly and other production cost — separate from the raw device cost under Hardware.</div>}
                 {section.category === 'ERP Integration' && <div style={{ fontSize: 11, color: 'var(--ink-muted)' }}>Pick which ERP system below, then the resource plan for the integration effort.</div>}
+                {isCustomSection && <div style={{ fontSize: 11, color: 'var(--ink-muted)' }}>Custom section — has its own margin, and can carry a resource plan (headcount/named employees), device/hardware lines, subscription/software lines and one-off misc lines below.</div>}
               </div>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)' }}>Margin Override %</label>
-              <input className="form-input" style={{ width: 80, fontSize: 12 }} type="number" step="0.1" disabled={!canEdit}
-                placeholder="default" value={section.margin_percent ?? ''}
-                onChange={async e => { await updateCostSection(section.id, { margin_percent: e.target.value === '' ? null : Number(e.target.value), notes: section.notes }); onChanged() }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)' }}>Margin Override %</label>
+                <input className="form-input" style={{ width: 80, fontSize: 12 }} type="number" step="0.1" disabled={!canEdit}
+                  placeholder="default" value={section.margin_percent ?? ''}
+                  onChange={async e => { await updateCostSection(section.id, { margin_percent: e.target.value === '' ? null : Number(e.target.value), notes: section.notes }); onChanged() }} />
+              </div>
+              {isCustomSection && canEdit && (
+                <button onClick={handleDeleteSection} title="Remove this cost section" className="btn btn-outline btn-sm" style={{ color: 'var(--rose, #e11d48)', borderColor: 'var(--rose, #e11d48)' }}>
+                  <Trash2 size={13} />
+                </button>
+              )}
             </div>
           </div>
 
@@ -666,7 +849,7 @@ function CostSectionsTab({ proposalId, sections, canEdit, onChanged }) {
             display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '4px 0', marginBottom: 14,
             fontSize: 12, color: 'var(--text-soft, #334155)',
           }}>
-            {domainKpis(section).map((k, i) => (
+            {domainKpis(section, defaultMargin).map((k, i) => (
               <span key={k.label} style={{ display: 'inline-flex', alignItems: 'baseline', gap: 5 }}>
                 {i > 0 && <span style={{ margin: '0 10px', color: 'var(--border)' }}>|</span>}
                 <span style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '.03em' }}>{k.label}</span>
@@ -676,7 +859,7 @@ function CostSectionsTab({ proposalId, sections, canEdit, onChanged }) {
           </div>
 
           {RESOURCE_PLAN_CATEGORIES.includes(section.category) && (
-            <ResourceTable section={section} canEdit={canEdit} designations={designations} onChanged={onChanged} />
+            <ResourceTable section={section} canEdit={canEdit} designations={designations} employees={employees} onChanged={onChanged} />
           )}
           {section.category === 'Hardware' && (
             <HardwareTable section={section} canEdit={canEdit} products={products} onChanged={onChanged} />
@@ -685,11 +868,97 @@ function CostSectionsTab({ proposalId, sections, canEdit, onChanged }) {
             <SoftwareTable section={section} canEdit={canEdit} softwareSuggestions={softwareSuggestions} onChanged={onChanged} />
           )}
           {MISC_CAPABLE_CATEGORIES.includes(section.category) && (
-            <MiscTable section={section} canEdit={canEdit} allResourcePlans={allResourcePlans} onChanged={onChanged} />
+            <MiscTable section={section} canEdit={canEdit} allResourcePlans={allResourcePlans} sections={sections} onChanged={onChanged} />
+          )}
+          {isCustomSection && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+              <div>
+                <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '.03em', marginBottom: 8 }}>Resource Plan (headcount / named employees)</div>
+                <ResourceTable section={section} canEdit={canEdit} designations={designations} employees={employees} onChanged={onChanged} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '.03em', marginBottom: 8 }}>Device / Hardware Lines</div>
+                <HardwareTable section={section} canEdit={canEdit} products={products} onChanged={onChanged} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '.03em', marginBottom: 8 }}>Subscription / Software Lines</div>
+                <SoftwareTable section={section} canEdit={canEdit} softwareSuggestions={softwareSuggestions} onChanged={onChanged} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '.03em', marginBottom: 8 }}>Other / Misc Lines</div>
+                <MiscTable section={section} canEdit={canEdit} allResourcePlans={allResourcePlans} sections={sections} onChanged={onChanged} />
+              </div>
+            </div>
           )}
         </div>
       )}
+      </div>
     </div>
+  )
+}
+
+function AddCostSectionModal({ proposalId, existingCategories, onClose, onAdded }) {
+  const [name, setName] = useState('')
+  const [budgetCategory, setBudgetCategory] = useState('')
+  const [budgetCats, setBudgetCats] = useState(BUDGET_CATEGORIES)
+  const [preRegisteredMap, setPreRegisteredMap] = useState({})
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    listBudgetCategories().then(setBudgetCats)
+    // Any category an admin already mapped in Settings -> Proposal Budget
+    // Mapping (even one not used on any proposal yet) shows here as a
+    // quick-pick too, not just the static suggestion list — picking one
+    // also pre-fills its budget category.
+    getBudgetCategoryMap().then(setPreRegisteredMap)
+  }, [])
+
+  const preRegistered = Object.keys(preRegisteredMap).filter(c => !PROPOSAL_CATEGORIES.includes(c))
+  const suggestions = [...new Set([...CUSTOM_CATEGORY_SUGGESTIONS, ...preRegistered])].filter(s => !existingCategories.includes(s))
+
+  async function submit() {
+    const trimmed = name.trim()
+    if (!trimmed) { setErr('Name is required'); return }
+    if (existingCategories.some(c => c.toLowerCase() === trimmed.toLowerCase())) { setErr('A cost section with this name already exists on this proposal'); return }
+    setBusy(true); setErr('')
+    try {
+      await addCostSection(proposalId, trimmed, budgetCategory || null)
+      onAdded(trimmed)
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Add Cost Section" footer={
+      <><button className="btn btn-outline" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" disabled={busy} onClick={submit}>{busy ? 'Adding…' : 'Add Section'}</button></>
+    }>
+      {err && <div className="alert alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div>
+          <label style={{ display: 'block', fontSize: 11.5, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', marginBottom: 5 }}>Section Name</label>
+          <input className="form-input" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. IoT Logger, Sensors, SaaS Platform, QR Device, Installation" autoFocus />
+          {suggestions.length > 0 && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+              {suggestions.map(s => (
+                <button key={s} type="button" onClick={() => { setName(s); if (preRegisteredMap[s]) setBudgetCategory(preRegisteredMap[s]) }}
+                  style={{ fontSize: 11.5, fontWeight: 600, padding: '4px 10px', borderRadius: 999, border: '1px solid var(--border)', background: 'var(--surface-2, #f8fafc)', cursor: 'pointer' }}>
+                  + {s}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div>
+          <label style={{ display: 'block', fontSize: 11.5, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', marginBottom: 5 }}>Roll up to Budget Category (optional)</label>
+          <select className="form-input" value={budgetCategory} onChange={e => setBudgetCategory(e.target.value)}>
+            <option value="">— Not mapped (won't flow into "Convert to Project" budgets) —</option>
+            {budgetCats.map(o => <option key={o.value} value={o.value}>{o.label}{o.is_custom ? ' (custom)' : ''}</option>)}
+          </select>
+          <div style={{ fontSize: 10.5, color: 'var(--ink-muted)', marginTop: 4 }}>This section will get its own margin, just like the standard categories. Mapping it here also lets its cost seed a planned-budget line when this proposal is later converted to a project.</div>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
@@ -738,26 +1007,115 @@ function MatchSuggestions({ query, options, getLabel, getMeta, onPick, limit = 6
   )
 }
 
+// A real search-as-you-browse combobox for picking an employee — shows the
+// full team on focus (not just once you start typing, unlike the generic
+// MatchSuggestions used for designations/products elsewhere), matches on
+// name OR designation, and closes on outside click/Escape.
+function EmployeeCombobox({ employees, onPick, placeholder = 'Search employee by name or designation…', autoFocus }) {
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef(null)
+
+  useEffect(() => {
+    function onDocMouseDown(e) { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [])
+
+  const q = query.trim().toLowerCase()
+  const matches = (q
+    ? (employees || []).filter(e => e.full_name?.toLowerCase().includes(q) || e.designation?.toLowerCase().includes(q))
+    : (employees || [])
+  ).slice(0, 30)
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <input className="form-input" style={cellInput} placeholder={placeholder} value={query} autoFocus={autoFocus}
+        onFocus={() => setOpen(true)}
+        onChange={e => { setQuery(e.target.value); setOpen(true) }}
+        onKeyDown={e => { if (e.key === 'Escape') setOpen(false) }} />
+      {open && (
+        <div style={{
+          position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, marginTop: 3,
+          maxHeight: 240, overflowY: 'auto', background: '#fff', border: '1px solid #e2e8f0',
+          borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,.12)',
+        }}>
+          {matches.length === 0 ? (
+            <div style={{ padding: '10px 12px', fontSize: 11.5, color: '#94a3b8' }}>No matching employees</div>
+          ) : matches.map(e => (
+            <div key={e.id} onMouseDown={() => { onPick(e); setQuery(''); setOpen(false) }}
+              style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, padding: '7px 10px', cursor: 'pointer' }}
+              onMouseEnter={ev => { ev.currentTarget.style.background = '#eef2ff' }} onMouseLeave={ev => { ev.currentTarget.style.background = 'transparent' }}>
+              <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.full_name}</span>
+              <span style={{ color: '#64748b', flexShrink: 0, whiteSpace: 'nowrap' }}>{e.designation || '—'}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* ── Resource Plan (inline) ── */
-function ResourceTable({ section, canEdit, designations, onChanged }) {
+function ResourceTable({ section, canEdit, designations, employees, onChanged }) {
   const [editingId, setEditingId] = useState(null) // row id or 'new'
   const [form, setForm] = useState({})
   const [err, setErr] = useState('')
   const rows = section.resourcePlans || []
   const knownRate = designations.find(d => d.designation.toLowerCase() === (form.designation || '').toLowerCase())
+  const employeeById = useMemo(() => Object.fromEntries((employees || []).map(e => [e.id, e])), [employees])
+  const pickedEmployee = form.employee_id ? employeeById[form.employee_id] : null
 
-  function startEdit(r) { setEditingId(r.id); setForm({ designation: r.designation, estimated_count: r.estimated_count, estimated_duration_weeks: r.estimated_duration_weeks }) }
-  function startNew() { setEditingId('new'); setForm({ designation: '', estimated_count: 1, estimated_duration_weeks: 1 }) }
+  function startEdit(r) { setEditingId(r.id); setForm({ designation: r.designation, employee_id: r.employee_id || null, estimated_count: r.estimated_count, estimated_duration_weeks: r.estimated_duration_weeks }) }
+  function startNew() { setEditingId('new'); setForm({ designation: '', employee_id: null, estimated_count: 1, estimated_duration_weeks: 1 }) }
   function cancel() { setEditingId(null); setForm({}); setErr('') }
+  // Falls back to the employee's own name as the designation label if their
+  // profile has none on file — proposal_resource_plans.designation is
+  // NOT NULL, and picking a person should never be blocked by a profile
+  // field they happen not to have filled in.
+  function pickEmployee(e) { setForm(f => ({ ...f, employee_id: e.id, designation: e.designation || f.designation || e.full_name, estimated_count: 1 })) }
+  function clearEmployee() { setForm(f => ({ ...f, employee_id: null })) }
   async function save() {
-    if (!form.designation?.trim()) { setErr('Designation is required.'); return }
+    if (!form.designation?.trim() && !form.employee_id) { setErr('Pick an employee, or enter a generic designation.'); return }
     if (!(Number(form.estimated_count) > 0) || !(Number(form.estimated_duration_weeks) > 0)) { setErr('Count and Weeks must be greater than 0.'); return }
     setErr('')
     try {
-      if (editingId === 'new') await addResourcePlan({ proposalCostSectionId: section.id, designation: form.designation, estimatedCount: form.estimated_count, estimatedDurationWeeks: form.estimated_duration_weeks })
-      else await updateResourcePlan(editingId, { designation: form.designation, estimatedCount: form.estimated_count, estimatedDurationWeeks: form.estimated_duration_weeks, refreshRate: true })
+      if (editingId === 'new') await addResourcePlan({ proposalCostSectionId: section.id, designation: form.designation, employeeId: form.employee_id, estimatedCount: form.estimated_count, estimatedDurationWeeks: form.estimated_duration_weeks })
+      else await updateResourcePlan(editingId, { designation: form.designation, employeeId: form.employee_id, estimatedCount: form.estimated_count, estimatedDurationWeeks: form.estimated_duration_weeks, refreshRate: true })
       cancel(); onChanged()
     } catch (e) { setErr(e.message) }
+  }
+
+  function FormRow() {
+    return (
+      <>
+        <td>
+          {pickedEmployee ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#eef2ff', borderRadius: 6, padding: '5px 8px' }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pickedEmployee.full_name}</div>
+                <div style={{ fontSize: 10.5, color: '#64748b' }}>{pickedEmployee.designation || form.designation || '—'}</div>
+              </div>
+              <button type="button" onClick={clearEmployee} title="Switch back to a generic designation" style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', flexShrink: 0 }}><X size={13} /></button>
+            </div>
+          ) : (
+            <>
+              <EmployeeCombobox employees={employees} onPick={pickEmployee} autoFocus />
+              <div style={{ fontSize: 10, color: '#94a3b8', textAlign: 'center', margin: '4px 0' }}>— or —</div>
+              <input className="form-input" style={cellInput} placeholder="Generic designation (no specific person)" value={form.designation} onChange={e => setForm(f => ({ ...f, designation: e.target.value }))} />
+              <MatchSuggestions query={form.designation} options={designations} getLabel={d => d.designation}
+                getMeta={d => `${rupee(d.hourly_rate)}/hr`} onPick={d => setForm(f => ({ ...f, designation: d.designation }))} />
+            </>
+          )}
+        </td>
+        <td><input className="form-input" style={{ ...cellInput, width: 60 }} type="number" disabled={!!pickedEmployee} title={pickedEmployee ? 'A named employee is always exactly one person' : ''} value={form.estimated_count} onChange={e => setForm(f => ({ ...f, estimated_count: e.target.value }))} /></td>
+        <td><input className="form-input" style={{ ...cellInput, width: 60 }} type="number" value={form.estimated_duration_weeks} onChange={e => setForm(f => ({ ...f, estimated_duration_weeks: e.target.value }))} /></td>
+        <td colSpan={2} style={{ fontSize: 11, color: form.designation && !knownRate && !pickedEmployee ? '#dc2626' : '#94a3b8' }}>
+          {pickedEmployee ? "rate: employee's own rate, else role rate" : form.designation && !knownRate ? '⚠ no rate on file — cost will be ₹0' : 'rate refreshed on save'}
+        </td>
+        <td><RowActions onSave={save} onCancel={cancel} /></td>
+      </>
+    )
   }
 
   return (
@@ -766,25 +1124,17 @@ function ResourceTable({ section, canEdit, designations, onChanged }) {
       {err && <div className="alert alert-danger" style={{ marginBottom: 10 }}>{err}</div>}
       <div className="table-wrap cost-table-wrap">
         <table className="cost-table">
-          <thead><tr><th>Designation</th><th>Count</th><th>Weeks</th><th>Rate/hr</th><th>Cost</th><th style={{ width: 70 }}></th></tr></thead>
+          <thead><tr><th>Designation / Employee</th><th>Count</th><th>Weeks</th><th>Rate/hr</th><th>Cost</th><th style={{ width: 70 }}></th></tr></thead>
           <tbody>
             {rows.map(r => editingId === r.id ? (
-              <tr key={r.id} style={{ background: '#fffbeb' }}>
-                <td>
-                  <input className="form-input" style={cellInput} placeholder="Designation" value={form.designation} onChange={e => setForm(f => ({ ...f, designation: e.target.value }))} autoFocus />
-                  <MatchSuggestions query={form.designation} options={designations} getLabel={d => d.designation}
-                    getMeta={d => `${rupee(d.hourly_rate)}/hr`} onPick={d => setForm(f => ({ ...f, designation: d.designation }))} />
-                </td>
-                <td><input className="form-input" style={{ ...cellInput, width: 60 }} type="number" value={form.estimated_count} onChange={e => setForm(f => ({ ...f, estimated_count: e.target.value }))} /></td>
-                <td><input className="form-input" style={{ ...cellInput, width: 60 }} type="number" value={form.estimated_duration_weeks} onChange={e => setForm(f => ({ ...f, estimated_duration_weeks: e.target.value }))} /></td>
-                <td colSpan={2} style={{ fontSize: 11, color: form.designation && !knownRate ? '#dc2626' : '#94a3b8' }}>
-                  {form.designation && !knownRate ? '⚠ no rate on file — cost will be ₹0' : 'rate refreshed on save'}
-                </td>
-                <td><RowActions onSave={save} onCancel={cancel} /></td>
-              </tr>
+              <tr key={r.id} style={{ background: '#fffbeb' }}><FormRow /></tr>
             ) : (
               <tr key={r.id}>
-                <td className="td-bold" style={{ fontSize: 12 }}>{r.designation}</td>
+                <td className="td-bold" style={{ fontSize: 12 }}>
+                  {r.employee_id && employeeById[r.employee_id] ? (
+                    <>{employeeById[r.employee_id].full_name}<div style={{ fontSize: 10.5, fontWeight: 500, color: '#94a3b8' }}>{r.designation}</div></>
+                  ) : r.designation}
+                </td>
                 <td style={{ fontSize: 12 }}>{r.estimated_count}</td>
                 <td style={{ fontSize: 12 }}>{r.estimated_duration_weeks}</td>
                 <td style={{ fontSize: 12 }}>{rupee(r.rate_used)}</td>
@@ -793,19 +1143,7 @@ function ResourceTable({ section, canEdit, designations, onChanged }) {
               </tr>
             ))}
             {canEdit && (editingId === 'new' ? (
-              <tr style={{ background: '#f0fdf4' }}>
-                <td>
-                  <input className="form-input" style={cellInput} placeholder="Designation" value={form.designation} onChange={e => setForm(f => ({ ...f, designation: e.target.value }))} autoFocus />
-                  <MatchSuggestions query={form.designation} options={designations} getLabel={d => d.designation}
-                    getMeta={d => `${rupee(d.hourly_rate)}/hr`} onPick={d => setForm(f => ({ ...f, designation: d.designation }))} />
-                </td>
-                <td><input className="form-input" style={{ ...cellInput, width: 60 }} type="number" value={form.estimated_count} onChange={e => setForm(f => ({ ...f, estimated_count: e.target.value }))} /></td>
-                <td><input className="form-input" style={{ ...cellInput, width: 60 }} type="number" value={form.estimated_duration_weeks} onChange={e => setForm(f => ({ ...f, estimated_duration_weeks: e.target.value }))} /></td>
-                <td colSpan={2} style={{ fontSize: 11, color: form.designation && !knownRate ? '#dc2626' : '#94a3b8' }}>
-                  {form.designation && !knownRate ? '⚠ no rate on file' : ''}
-                </td>
-                <td><RowActions onSave={save} onCancel={cancel} /></td>
-              </tr>
+              <tr style={{ background: '#f0fdf4' }}><FormRow /></tr>
             ) : (
               <tr><td colSpan={6}><button type="button" className="btn btn-ghost btn-sm" onClick={startNew}><Plus size={12} /> Add resource</button></td></tr>
             ))}
@@ -830,6 +1168,15 @@ function HardwareTable({ section, canEdit, products, onChanged }) {
   function startNew() { setEditingId('new'); setForm({ part_number: '', description: '', estimated_quantity: 1, manual_unit_cost: '' }) }
   function cancel() { setEditingId(null); setForm({}); setErr('') }
   function pickProduct(p) { setForm(f => ({ ...f, part_number: p.part_number, description: f.description || p.name })) }
+  // unit_cost is a snapshot taken when the line was last saved — it never
+  // auto-follows products.standard_cost, so a catalog price change after
+  // that point silently goes stale with no visible sign. Re-runs the same
+  // refreshCost path Save already uses, just without opening the row for edit.
+  async function syncPrice(r, p) {
+    setErr('')
+    try { await updateHardwareLine(r.id, { partNumber: r.part_number, description: r.description, estimatedQuantity: r.estimated_quantity, manualUnitCost: p.unitCost, refreshCost: true }); onChanged() }
+    catch (e) { setErr(e.message) }
+  }
   async function save() {
     if (!form.description?.trim()) { setErr('Description is required.'); return }
     if (!(Number(form.estimated_quantity) > 0)) { setErr('Quantity must be greater than 0.'); return }
@@ -882,7 +1229,15 @@ function HardwareTable({ section, canEdit, products, onChanged }) {
                   <td className="td-bold" style={{ fontSize: 12 }}>{r.description}</td>
                   <td style={{ fontSize: 12 }}>{r.estimated_quantity}</td>
                   <td style={{ fontSize: 12, color: p?.lowStock ? '#dc2626' : 'inherit' }}>{p ? `${p.onHand}${p.lowStock ? ' ⚠' : ''}` : '—'}</td>
-                  <td style={{ fontSize: 12 }}>{rupee(r.unit_cost)}</td>
+                  <td style={{ fontSize: 12 }}>
+                    {rupee(r.unit_cost)}
+                    {p && Math.abs(Number(p.unitCost) - Number(r.unit_cost)) > 0.005 && (
+                      <div style={{ fontSize: 10, color: '#b45309', display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                        Catalog now {rupee(p.unitCost)}
+                        {canEdit && <button type="button" className="btn btn-ghost btn-sm" style={{ padding: '1px 6px', fontSize: 10, height: 'auto' }} onClick={() => syncPrice(r, p)}>Sync</button>}
+                      </div>
+                    )}
+                  </td>
                   <td style={{ fontSize: 12, fontWeight: 700 }}>{rupee(r.subtotal_internal_cost)}</td>
                   <td>{canEdit && <RowIcons onEdit={() => startEdit(r)} onDelete={async () => { await deleteHardwareLine(r.id); onChanged() }} />}</td>
                 </tr>
@@ -929,16 +1284,17 @@ function SoftwareTable({ section, canEdit, softwareSuggestions, onChanged }) {
   const [err, setErr] = useState('')
   const rows = section.softwareLines || []
 
-  function startEdit(r) { setEditingId(r.id); setForm({ item_name: r.item_name, cost_type: r.cost_type, unit_cost: r.unit_cost, duration_months: r.duration_months }) }
-  function startNew() { setEditingId('new'); setForm({ item_name: '', cost_type: 'One-time', unit_cost: '', duration_months: 1 }) }
+  function startEdit(r) { setEditingId(r.id); setForm({ item_name: r.item_name, cost_type: r.cost_type, unit_cost: r.unit_cost, qty: r.qty ?? 1, duration_months: r.duration_months }) }
+  function startNew() { setEditingId('new'); setForm({ item_name: '', cost_type: 'One-time', unit_cost: '', qty: 1, duration_months: 1 }) }
   function cancel() { setEditingId(null); setForm({}); setErr('') }
   function pickSuggestion(s) { setForm(f => ({ ...f, item_name: s.item_name, cost_type: s.cost_type || f.cost_type, unit_cost: s.unit_cost })) }
   async function save() {
     if (!form.item_name?.trim()) { setErr('Item name is required.'); return }
     if (!(Number(form.unit_cost) >= 0)) { setErr('Unit cost must be a number 0 or greater.'); return }
+    if (!(Number(form.qty) > 0)) { setErr('Qty (license count) must be greater than 0.'); return }
     if (form.cost_type !== 'One-time' && !(Number(form.duration_months) > 0)) { setErr('Duration (months) must be greater than 0 for recurring items.'); return }
     setErr('')
-    const payload = { itemName: form.item_name, costType: form.cost_type || 'One-time', unitCost: form.unit_cost, durationMonths: form.duration_months }
+    const payload = { itemName: form.item_name, costType: form.cost_type || 'One-time', unitCost: form.unit_cost, qty: form.qty, durationMonths: form.duration_months }
     try {
       if (editingId === 'new') await addSoftwareLine({ proposalCostSectionId: section.id, ...payload })
       else await updateSoftwareLine(editingId, payload)
@@ -952,7 +1308,7 @@ function SoftwareTable({ section, canEdit, softwareSuggestions, onChanged }) {
       {err && <div className="alert alert-danger" style={{ marginBottom: 10 }}>{err}</div>}
       <div className="table-wrap cost-table-wrap">
         <table className="cost-table">
-          <thead><tr><th>Item</th><th>Type</th><th>Unit Cost</th><th>Duration (mo)</th><th>Cost</th><th style={{ width: 70 }}></th></tr></thead>
+          <thead><tr><th>Item</th><th>Type</th><th>Unit Cost</th><th>Qty (licenses)</th><th>Duration (mo)</th><th>Cost</th><th style={{ width: 70 }}></th></tr></thead>
           <tbody>
             {rows.map(r => editingId === r.id ? (
               <tr key={r.id} style={{ background: '#fffbeb' }}>
@@ -967,6 +1323,7 @@ function SoftwareTable({ section, canEdit, softwareSuggestions, onChanged }) {
                   </select>
                 </td>
                 <td><input className="form-input" style={{ ...cellInput, width: 80 }} type="number" step="0.01" value={form.unit_cost} onChange={e => setForm(f => ({ ...f, unit_cost: e.target.value }))} /></td>
+                <td><input className="form-input" style={{ ...cellInput, width: 70 }} type="number" step="1" min="1" value={form.qty} onChange={e => setForm(f => ({ ...f, qty: e.target.value }))} /></td>
                 <td>{form.cost_type !== 'One-time' ? <input className="form-input" style={{ ...cellInput, width: 60 }} type="number" value={form.duration_months} onChange={e => setForm(f => ({ ...f, duration_months: e.target.value }))} /> : '—'}</td>
                 <td style={{ fontSize: 11, color: '#94a3b8' }}>cost refreshed on save</td>
                 <td><RowActions onSave={save} onCancel={cancel} /></td>
@@ -976,6 +1333,7 @@ function SoftwareTable({ section, canEdit, softwareSuggestions, onChanged }) {
                 <td className="td-bold" style={{ fontSize: 12 }}>{r.item_name}</td>
                 <td style={{ fontSize: 12 }}><span className="badge">{r.cost_type}</span></td>
                 <td style={{ fontSize: 12 }}>{rupee(r.unit_cost)}</td>
+                <td style={{ fontSize: 12 }}>{r.qty ?? 1}</td>
                 <td style={{ fontSize: 12 }}>{r.cost_type !== 'One-time' ? r.duration_months : '—'}</td>
                 <td style={{ fontSize: 12, fontWeight: 700 }}>{rupee(r.computed_cost)}</td>
                 <td>{canEdit && <RowIcons onEdit={() => startEdit(r)} onDelete={async () => { await deleteSoftwareLine(r.id); onChanged() }} />}</td>
@@ -994,14 +1352,15 @@ function SoftwareTable({ section, canEdit, softwareSuggestions, onChanged }) {
                   </select>
                 </td>
                 <td><input className="form-input" style={{ ...cellInput, width: 80 }} type="number" step="0.01" value={form.unit_cost} onChange={e => setForm(f => ({ ...f, unit_cost: e.target.value }))} /></td>
+                <td><input className="form-input" style={{ ...cellInput, width: 70 }} type="number" step="1" min="1" value={form.qty} onChange={e => setForm(f => ({ ...f, qty: e.target.value }))} /></td>
                 <td>{form.cost_type !== 'One-time' ? <input className="form-input" style={{ ...cellInput, width: 60 }} type="number" value={form.duration_months} onChange={e => setForm(f => ({ ...f, duration_months: e.target.value }))} /> : '—'}</td>
                 <td></td>
                 <td><RowActions onSave={save} onCancel={cancel} /></td>
               </tr>
             ) : (
-              <tr><td colSpan={6}><button type="button" className="btn btn-ghost btn-sm" onClick={startNew}><Plus size={12} /> Add software / SaaS line</button></td></tr>
+              <tr><td colSpan={7}><button type="button" className="btn btn-ghost btn-sm" onClick={startNew}><Plus size={12} /> Add software / SaaS line</button></td></tr>
             ))}
-            {rows.length === 0 && editingId !== 'new' && <tr><td colSpan={6} style={{ textAlign: 'center', color: '#94a3b8', padding: 16, fontSize: 12 }}><Wallet size={16} style={{ opacity: .4, display: 'block', margin: '0 auto 6px' }} />No software lines added yet.</td></tr>}
+            {rows.length === 0 && editingId !== 'new' && <tr><td colSpan={7} style={{ textAlign: 'center', color: '#94a3b8', padding: 16, fontSize: 12 }}><Wallet size={16} style={{ opacity: .4, display: 'block', margin: '0 auto 6px' }} />No software lines added yet.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1010,7 +1369,7 @@ function SoftwareTable({ section, canEdit, softwareSuggestions, onChanged }) {
 }
 
 /* ── Miscellaneous / ERP system / Installation-Assembly (inline) ── */
-function MiscTable({ section, canEdit, allResourcePlans, onChanged }) {
+function MiscTable({ section, canEdit, allResourcePlans, sections, onChanged }) {
   const [editingId, setEditingId] = useState(null)
   const [form, setForm] = useState({})
   const [err, setErr] = useState('')
@@ -1018,20 +1377,59 @@ function MiscTable({ section, canEdit, allResourcePlans, onChanged }) {
   const isErp = section.category === 'ERP Integration'
   const isMisc = section.category === 'Miscellaneous'
   const title = isErp ? 'ERP System / Other Lines' : section.category === 'Hardware Design & Production' ? 'Installation / Assembly / Other Costs' : 'Line Items'
+  // Live preview only — the authoritative figure is always recomputed
+  // server-side at save time (proposals.js's resolveMiscCost), so a stale
+  // client-side base can never get persisted.
+  const basePreview = useMemo(() => (sections || [])
+    .filter(s => RESOURCE_PLAN_CATEGORIES.includes(s.category))
+    .reduce((sum, s) => sum + sectionTotal(s), 0), [sections])
 
-  function startEdit(r) { setEditingId(r.id); setForm({ item_name: r.item_name, line_type: r.line_type, cost: r.cost, linked_resource_plan_id: r.linked_resource_plan_id }) }
-  function startNew() { setEditingId('new'); setForm({ item_name: '', line_type: 'Other', cost: '', linked_resource_plan_id: '' }) }
+  function startEdit(r) { setEditingId(r.id); setForm({ item_name: r.item_name, line_type: r.line_type, cost: r.cost, linked_resource_plan_id: r.linked_resource_plan_id, mode: r.percent_of_base != null ? 'percent' : 'flat', percent_of_base: r.percent_of_base ?? '' }) }
+  function startNew() { setEditingId('new'); setForm({ item_name: '', line_type: 'Other', cost: '', linked_resource_plan_id: '', mode: 'flat', percent_of_base: '' }) }
   function cancel() { setEditingId(null); setForm({}); setErr('') }
   async function save() {
     if (!form.item_name?.trim()) { setErr('Item name is required.'); return }
-    if (!(Number(form.cost) >= 0)) { setErr('Cost must be a number 0 or greater.'); return }
+    const isPercentMode = isMisc && form.mode === 'percent'
+    if (isPercentMode) { if (!(Number(form.percent_of_base) >= 0)) { setErr('% must be a number 0 or greater.'); return } }
+    else if (!(Number(form.cost) >= 0)) { setErr('Cost must be a number 0 or greater.'); return }
     setErr('')
-    const payload = { itemName: form.item_name, cost: form.cost, lineType: form.line_type, linkedResourcePlanId: form.linked_resource_plan_id || null }
+    const payload = {
+      proposalCostSectionId: section.id, itemName: form.item_name,
+      cost: isPercentMode ? 0 : form.cost, percentOfBase: isPercentMode ? form.percent_of_base : null,
+      lineType: form.line_type, linkedResourcePlanId: form.linked_resource_plan_id || null,
+    }
     try {
-      if (editingId === 'new') await addMiscLine({ proposalCostSectionId: section.id, ...payload })
+      if (editingId === 'new') await addMiscLine(payload)
       else await updateMiscLine(editingId, payload)
       cancel(); onChanged()
     } catch (e) { setErr(e.message) }
+  }
+
+  function CostCell() {
+    if (!isMisc) {
+      return <td><input className="form-input" style={{ ...cellInput, width: 90 }} type="number" step="0.01" value={form.cost} onChange={e => setForm(f => ({ ...f, cost: e.target.value }))} /></td>
+    }
+    return (
+      <td style={{ minWidth: 140 }}>
+        <div style={{ display: 'flex', gap: 2, marginBottom: 4 }}>
+          <button type="button" onClick={() => setForm(f => ({ ...f, mode: 'flat' }))}
+            style={{ flex: 1, fontSize: 10, fontWeight: 700, padding: '2px 0', borderRadius: 4, border: '1px solid var(--border)', cursor: 'pointer', background: form.mode === 'flat' ? 'var(--c1)' : 'transparent', color: form.mode === 'flat' ? '#fff' : 'inherit' }}>₹ Flat</button>
+          <button type="button" onClick={() => setForm(f => ({ ...f, mode: 'percent' }))}
+            style={{ flex: 1, fontSize: 10, fontWeight: 700, padding: '2px 0', borderRadius: 4, border: '1px solid var(--border)', cursor: 'pointer', background: form.mode === 'percent' ? 'var(--c1)' : 'transparent', color: form.mode === 'percent' ? '#fff' : 'inherit' }}>% of Eng. Cost</button>
+        </div>
+        {form.mode === 'percent' ? (
+          <>
+            <input className="form-input" style={{ ...cellInput, width: 90 }} type="number" step="0.1" placeholder="e.g. 10" value={form.percent_of_base} onChange={e => setForm(f => ({ ...f, percent_of_base: e.target.value }))} />
+            <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>
+              ≈ {rupee(basePreview * (Number(form.percent_of_base) || 0) / 100)} of {rupee(basePreview)}
+              <div style={{ color: '#94a3b8' }}>(App Dev + Firmware + HW Design + ERP)</div>
+            </div>
+          </>
+        ) : (
+          <input className="form-input" style={{ ...cellInput, width: 90 }} type="number" step="0.01" value={form.cost} onChange={e => setForm(f => ({ ...f, cost: e.target.value }))} />
+        )}
+      </td>
+    )
   }
 
   return (
@@ -1060,7 +1458,7 @@ function MiscTable({ section, canEdit, allResourcePlans, onChanged }) {
                     </select>
                   </td>
                 )}
-                <td><input className="form-input" style={{ ...cellInput, width: 90 }} type="number" step="0.01" value={form.cost} onChange={e => setForm(f => ({ ...f, cost: e.target.value }))} /></td>
+                <CostCell />
                 <td><RowActions onSave={save} onCancel={cancel} /></td>
               </tr>
             ) : (
@@ -1071,7 +1469,10 @@ function MiscTable({ section, canEdit, allResourcePlans, onChanged }) {
                   const linked = allResourcePlans.find(p => p.id === r.linked_resource_plan_id)
                   return <td style={{ fontSize: 12, color: '#64748b' }}>{linked ? `${linked.category} — ${linked.designation}` : '—'}</td>
                 })()}
-                <td style={{ fontSize: 12, fontWeight: 700 }}>{rupee(r.cost)}</td>
+                <td style={{ fontSize: 12, fontWeight: 700 }}>
+                  {rupee(r.cost)}
+                  {r.percent_of_base != null && <div style={{ fontSize: 10, fontWeight: 500, color: '#64748b' }}>{r.percent_of_base}% of {rupee(r.base_cost_snapshot)}</div>}
+                </td>
                 <td>{canEdit && <RowIcons onEdit={() => startEdit(r)} onDelete={async () => { await deleteMiscLine(r.id); onChanged() }} />}</td>
               </tr>
             ))}
@@ -1095,7 +1496,7 @@ function MiscTable({ section, canEdit, allResourcePlans, onChanged }) {
                     </select>
                   </td>
                 )}
-                <td><input className="form-input" style={{ ...cellInput, width: 90 }} type="number" step="0.01" value={form.cost} onChange={e => setForm(f => ({ ...f, cost: e.target.value }))} /></td>
+                <CostCell />
                 <td><RowActions onSave={save} onCancel={cancel} /></td>
               </tr>
             ) : (
@@ -1358,7 +1759,14 @@ function TimelineTab({ proposalId, timeline, sections, canEdit, onChanged }) {
 
 /* ── Value Summary ── */
 function ValueSummaryTab({ summary, proposal, sections, canViewInternal, busy, onRecompute }) {
-  const totalDevicesRequired = sections.reduce((s, sec) => s + (sec.hardwareLines || []).reduce((s2, h) => s2 + (Number(h.estimated_quantity) || 0), 0), 0)
+  // One KPI card per category that actually has device/hardware lines —
+  // e.g. "IoT Logger: 218" and "Sensors: 872" as separate titles, instead
+  // of a single combined "Total Devices Required" number that hides which
+  // device type is which once a proposal splits them into their own
+  // categories (STEP215's custom cost sections).
+  const deviceKpisByCategory = sections
+    .map(sec => ({ category: sec.category, qty: (sec.hardwareLines || []).reduce((s, h) => s + (Number(h.estimated_quantity) || 0), 0) }))
+    .filter(d => d.qty > 0)
   const saasLinesCount = sections.reduce((s, sec) => s + (sec.softwareLines || []).length, 0)
 
   if (!summary) {
@@ -1388,7 +1796,9 @@ function ValueSummaryTab({ summary, proposal, sections, canViewInternal, busy, o
       </div>
 
       <div className="stats-grid" style={{ marginBottom: 20 }}>
-        <StatCard label="Total Devices Required" value={totalDevicesRequired} icon={<Monitor size={17} />} accent="#0ea5e9" />
+        {deviceKpisByCategory.map(d => (
+          <StatCard key={d.category} label={d.category} value={d.qty} icon={<Monitor size={17} />} accent="#0ea5e9" />
+        ))}
         <StatCard label="SaaS / Third-Party Lines" value={saasLinesCount} icon={<Wallet size={17} />} accent="#8b5cf6" />
       </div>
 
@@ -1605,8 +2015,167 @@ function VendorCostsTab({ proposalId, vendorCosts, canEdit, onChanged }) {
   )
 }
 
+// Per-segment Cost-to-Company / Margin % / Cost-to-Client breakdown for
+// reviewers (Finance/CTO/Admin/CEO only — same canViewInternal gate the
+// rest of this page uses) — margin is editable right here so a reviewer
+// can adjust it as part of the approval decision instead of bouncing the
+// proposal back to the Sales Lead for a Cost Sections edit. Reuses
+// updateCostSection/sectionTotal/categorySectionPrice exactly as
+// DomainMarginPanel does, so there's one margin-edit code path, not two.
+// One row per line item within a segment — Actual Rate is the internal
+// per-unit figure already stored on the line (rate_used for a resource
+// designation's ₹/hr, unit_cost for hardware/software), Client Rate is
+// that same figure marked up by the segment's own margin (or the proposal
+// default). Both stay on the SAME unit basis, so a reviewer can see the
+// exact markup being applied at line-item granularity, not just totals.
+function lineItemsFor(section, defaultMargin) {
+  const marginPct = Number(section.margin_percent ?? defaultMargin ?? 0)
+  const markup = x => x * (1 + marginPct / 100)
+  const items = []
+  ;(section.resourcePlans || []).forEach(r => items.push({
+    id: r.id, name: r.designation, qty: `${r.estimated_count} × ${r.estimated_duration_weeks}wk`,
+    actualRate: Number(r.rate_used) || 0, actualAmount: Number(r.computed_cost) || 0, rateUnit: '/hr',
+  }))
+  ;(section.hardwareLines || []).forEach(h => items.push({
+    id: h.id, name: h.description, qty: h.estimated_quantity,
+    actualRate: Number(h.unit_cost) || 0, actualAmount: Number(h.subtotal_internal_cost) || 0, rateUnit: '/unit',
+  }))
+  ;(section.softwareLines || []).forEach(sw => items.push({
+    id: sw.id, name: sw.item_name, qty: sw.qty ?? 1,
+    actualRate: Number(sw.unit_cost) || 0, actualAmount: Number(sw.computed_cost) || 0, rateUnit: '/license',
+  }))
+  ;(section.miscLines || []).forEach(m => items.push({
+    id: m.id, name: m.item_name, qty: '—',
+    actualRate: Number(m.cost) || 0, actualAmount: Number(m.cost) || 0, rateUnit: '',
+  }))
+  return items.map(it => ({ ...it, clientRate: markup(it.actualRate), clientAmount: markup(it.actualAmount) }))
+}
+
+function ReviewCostDetailTable({ sections, defaultMargin, canEdit, onChanged }) {
+  const [savingId, setSavingId] = useState('')
+  const [err, setErr] = useState('')
+  const [expanded, setExpanded] = useState(() => new Set())
+  function toggle(id) { setExpanded(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next }) }
+
+  async function saveMargin(section, value) {
+    if (value !== '' && (isNaN(Number(value)) || Number(value) < -100 || Number(value) > 500)) {
+      setErr(`${section.category}: margin must be a number between -100 and 500.`)
+      return
+    }
+    setSavingId(section.id); setErr('')
+    try {
+      await updateCostSection(section.id, { margin_percent: value === '' ? null : Number(value), notes: section.notes })
+      await onChanged?.()
+    } catch (e) { setErr(e.message) }
+    finally { setSavingId('') }
+  }
+
+  const rows = orderedCategories(sections)
+    .map(cat => sections.find(s => s.category === cat))
+    .filter(Boolean)
+    .map(section => ({ section, cost: sectionTotal(section), price: categorySectionPrice(section, defaultMargin) }))
+  const totalCost = rows.reduce((s, r) => s + r.cost, 0)
+  const totalPrice = rows.reduce((s, r) => s + r.price, 0)
+
+  return (
+    <div style={{ marginBottom: 20, border: '1px solid var(--border)', borderRadius: 12, padding: 16 }}>
+      <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 2 }}>Cost Breakdown by Segment</div>
+      <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 12 }}>
+        Cost to Company (internal), margin override and the resulting Cost to Client, per category.{canEdit ? ' Margin % is editable here.' : ''}
+        {' '}Expand a segment to see Actual Rate vs Client Rate per line item.
+      </div>
+      {err && <div className="alert alert-danger" style={{ marginBottom: 10 }}>{err}</div>}
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+          <thead>
+            <tr>
+              {['Segment', 'Cost to Company', 'Margin %', 'Cost to Client', 'Profit'].map(h => (
+                <th key={h} style={{ textAlign: h === 'Segment' ? 'left' : 'right', padding: '6px 8px', fontSize: 10, textTransform: 'uppercase', color: '#94a3b8', borderBottom: '1px solid #e2e8f0' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ section, cost, price }) => {
+              const isStandard = PROPOSAL_CATEGORIES.includes(section.category)
+              const isOpen = expanded.has(section.id)
+              const items = isOpen ? lineItemsFor(section, defaultMargin) : []
+              return (
+                <Fragment key={section.id}>
+                  <tr>
+                    <td style={{ padding: '8px', borderBottom: '1px solid #f1f5f9', fontWeight: 600 }}>
+                      <button type="button" onClick={() => toggle(section.id)}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginRight: 6, color: '#94a3b8', display: 'inline-flex', verticalAlign: 'middle' }}>
+                        <ChevronRight size={13} style={{ transform: isOpen ? 'rotate(90deg)' : 'none', transition: 'transform .1s' }} />
+                      </button>
+                      {section.category}
+                      {!isStandard && <span style={{ marginLeft: 5, fontSize: 8.5, fontWeight: 700, textTransform: 'uppercase', color: 'var(--c1)', border: '1px solid var(--c1)', borderRadius: 3, padding: '0 4px' }}>Custom</span>}
+                    </td>
+                    <td style={{ padding: '8px', borderBottom: '1px solid #f1f5f9', textAlign: 'right' }}>{rupee(cost)}</td>
+                    <td style={{ padding: '8px', borderBottom: '1px solid #f1f5f9', textAlign: 'right' }}>
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                        <input className="form-input" style={{ width: 56, fontSize: 12, padding: '4px 6px', textAlign: 'right' }} type="number" step="0.1"
+                          disabled={!canEdit || savingId === section.id}
+                          placeholder={String(defaultMargin ?? 0)} defaultValue={section.margin_percent ?? ''}
+                          onBlur={e => { if (e.target.value !== String(section.margin_percent ?? '')) saveMargin(section, e.target.value) }}
+                          onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }} />
+                        <span style={{ fontSize: 11, color: '#94a3b8' }}>%</span>
+                      </div>
+                    </td>
+                    <td style={{ padding: '8px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', fontWeight: 700 }}>{rupee(price)}</td>
+                    <td style={{ padding: '8px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#15803d' }}>{rupee(price - cost)}</td>
+                  </tr>
+                  {isOpen && (
+                    <tr>
+                      <td colSpan={5} style={{ padding: '0 8px 10px 26px', borderBottom: '1px solid #f1f5f9' }}>
+                        {items.length === 0 ? (
+                          <div style={{ fontSize: 11.5, color: '#94a3b8', padding: '4px 0' }}>No line items in this segment.</div>
+                        ) : (
+                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, background: '#f8fafc', borderRadius: 8 }}>
+                            <thead>
+                              <tr>
+                                {['Item', 'Qty', 'Actual Rate', 'Client Rate', 'Actual Amount', 'Client Amount'].map(h => (
+                                  <th key={h} style={{ textAlign: h === 'Item' ? 'left' : 'right', padding: '5px 8px', fontSize: 9.5, textTransform: 'uppercase', color: '#94a3b8' }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {items.map(it => (
+                                <tr key={it.id}>
+                                  <td style={{ padding: '4px 8px' }}>{it.name}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'right' }}>{it.qty}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{rupee(it.actualRate)}{it.rateUnit}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'right', color: '#4338ca', fontWeight: 600 }}>{rupee(it.clientRate)}{it.rateUnit}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'right' }}>{rupee(it.actualAmount)}</td>
+                                  <td style={{ padding: '4px 8px', textAlign: 'right', fontWeight: 700 }}>{rupee(it.clientAmount)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td style={{ padding: '8px', fontWeight: 800 }}>Total</td>
+              <td style={{ padding: '8px', fontWeight: 800, textAlign: 'right' }}>{rupee(totalCost)}</td>
+              <td />
+              <td style={{ padding: '8px', fontWeight: 800, textAlign: 'right' }}>{rupee(totalPrice)}</td>
+              <td style={{ padding: '8px', fontWeight: 800, textAlign: 'right', color: '#15803d' }}>{rupee(totalPrice - totalCost)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 /* ── Approval ── */
-function ApprovalTab({ proposal, summary, profile, role, canEdit, canActOnCurrentStage, isFinanceOrAbove, onChanged, onSelectProposal }) {
+function ApprovalTab({ proposal, summary, sections, canViewInternal, profile, role, canEdit, canActOnCurrentStage, isFinanceOrAbove, onChanged, onSelectProposal, onSectionsChanged }) {
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
@@ -1657,6 +2226,12 @@ function ApprovalTab({ proposal, summary, profile, role, canEdit, canActOnCurren
   return (
     <div>
       {err && <div className="alert alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
+
+      {canViewInternal && sections?.length > 0 && (
+        <ReviewCostDetailTable sections={sections} defaultMargin={proposal.overall_margin_percent}
+          canEdit={['Draft', 'In Negotiation', 'Ready for Approval'].includes(proposal.status)}
+          onChanged={onSectionsChanged} />
+      )}
 
       {proposal.approval_status && (
         <div style={{ marginBottom: 20 }}>
@@ -1872,6 +2447,165 @@ function ExportTab({ proposal, summary, canViewInternal }) {
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#94a3b8', border: '1px dashed #e2e8f0', borderRadius: 10, padding: 14 }}>
           <Lock size={14} /> Internal Review export (shows internal cost and margin) is restricted to Finance, CTO and Leadership.
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ── Client Link ── */
+const CR_STATUS_COLOR = {
+  pending: { bg: '#fef3c7', color: '#b45309' }, approved: { bg: '#dcfce7', color: '#15803d' }, rejected: { bg: '#fee2e2', color: '#dc2626' },
+}
+
+function ChangeLineSummary({ c }) {
+  const parts = []
+  if (c.qty != null) parts.push(`qty → ${c.qty}`)
+  if (c.duration_weeks != null) parts.push(`weeks → ${c.duration_weeks}`)
+  if (c.start_offset_weeks != null) parts.push(`start → wk ${c.start_offset_weeks}`)
+  return <span>{c.type}: {parts.join(', ') || '—'}</span>
+}
+
+function ShareTab({ proposalId, profile, canEdit, sections, canViewInternal, defaultMargin, marginEditable, onChangesApplied }) {
+  const [link, setLink] = useState(null)
+  const [requests, setRequests] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState('')
+  const [err, setErr] = useState('')
+  const [copied, setCopied] = useState(false)
+  const [reviewNotes, setReviewNotes] = useState({})
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const [links, reqs] = await Promise.all([listShareLinks(proposalId), listChangeRequests(proposalId)])
+    setLink(links.find(l => !l.revoked_at) || links[0] || null)
+    setRequests(reqs)
+    setLoading(false)
+  }, [proposalId])
+
+  useEffect(() => { load() }, [load])
+
+  async function generate() {
+    setBusy('generate'); setErr('')
+    try { setLink(await getOrCreateShareLink(proposalId, profile.id)) }
+    catch (e) { setErr(e.message) }
+    finally { setBusy('') }
+  }
+
+  async function revoke() {
+    setBusy('revoke'); setErr('')
+    try { await revokeShareLink(link.id); await load() }
+    catch (e) { setErr(e.message) }
+    finally { setBusy('') }
+  }
+
+  async function updateExpiry(dateStr) {
+    setErr('')
+    try { await setShareLinkExpiry(link.id, dateStr ? new Date(dateStr).toISOString() : null); await load() }
+    catch (e) { setErr(e.message) }
+  }
+
+  async function review(req, approve) {
+    setBusy(req.id); setErr('')
+    try {
+      await reviewChangeRequest(req.id, { approve, note: reviewNotes[req.id], profileId: profile.id })
+      await load()
+      if (approve) await onChangesApplied?.()
+    } catch (e) { setErr(e.message) }
+    finally { setBusy('') }
+  }
+
+  function copy() {
+    navigator.clipboard?.writeText(shareLinkUrl(link.token))
+    setCopied(true); setTimeout(() => setCopied(false), 1500)
+  }
+
+  if (loading) return <Loader />
+  const pending = requests.filter(r => r.status === 'pending')
+
+  return (
+    <div>
+      {err && <div className="alert alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
+
+      {canViewInternal && sections?.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: '#94a3b8', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 5 }}>
+            <Lock size={11} /> Internal only — never sent to the client link below
+          </div>
+          <ReviewCostDetailTable sections={sections} defaultMargin={defaultMargin} canEdit={!!marginEditable} onChanged={onChangesApplied} />
+        </div>
+      )}
+
+      <div style={{ border: '1px solid #e2e8f0', borderRadius: 14, padding: 18, marginBottom: 20, borderTop: '3px solid #6366f1' }}>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2 }}>Share With Client</div>
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 14 }}>
+          A secure link where the client can review pricing and propose changes to quantities/timeline only —
+          rates and margins are never shown. Any change they submit lands here for your review before it touches this proposal.
+        </div>
+
+        {!link || link.revoked_at ? (
+          <button className="btn btn-primary btn-sm" onClick={generate} disabled={!canEdit || busy === 'generate'}>
+            <Link2 size={14} /> {busy === 'generate' ? 'Generating…' : 'Generate Client Link'}
+          </button>
+        ) : (
+          <div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+              <input readOnly value={shareLinkUrl(link.token)} onFocus={e => e.target.select()}
+                style={{ flex: '1 1 320px', padding: '8px 10px', border: '1px solid #e2e8f0', borderRadius: 8, fontFamily: 'monospace', fontSize: 12 }} />
+              <button className="btn btn-outline btn-sm" onClick={copy}><Copy size={13} /> {copied ? 'Copied!' : 'Copy'}</button>
+              {canEdit && <button className="btn btn-ghost btn-sm" onClick={revoke} disabled={busy === 'revoke'} style={{ color: '#dc2626' }}><Ban size={13} /> Revoke</button>}
+            </div>
+            <label style={{ fontSize: 11.5, color: '#64748b', display: 'flex', alignItems: 'center', gap: 8 }}>
+              Expires
+              <input type="date" disabled={!canEdit} defaultValue={link.expires_at ? link.expires_at.slice(0, 10) : ''}
+                onChange={e => updateExpiry(e.target.value)}
+                style={{ padding: '5px 8px', border: '1px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit', fontSize: 12 }} />
+              <span style={{ color: '#94a3b8' }}>(leave blank for no expiry)</span>
+            </label>
+          </div>
+        )}
+      </div>
+
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>
+        Change Requests {pending.length > 0 && <span style={{ fontSize: 11, background: '#fef3c7', color: '#b45309', padding: '2px 8px', borderRadius: 999, marginLeft: 6 }}>{pending.length} pending</span>}
+      </div>
+
+      {requests.length === 0 ? (
+        <Empty icon={<Inbox size={36} />} title="No change requests yet" desc="Requests the client submits from the shared link will show up here for review." />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {requests.map(r => {
+            const sc = CR_STATUS_COLOR[r.status]
+            return (
+              <div key={r.id} style={{ border: '1px solid #e2e8f0', borderRadius: 12, padding: 14 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                  <div>
+                    <span style={{ fontWeight: 700 }}>{r.client_name || 'Client'}</span>
+                    <span style={{ color: '#94a3b8', fontSize: 11.5, marginLeft: 8 }}>{dateFmt(r.created_at)}</span>
+                  </div>
+                  <span style={{ padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: sc.bg, color: sc.color }}>{r.status}</span>
+                </div>
+                {r.client_note && <div style={{ fontSize: 12.5, color: '#475569', marginBottom: 8, fontStyle: 'italic' }}>"{r.client_note}"</div>}
+                <div style={{ fontSize: 12, color: '#64748b', display: 'flex', flexDirection: 'column', gap: 3, marginBottom: r.status === 'pending' ? 10 : 0 }}>
+                  {(r.changes || []).map((c, i) => <ChangeLineSummary key={i} c={c} />)}
+                </div>
+                {r.status === 'pending' && canEdit && (
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <input placeholder="Review note (optional)" value={reviewNotes[r.id] || ''}
+                      onChange={e => setReviewNotes(prev => ({ ...prev, [r.id]: e.target.value }))}
+                      style={{ flex: '1 1 200px', padding: '6px 9px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 12, fontFamily: 'inherit' }} />
+                    <button className="btn btn-primary btn-sm" disabled={busy === r.id} onClick={() => review(r, true)}><CheckCircle size={13} /> Approve &amp; Apply</button>
+                    <button className="btn btn-ghost btn-sm" disabled={busy === r.id} onClick={() => review(r, false)} style={{ color: '#dc2626' }}><XCircle size={13} /> Reject</button>
+                  </div>
+                )}
+                {r.status !== 'pending' && (
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>
+                    Reviewed by {r.reviewer?.full_name || '—'} on {dateFmt(r.reviewed_at)}{r.review_note ? ` — "${r.review_note}"` : ''}
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
       )}
     </div>

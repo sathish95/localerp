@@ -1,13 +1,18 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { supabase, rupee, dateFmt } from '../lib/supabase'
-import { Modal, Loader, Empty, SearchBox } from '../components/ui'
-import { Clock, LogIn, LogOut, Plus, Edit2, Users, Briefcase, DollarSign, AlertCircle, BarChart2 } from 'lucide-react'
+import { Modal, Loader, Empty, SearchBox, StatCard } from '../components/ui'
+import { Clock, LogIn, LogOut, Plus, Edit2, Users, Briefcase, DollarSign, AlertCircle, BarChart2, Download, CalendarCheck, Timer, AlarmClock, UserCheck, ArrowUpDown } from 'lucide-react'
+import { exportCheckinReportExcel } from '../lib/checkinReportExport'
+import { computeCheckinKpis, fmtMinutes } from '../lib/checkinKpi'
+import { getWorkPlan, nextWorkingDay, PLAN_STATUS } from '../lib/resourcePlanning'
+import { useNavigate } from 'react-router-dom'
 
 const YEAR = new Date().getFullYear()
 const MONTH = new Date().getMonth() + 1
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 const TODAY = new Date().toISOString().split('T')[0]
+const LOCAL_TODAY = (d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)(new Date())
 
 function timeDiff(checkIn, checkOut) {
   if (!checkIn || !checkOut) return null
@@ -30,6 +35,7 @@ export default function ResourcePage() {
   const [allLogs, setAllLogs] = useState([])
   const [projects, setProjects] = useState([])
   const [employees, setEmployees] = useState([])
+  const [departments, setDepartments] = useState([])
   const [rates, setRates] = useState([])
   const [leaveData, setLeaveData] = useState([])
   const [loading, setLoading] = useState(true)
@@ -42,6 +48,31 @@ export default function ResourcePage() {
   const [filterMonth, setFilterMonth] = useState(MONTH)
   const [submitting, setSub] = useState(false)
   const [err, setErr] = useState('')
+
+  // ── Check-In Report (date-range attendance report, Resource Management) ──
+  const [reportFrom, setReportFrom] = useState(TODAY)
+  const [reportTo, setReportTo] = useState(TODAY)
+  const [reportDept, setReportDept] = useState('') // '' = all departments
+  const [reportEmp, setReportEmp] = useState('')   // '' = all resources
+  const [reportStatus, setReportStatus] = useState('') // '' = all, 'in' = still checked in, 'out' = checked out
+  const [reportLogs, setReportLogs] = useState([])
+  const [reportLeaves, setReportLeaves] = useState([])
+  const [reportView, setReportView] = useState('kpi') // 'kpi' = per-resource KPIs, 'logs' = raw entries
+  const [lateAfter, setLateAfter] = useState('10:00')
+  const [targetHours, setTargetHours] = useState(8)
+  const [kpiSort, setKpiSort] = useState({ key: 'attendancePct', dir: 'desc' })
+  const [reportLoading, setReportLoading] = useState(false)
+
+  // ── Work Planning (who has nothing scheduled for a given day) ──
+  const navigate = useNavigate()
+  const [planDay, setPlanDay] = useState(nextWorkingDay())
+  const [planDept, setPlanDept] = useState('')
+  const [planFilter, setPlanFilter] = useState('attention') // 'attention' | 'all'
+  const [planTarget, setPlanTarget] = useState(8)
+  const [plan, setPlan] = useState(null)
+  const [planLoading, setPlanLoading] = useState(false)
+  const [planOpen, setPlanOpen] = useState(null) // expanded resource id
+  const [exporting, setExporting] = useState(false)
 
   useEffect(() => { loadAll() }, [role])
 
@@ -58,10 +89,11 @@ export default function ResourcePage() {
 
     if (isManager) {
       queries.push(
-        supabase.from('time_logs').select('*, project:projects(name,code), employee:profiles!employee_id(full_name, role, email)').gte('work_date', monthStart).lte('work_date', monthEnd).order('check_in', { ascending: false }),
-        supabase.from('profiles').select('id, full_name, role, email').order('full_name'),
+        supabase.from('time_logs').select('*, project:projects(name,code), employee:profiles!employee_id(full_name, role, email, department_id)').gte('work_date', monthStart).lte('work_date', monthEnd).order('check_in', { ascending: false }),
+        supabase.from('profiles').select('id, full_name, role, email, department_id, is_active').order('full_name'),
         supabase.from('resource_rates').select('*, employee:profiles!employee_id(full_name)'),
         supabase.from('leave_requests').select('employee_id, leave_type, from_date, to_date, permission_hours, status').eq('status', 'approved').gte('from_date', monthStart).lte('to_date', monthEnd),
+        supabase.from('departments').select('id, name').order('name'),
       )
     }
 
@@ -79,8 +111,97 @@ export default function ResourcePage() {
       setEmployees(res[3].data || [])
       setRates(res[4].data || [])
       setLeaveData(res[5].data || [])
+      setDepartments(res[6].data || [])
     }
     setLoading(false)
+  }
+
+  // ── Check-In Report — its own date-range fetch, independent of the
+  // month picker the other manager tabs use, since this report is meant
+  // to be pulled for any arbitrary day or range (e.g. "yesterday morning
+  // to this morning"), not just the current calendar month.
+  async function loadCheckinReport() {
+    if (!isManager) return
+    setReportLoading(true)
+    const [{ data, error }, { data: leaves }] = await Promise.all([
+      supabase.from('time_logs')
+        .select('*, project:projects(name,code), employee:profiles!employee_id(full_name, role, department_id)')
+        .gte('work_date', reportFrom).lte('work_date', reportTo)
+        .order('work_date', { ascending: false }).order('check_in', { ascending: true }),
+      // Approved leave overlapping the range — excluded from expected attendance days.
+      supabase.from('leave_requests').select('employee_id, leave_type, from_date, to_date')
+        .eq('status', 'approved').lte('from_date', reportTo)
+        .or(`to_date.gte.${reportFrom},and(to_date.is.null,from_date.gte.${reportFrom})`),
+    ])
+    if (error) alert(error.message)
+    setReportLogs(data || [])
+    setReportLeaves(leaves || [])
+    setReportLoading(false)
+  }
+
+  useEffect(() => { if (tab === 'checkin-report' && isManager) loadCheckinReport() }, [tab, reportFrom, reportTo])
+
+  const filteredReportLogs = reportLogs.filter(l => {
+    if (reportDept && l.employee?.department_id !== reportDept) return false
+    if (reportEmp && l.employee_id !== reportEmp) return false
+    if (reportStatus === 'in' && l.check_out) return false
+    if (reportStatus === 'out' && !l.check_out) return false
+    return true
+  })
+
+  async function loadWorkPlan() {
+    if (!isManager) return
+    setPlanLoading(true)
+    try {
+      setPlan(await getWorkPlan({
+        organizationId: profile.organization_id, day: planDay,
+        employees: employees.filter(e => e.is_active !== false),
+        targetHours: Number(planTarget) || 8,
+      }))
+    } catch (e) { alert(e.message) }
+    finally { setPlanLoading(false) }
+  }
+  useEffect(() => { if (tab === 'planning' && isManager && employees.length) loadWorkPlan() }, [tab, planDay, planTarget, employees])
+
+  const planRows = (plan?.rows || []).filter(r =>
+    (!planDept || r.department_id === planDept) &&
+    (planFilter === 'all' || ['none', 'carryover', 'under'].includes(r.status)))
+    .sort((a, b) => ['none', 'carryover', 'under', 'planned', 'leave'].indexOf(a.status) - ['none', 'carryover', 'under', 'planned', 'leave'].indexOf(b.status) || (a.name || '').localeCompare(b.name || ''))
+  const planSummary = (() => {
+    const rows = (plan?.rows || []).filter(r => !planDept || r.department_id === planDept)
+    const c = s => rows.filter(r => r.status === s).length
+    return { resources: rows.length, none: c('none'), carryover: c('carryover'), under: c('under'), planned: c('planned'), leave: c('leave') }
+  })()
+  const planDayLabel = planDay === LOCAL_TODAY ? 'Today' : planDay === nextWorkingDay() ? 'Next working day' : dateFmt(planDay)
+
+  // ── Per-resource KPIs — every active resource matching the dept/resource
+  // filters, including ones with zero check-ins (they're the absentees).
+  // The status filter only applies to the raw log view.
+  const kpiEmployees = employees.filter(e =>
+    e.is_active !== false &&
+    (!reportDept || e.department_id === reportDept) &&
+    (!reportEmp || e.id === reportEmp))
+  const kpiEmpIds = new Set(kpiEmployees.map(e => e.id))
+  const kpi = computeCheckinKpis({
+    logs: reportLogs.filter(l => kpiEmpIds.has(l.employee_id)),
+    employees: kpiEmployees, leaves: reportLeaves,
+    fromDate: reportFrom, toDate: reportTo, lateAfter, targetHours: Number(targetHours) || 8,
+  })
+  const kpiRows = [...kpi.rows].sort((a, b) => {
+    const av = a[kpiSort.key], bv = b[kpiSort.key]
+    if (av == null && bv == null) return 0
+    if (av == null) return 1
+    if (bv == null) return -1
+    const cmp = typeof av === 'string' ? av.localeCompare(bv) : av - bv
+    return kpiSort.dir === 'asc' ? cmp : -cmp
+  })
+  const toggleSort = key => setKpiSort(s => ({ key, dir: s.key === key && s.dir === 'desc' ? 'asc' : 'desc' }))
+
+  async function handleExportCheckinReport() {
+    setExporting(true)
+    try { await exportCheckinReportExcel({ logs: filteredReportLogs, departments, fromDate: reportFrom, toDate: reportTo, kpiRows, lateAfter, targetHours: Number(targetHours) || 8 }) }
+    catch (e) { alert(e.message) }
+    finally { setExporting(false) }
   }
 
   async function handleCheckIn(e) {
@@ -221,6 +342,8 @@ export default function ResourcePage() {
           { id: 'checkin', label: '⏱ My Time Log' },
           ...(isManager ? [
             { id: 'team', label: '👥 Team Overview' },
+            { id: 'checkin-report', label: '📅 Check-In Report' },
+            { id: 'planning', label: '🗓 Work Planning' },
             { id: 'logs', label: '📋 All Logs' },
             { id: 'payroll', label: '💰 Payroll Summary' },
           ] : []),
@@ -338,6 +461,298 @@ export default function ResourcePage() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* ── CHECK-IN REPORT ── */}
+      {tab === 'checkin-report' && isManager && (
+        <div>
+          <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">From</label>
+              <input type="date" className="form-input" value={reportFrom} max={reportTo} onChange={e => setReportFrom(e.target.value)} style={{ width: 150 }} />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">To</label>
+              <input type="date" className="form-input" value={reportTo} min={reportFrom} onChange={e => setReportTo(e.target.value)} style={{ width: 150 }} />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Department</label>
+              <select className="form-select" value={reportDept} onChange={e => setReportDept(e.target.value)} style={{ width: 170 }}>
+                <option value="">All Departments</option>
+                {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Resource</label>
+              <select className="form-select" value={reportEmp} onChange={e => setReportEmp(e.target.value)} style={{ width: 170 }}>
+                <option value="">All Resources</option>
+                {employees.map(e => <option key={e.id} value={e.id}>{e.full_name}</option>)}
+              </select>
+            </div>
+            {reportView === 'logs' ? (
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Status</label>
+                <select className="form-select" value={reportStatus} onChange={e => setReportStatus(e.target.value)} style={{ width: 160 }}>
+                  <option value="">All</option>
+                  <option value="in">Checked In (active)</option>
+                  <option value="out">Checked Out</option>
+                </select>
+              </div>
+            ) : (
+              <>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Late after</label>
+                  <input type="time" className="form-input" value={lateAfter} onChange={e => setLateAfter(e.target.value || '10:00')} style={{ width: 120 }} />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Full day (hrs)</label>
+                  <input type="number" min="1" max="24" step="0.5" className="form-input" value={targetHours} onChange={e => setTargetHours(e.target.value)} style={{ width: 100 }} />
+                </div>
+              </>
+            )}
+            <button className="btn btn-outline" onClick={handleExportCheckinReport} disabled={exporting || (filteredReportLogs.length === 0 && kpiRows.length === 0)}
+              style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Download size={14} /> {exporting ? 'Exporting…' : 'Export'}
+            </button>
+            <span style={{ marginLeft: 'auto', fontSize: 12, color: '#64748b', alignSelf: 'center' }}>
+              {reportView === 'kpi' ? `${kpiRows.length} resources · ${kpi.summary.workingDays} working days` : `${filteredReportLogs.length} entries`}
+            </span>
+          </div>
+
+          <div style={{ display: 'inline-flex', gap: 2, padding: 3, borderRadius: 10, background: '#f1f5f9', marginBottom: 14 }}>
+            {[{ id: 'kpi', label: 'Resource KPIs' }, { id: 'logs', label: 'Detailed Logs' }].map(v => (
+              <button key={v.id} onClick={() => setReportView(v.id)}
+                style={{ padding: '6px 14px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 12,
+                  background: reportView === v.id ? '#fff' : 'transparent', color: reportView === v.id ? '#0f172a' : '#64748b',
+                  boxShadow: reportView === v.id ? '0 1px 2px rgba(0,0,0,.08)' : 'none' }}>
+                {v.label}
+              </button>
+            ))}
+          </div>
+
+          {reportLoading ? <Loader /> : reportView === 'kpi' ? (
+            <div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12, marginBottom: 16 }}>
+                <StatCard label={`Resources checked in (of ${kpi.summary.resources})`} value={kpi.summary.activeResources} icon={<UserCheck size={16} />} />
+                <StatCard label="Avg attendance" value={kpi.summary.attendancePct != null ? `${kpi.summary.attendancePct.toFixed(0)}%` : '—'} icon={<CalendarCheck size={16} />} accent="#059669" />
+                <StatCard label="Total hours" value={`${kpi.summary.totalHours.toFixed(1)}h`} icon={<Clock size={16} />} />
+                <StatCard label="Avg hours / day present" value={kpi.summary.avgHoursPerDay != null ? `${kpi.summary.avgHoursPerDay.toFixed(1)}h` : '—'} icon={<Timer size={16} />} />
+                <StatCard label={`Late arrivals (after ${lateAfter})`} value={kpi.summary.lateDays} icon={<AlarmClock size={16} />} accent="#d97706" />
+                <StatCard label="Missed check-outs" value={kpi.summary.missedCheckouts} icon={<AlertCircle size={16} />} accent="#dc2626" />
+              </div>
+
+              <div className="table-wrap">
+                <table>
+                  <thead><tr>
+                    {[
+                      ['name', 'Resource'], ['attendancePct', 'Attendance'], ['absentDays', 'Absent'], ['leaveDays', 'Leave'],
+                      ['totalHours', 'Total Hrs'], ['avgHoursPerDay', 'Avg Hrs/Day'], ['avgFirstIn', 'Avg In'], ['avgLastOut', 'Avg Out'],
+                      ['lateDays', 'Late'], ['shortDays', `Short (<${Number(targetHours) || 8}h)`], ['missedCheckouts', 'Missed Out'], ['projectPct', 'On Project'],
+                    ].map(([key, label]) => (
+                      <th key={key} onClick={() => toggleSort(key)} style={{ cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                        {label} {kpiSort.key === key ? (kpiSort.dir === 'asc' ? '↑' : '↓') : <ArrowUpDown size={10} style={{ opacity: .35 }} />}
+                      </th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {kpiRows.length === 0
+                      ? <tr><td colSpan={12}><Empty icon="📊" title="No resources" desc="No resources match this selection" /></td></tr>
+                      : kpiRows.map(r => {
+                        const pct = r.attendancePct
+                        const pctColor = pct == null ? '#94a3b8' : pct >= 90 ? '#059669' : pct >= 75 ? '#d97706' : '#dc2626'
+                        const deptName = departments.find(d => d.id === r.department_id)?.name
+                        const warn = (n, c) => <span style={{ fontWeight: 700, color: n > 0 ? c : '#cbd5e1' }}>{n}</span>
+                        return (
+                          <tr key={r.id} onClick={() => { setReportEmp(r.id); setReportView('logs') }} style={{ cursor: 'pointer' }} title="View this resource's logs">
+                            <td>
+                              <div style={{ fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                {r.name}
+                                {r.liveNow && <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 999, background: '#dcfce7', color: '#15803d' }}>LIVE</span>}
+                              </div>
+                              <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                                <span style={{ textTransform: 'capitalize' }}>{r.role}</span>{deptName ? ` · ${deptName}` : ''}
+                              </div>
+                            </td>
+                            <td style={{ minWidth: 120 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <div style={{ flex: 1, height: 6, borderRadius: 3, background: '#f1f5f9', overflow: 'hidden' }}>
+                                  <div style={{ width: `${pct || 0}%`, height: '100%', background: pctColor }} />
+                                </div>
+                                <span style={{ fontSize: 12, fontWeight: 700, color: pctColor, minWidth: 34 }}>{pct != null ? `${pct.toFixed(0)}%` : '—'}</span>
+                              </div>
+                              <div style={{ fontSize: 10, color: '#94a3b8' }}>{r.presentDays} / {r.expectedDays} days</div>
+                            </td>
+                            <td>{warn(r.absentDays, '#dc2626')}</td>
+                            <td style={{ fontSize: 12, color: '#64748b' }}>{r.leaveDays || '—'}</td>
+                            <td style={{ fontWeight: 800, color: '#6366f1' }}>{r.totalHours.toFixed(1)}h</td>
+                            <td style={{ fontWeight: 600, color: r.avgHoursPerDay != null && r.avgHoursPerDay < (Number(targetHours) || 8) ? '#d97706' : '#0f172a' }}>
+                              {r.avgHoursPerDay != null ? `${r.avgHoursPerDay.toFixed(1)}h` : '—'}
+                            </td>
+                            <td style={{ fontFamily: 'monospace', fontSize: 12, color: '#059669' }}>{fmtMinutes(r.avgFirstIn)}</td>
+                            <td style={{ fontFamily: 'monospace', fontSize: 12, color: '#dc2626' }}>{fmtMinutes(r.avgLastOut)}</td>
+                            <td>{warn(r.lateDays, '#d97706')}</td>
+                            <td>{warn(r.shortDays, '#d97706')}</td>
+                            <td>{warn(r.missedCheckouts, '#dc2626')}</td>
+                            <td style={{ fontSize: 12, color: '#64748b' }}>{r.projectPct != null ? `${r.projectPct.toFixed(0)}%` : '—'}</td>
+                          </tr>
+                        )
+                      })
+                    }
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Date</th><th>Employee</th><th>Department</th><th>Project</th><th>Check In</th><th>Check Out</th><th>Hours</th><th>Work Done</th></tr></thead>
+                <tbody>
+                  {filteredReportLogs.length === 0
+                    ? <tr><td colSpan={8}><Empty icon="📅" title="No check-ins" desc="No check-in/check-out records match this selection" /></td></tr>
+                    : filteredReportLogs.map(log => (
+                      <tr key={log.id}>
+                        <td style={{ fontSize: 12 }}>{dateFmt(log.work_date)}</td>
+                        <td>
+                          <div style={{ fontWeight: 600, fontSize: 13 }}>{log.employee?.full_name}</div>
+                          <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'capitalize' }}>{log.employee?.role}</div>
+                        </td>
+                        <td style={{ fontSize: 12 }}>{departments.find(d => d.id === log.employee?.department_id)?.name || '—'}</td>
+                        <td>{log.project ? <span style={{ padding: '2px 8px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: '#ede9fe', color: '#6d28d9' }}>{log.project.name}</span> : '—'}</td>
+                        <td style={{ fontFamily: 'monospace', fontSize: 12, color: '#059669', fontWeight: 700 }}>{fmtTime(log.check_in)}</td>
+                        <td style={{ fontFamily: 'monospace', fontSize: 12, color: log.check_out ? '#dc2626' : '#f59e0b', fontWeight: 700 }}>
+                          {log.check_out ? fmtTime(log.check_out) : '🟢 Active'}
+                        </td>
+                        <td style={{ fontWeight: 800, color: '#6366f1' }}>{log.hours_worked != null ? `${log.hours_worked}h` : '—'}</td>
+                        <td style={{ fontSize: 12, color: '#64748b', maxWidth: 160, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{log.comment || '—'}</td>
+                      </tr>
+                    ))
+                  }
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── WORK PLANNING ── */}
+      {tab === 'planning' && isManager && (
+        <div>
+          <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Plan for</label>
+              <input type="date" className="form-input" value={planDay} onChange={e => e.target.value && setPlanDay(e.target.value)} style={{ width: 150 }} />
+            </div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button className="btn btn-outline btn-sm" onClick={() => setPlanDay(LOCAL_TODAY)} style={{ fontWeight: planDay === LOCAL_TODAY ? 700 : 500 }}>Today</button>
+              <button className="btn btn-outline btn-sm" onClick={() => setPlanDay(nextWorkingDay())} style={{ fontWeight: planDay === nextWorkingDay() ? 700 : 500 }}>Next working day</button>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Department</label>
+              <select className="form-select" value={planDept} onChange={e => setPlanDept(e.target.value)} style={{ width: 170 }}>
+                <option value="">All Departments</option>
+                {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Show</label>
+              <select className="form-select" value={planFilter} onChange={e => setPlanFilter(e.target.value)} style={{ width: 170 }}>
+                <option value="attention">Needs planning</option>
+                <option value="all">All resources</option>
+              </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Full day (hrs)</label>
+              <input type="number" min="1" max="24" step="0.5" className="form-input" value={planTarget} onChange={e => setPlanTarget(e.target.value)} style={{ width: 100 }} />
+            </div>
+            <button className="btn btn-primary" onClick={() => navigate('/tasks')} style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Plus size={14} /> Assign Tasks
+            </button>
+          </div>
+
+          {planLoading || !plan ? <Loader /> : (
+            <div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12, marginBottom: 16 }}>
+                <StatCard label={`No work planned · ${planDayLabel}`} value={planSummary.none} icon={<AlertCircle size={16} />} accent="#dc2626" />
+                <StatCard label="Only overdue work" value={planSummary.carryover} icon={<AlarmClock size={16} />} accent="#d97706" />
+                <StatCard label={`Under-planned (<${(Number(planTarget) || 8) / 2}h)`} value={planSummary.under} icon={<Timer size={16} />} accent="#d97706" />
+                <StatCard label={`Planned (of ${planSummary.resources})`} value={planSummary.planned} icon={<CalendarCheck size={16} />} accent="#059669" />
+                <StatCard label="On leave" value={planSummary.leave} icon={<Users size={16} />} accent="#64748b" />
+              </div>
+
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Resource</th><th>Status</th><th>Planned for {planDayLabel.toLowerCase()}</th><th>Est. Load</th><th>Overdue</th><th>Unscheduled</th></tr></thead>
+                  <tbody>
+                    {planRows.length === 0
+                      ? <tr><td colSpan={6}><Empty icon="✅" title={planFilter === 'attention' ? 'Everyone has work planned' : 'No resources'} desc={planFilter === 'attention' ? `Every resource has tasks scheduled for ${planDayLabel.toLowerCase()}` : 'No resources match this selection'} /></td></tr>
+                      : planRows.map(r => {
+                        const st = PLAN_STATUS[r.status]
+                        const deptName = departments.find(d => d.id === r.department_id)?.name
+                        const expanded = planOpen === r.id
+                        const taskLine = t => (
+                          <div key={t.id} style={{ fontSize: 12, padding: '3px 0', display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                            <span style={{ color: '#94a3b8', fontFamily: 'monospace', fontSize: 11 }}>{t.task_id || ''}</span>
+                            <span style={{ fontWeight: 500 }}>{t.task_name}</span>
+                            {t.project?.name && <span style={{ color: '#94a3b8' }}>· {t.project.name}</span>}
+                            <span style={{ color: '#94a3b8', textTransform: 'capitalize' }}>· {String(t.status || '').replace(/_/g, ' ')}</span>
+                            {t.planned_end_date && <span style={{ color: '#94a3b8' }}>· due {dateFmt(t.planned_end_date)}</span>}
+                          </div>
+                        )
+                        return [
+                          <tr key={r.id} onClick={() => setPlanOpen(expanded ? null : r.id)} style={{ cursor: 'pointer' }}>
+                            <td>
+                              <div style={{ fontWeight: 600, fontSize: 13 }}>{r.name}</div>
+                              <div style={{ fontSize: 11, color: '#94a3b8' }}><span style={{ textTransform: 'capitalize' }}>{r.role}</span>{deptName ? ` · ${deptName}` : ''}</div>
+                            </td>
+                            <td><span style={{ fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 999, background: st.bg, color: st.color, whiteSpace: 'nowrap' }}>{st.label}</span></td>
+                            <td style={{ fontSize: 12, maxWidth: 280 }}>
+                              {r.planned.length === 0 ? <span style={{ color: '#94a3b8' }}>—</span> : (
+                                <span>
+                                  <b>{r.planned.length}</b> task{r.planned.length > 1 ? 's' : ''}
+                                  <span style={{ color: '#64748b' }}> · {r.planned.slice(0, 2).map(t => t.task_name).join(', ')}{r.planned.length > 2 ? '…' : ''}</span>
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ minWidth: 130 }}>
+                              {r.planned.length === 0 ? <span style={{ color: '#cbd5e1' }}>0h</span> : (
+                                <div>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <div style={{ flex: 1, height: 6, borderRadius: 3, background: '#f1f5f9', overflow: 'hidden' }}>
+                                      <div style={{ width: `${Math.min(100, r.loadPct || 0)}%`, height: '100%', background: r.loadPct > 100 ? '#dc2626' : '#6366f1' }} />
+                                    </div>
+                                    <span style={{ fontSize: 12, fontWeight: 700, minWidth: 36 }}>{r.plannedHours.toFixed(1)}h</span>
+                                  </div>
+                                  {r.hasUnestimated && <div style={{ fontSize: 10, color: '#94a3b8' }}>+ tasks with no estimate</div>}
+                                </div>
+                              )}
+                            </td>
+                            <td><span style={{ fontWeight: 700, color: r.carryover.length ? '#d97706' : '#cbd5e1' }}>{r.carryover.length}</span></td>
+                            <td><span style={{ fontWeight: 700, color: r.unscheduled.length ? '#6366f1' : '#cbd5e1' }} title="Open tasks with no planned dates — ready to schedule">{r.unscheduled.length}</span></td>
+                          </tr>,
+                          expanded && (
+                            <tr key={`${r.id}-detail`}>
+                              <td colSpan={6} style={{ background: '#f8fafc', padding: '12px 18px' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
+                                  {[['Planned', r.planned, 'Nothing scheduled for this day'], ['Overdue (still open)', r.carryover, 'No overdue tasks'], ['Unscheduled — ready to plan', r.unscheduled, 'No unscheduled tasks']].map(([title, list, empty]) => (
+                                    <div key={title}>
+                                      <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 4 }}>{title} ({list.length})</div>
+                                      {list.length ? list.slice(0, 8).map(taskLine) : <div style={{ fontSize: 12, color: '#94a3b8' }}>{empty}</div>}
+                                      {list.length > 8 && <div style={{ fontSize: 11, color: '#94a3b8' }}>+{list.length - 8} more</div>}
+                                    </div>
+                                  ))}
+                                </div>
+                              </td>
+                            </tr>
+                          ),
+                        ]
+                      })
+                    }
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

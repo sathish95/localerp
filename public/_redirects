@@ -1,0 +1,3 @@
+# Supabase via this site for networks that block supabase.co (see src/lib/supabase.js) — keep above the catch-all
+/sb/*  https://zjyriyogntcyevlpitpe.supabase.co/:splat  200!
+/*    /index.html   200

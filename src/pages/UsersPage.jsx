@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
-import { supabase, rupee, dateFmt, adminCreateUser } from '../lib/supabase'
+import { supabase, rupee, dateFmt, adminCreateUser, adminResetPassword, adminFinalizeNewProfile } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { usePresence } from '../context/PresenceContext'
 import { SearchBox, Empty, Modal, Loader, Confirm } from '../components/ui'
 import ExcelImport from '../components/ui/ExcelImport'
 import { recomputeFullWindowForEmployee } from '../lib/capacity'
@@ -17,6 +18,7 @@ const FALLBACK_ROLES = [
   { role_key: 'employee', label: 'Employee', is_system: true }, { role_key: 'procurement_lead', label: 'Procurement Lead', is_system: true },
   { role_key: 'pm', label: 'PM', is_system: true }, { role_key: 'cto', label: 'CTO', is_system: true },
   { role_key: 'field_technician', label: 'Field Technician', is_system: true }, { role_key: 'sales_lead', label: 'Sales Lead', is_system: true },
+  { role_key: 'lead', label: 'Tech Lead', is_system: true },
 ]
 
 function genTempPassword() {
@@ -29,8 +31,9 @@ import {
   Users, Shield, Crown, Briefcase, Calculator, User, Building2,
   BadgeCheck, Plus, Edit2, Trash2, Eye, ArrowLeft, ChevronRight,
   Clock, DollarSign, Calendar, TrendingUp, CheckCircle, XCircle,
-  ToggleLeft, ToggleRight, Upload
+  ToggleLeft, ToggleRight, Upload, KeyRound, CheckSquare, Square, X, Code2, Mail
 } from 'lucide-react'
+import { sendWelcomeEmail } from '../lib/email'
 
 // Known icons for the original built-in roles — any role beyond these
 // (including every custom role created via Settings -> Roles & Modules)
@@ -39,6 +42,7 @@ import {
 const ROLE_ICONS = {
   admin: Shield, ceo: Crown, manager: Briefcase, finance: Calculator, hr: Users,
   employee: User, department_head: Building2, procurement_lead: Briefcase, pm: Briefcase, cto: Crown, field_technician: User,
+  lead: Code2,
 }
 // Builds the same {label, icon, grad, light, dark} shape the rest of this
 // file's JSX already expects, from a `roles` table row instead of a
@@ -60,6 +64,7 @@ const initForm = () => ({
 
 export default function UsersPage() {
   const { profile } = useAuth()
+  const { isOnline } = usePresence()
   const myRole = profile?.role || 'employee'
   const canEdit = ['admin','ceo','hr'].includes(myRole)
 
@@ -82,6 +87,10 @@ export default function UsersPage() {
   const [showImport, setShowImport] = useState(false)
   const [showBulkCreate, setShowBulkCreate] = useState(false)
   const [createdUser, setCreatedUser] = useState(null)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selected, setSelected] = useState(() => new Set())
+  const [bulkDelConfirm, setBulkDelConfirm] = useState(false)
+  const [bulkDeleting, setBulkDeleting] = useState(false)
 
   useEffect(() => { load() }, [])
 
@@ -169,11 +178,16 @@ export default function UsersPage() {
         const tempPassword = genTempPassword()
         const { user } = await adminCreateUser(form.email, tempPassword, { full_name: form.full_name, role: form.role })
         if (!user?.id) throw new Error('User creation did not return an account — check Supabase Auth settings.')
-        // The signup trigger only knows full_name/role/email; fill in
-        // everything else the admin set on this form.
-        const { error: updErr } = await supabase.from('profiles').update(payload).eq('id', user.id)
-        if (updErr) throw updErr
-        setCreatedUser({ email: form.email, password: tempPassword, needsConfirmation: !user.confirmed_at && !user.email_confirmed_at })
+        // The signup trigger only knows full_name/role/email (both already
+        // set correctly from the signUp() metadata above) — it also has no
+        // org_mode here, so it lands the new profile in 'default-org', not
+        // this admin's real org. A plain .update() from here can't fix that
+        // (RLS blocks it — the row doesn't match this admin's org yet), so
+        // this goes through the admin_finalize_new_profile RPC (STEP196)
+        // instead, which reassigns the org AND fills in everything else the
+        // admin set on this form.
+        await adminFinalizeNewProfile(user.id, payload)
+        setCreatedUser({ id: user.id, name: form.full_name, email: form.email, password: tempPassword, needsConfirmation: !user.confirmed_at && !user.email_confirmed_at })
         setForm(initForm()); load()
       }
     } catch(e) { setErr(e.message) }
@@ -189,6 +203,26 @@ export default function UsersPage() {
   async function deleteUser(id) {
     await supabase.from('profiles').delete().eq('id', id)
     setDelUser(null); load(); if (detail?.id === id) setDetail(null)
+  }
+
+  function toggleSelected(id) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+  function exitSelectMode() { setSelectMode(false); setSelected(new Set()) }
+
+  async function deleteSelected() {
+    setBulkDeleting(true)
+    try {
+      const ids = [...selected].filter(id => id !== profile.id) // never delete your own account
+      const { error } = await supabase.from('profiles').delete().in('id', ids)
+      if (error) throw error
+      setBulkDelConfirm(false); exitSelectMode(); load()
+    } catch (e) { alert(e.message) }
+    finally { setBulkDeleting(false) }
   }
 
   const filtered = users.filter(u => {
@@ -374,19 +408,34 @@ export default function UsersPage() {
       <div className="page-header">
         <div>
           <div className="page-title">User Management</div>
-          <div className="page-subtitle">{users.length} users — ThingsaliveWork</div>
+          <div className="page-subtitle">{users.length} users · <span style={{color:'#10b981',fontWeight:700}}>{users.filter(u=>isOnline(u.id)).length} online now</span> — ThingsaliveWork</div>
         </div>
         {canEdit && (
           <div style={{ display:'flex', gap:8 }}>
-            <button className="btn btn-outline" onClick={()=>setShowBulkCreate(true)}>
-              <Upload size={14}/> Bulk Add New Employees
-            </button>
-            <button className="btn btn-outline" onClick={()=>setShowImport(true)}>
-              <Upload size={14}/> Update Existing (Import)
-            </button>
-            <button className="btn btn-primary" onClick={()=>{setEditing(null);setForm(initForm());setErr('');setCreatedUser(null);setShowM(true)}}>
-              <Plus size={15}/> Add User
-            </button>
+            {selectMode ? (
+              <>
+                <span style={{ display:'flex', alignItems:'center', fontSize:12.5, color:'#64748b', fontWeight:600, padding:'0 4px' }}>{selected.size} selected</span>
+                <button className="btn btn-outline" disabled={selected.size===0} onClick={()=>setBulkDelConfirm(true)} style={{ display:'flex', alignItems:'center', gap:6, color:selected.size?'#ef4444':undefined, borderColor:selected.size?'#fecaca':undefined }}>
+                  <Trash2 size={14}/> Delete Selected
+                </button>
+                <button className="btn btn-ghost" onClick={exitSelectMode}><X size={14}/> Cancel</button>
+              </>
+            ) : (
+              <>
+                <button className="btn btn-outline" onClick={()=>setSelectMode(true)}>
+                  <CheckSquare size={14}/> Select
+                </button>
+                <button className="btn btn-outline" onClick={()=>setShowBulkCreate(true)}>
+                  <Upload size={14}/> Bulk Add New Employees
+                </button>
+                <button className="btn btn-outline" onClick={()=>setShowImport(true)}>
+                  <Upload size={14}/> Update Existing (Import)
+                </button>
+                <button className="btn btn-primary" onClick={()=>{setEditing(null);setForm(initForm());setErr('');setCreatedUser(null);setShowM(true)}}>
+                  <Plus size={15}/> Add User
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -418,6 +467,18 @@ export default function UsersPage() {
           <option value="all">All Roles</option>
           {ALL_ROLES.map(r=><option key={r} value={r}>{ROLE_CFG[r]?.label||r}</option>)}
         </select>
+        {selectMode && filtered.length>0 && (
+          <button className="btn btn-ghost btn-sm" onClick={()=>{
+            const allSelected = filtered.every(u=>selected.has(u.id))
+            setSelected(prev=>{
+              const next = new Set(prev)
+              filtered.forEach(u=>{ allSelected ? next.delete(u.id) : next.add(u.id) })
+              return next
+            })
+          }}>
+            {filtered.every(u=>selected.has(u.id)) ? 'Deselect All' : 'Select All'} ({filtered.length})
+          </button>
+        )}
         <span style={{ marginLeft:'auto', fontSize:12, color:'#64748b' }}>{filtered.length} users</span>
       </div>
 
@@ -431,14 +492,26 @@ export default function UsersPage() {
             const Icon = rc.icon
             const initials = (user.full_name||user.email||'U').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()
             const inactive = user.is_active===false
+            const isSelf = user.id === profile.id
+            const isChecked = selected.has(user.id)
             return (
-              <div key={user.id} style={{ background:'#fff', borderRadius:16, border:`1.5px solid ${inactive?'#e2e8f0':'#e2e8f0'}`, overflow:'hidden', boxShadow:'0 1px 3px rgba(0,0,0,.04)', opacity:inactive?.7:1, transition:'all .15s' }}
-                onMouseEnter={e=>{e.currentTarget.style.transform='translateY(-2px)';e.currentTarget.style.boxShadow='0 6px 20px rgba(0,0,0,.09)'}}
-                onMouseLeave={e=>{e.currentTarget.style.transform='';e.currentTarget.style.boxShadow='0 1px 3px rgba(0,0,0,.04)'}}>
+              <div key={user.id}
+                onClick={()=>{ if (selectMode && !isSelf) toggleSelected(user.id) }}
+                style={{ background:'#fff', borderRadius:16, border:`1.5px solid ${isChecked?'#6366f1':'#e2e8f0'}`, overflow:'hidden', boxShadow:isChecked?'0 0 0 3px #6366f11a':'0 1px 3px rgba(0,0,0,.04)', opacity:inactive?.7:1, transition:'all .15s', cursor:selectMode&&!isSelf?'pointer':undefined, position:'relative' }}
+                onMouseEnter={e=>{if(!selectMode){e.currentTarget.style.transform='translateY(-2px)';e.currentTarget.style.boxShadow='0 6px 20px rgba(0,0,0,.09)'}}}
+                onMouseLeave={e=>{if(!selectMode){e.currentTarget.style.transform='';e.currentTarget.style.boxShadow='0 1px 3px rgba(0,0,0,.04)'}}}>
+                {selectMode && (
+                  <div style={{ position:'absolute', top:10, right:10, zIndex:1, color:isSelf?'#cbd5e1':'#6366f1' }} title={isSelf?"You can't select your own account":''}>
+                    {isChecked ? <CheckSquare size={20} fill="#6366f1" style={{color:'#fff'}}/> : <Square size={20}/>}
+                  </div>
+                )}
                 <div style={{ height:3, background:`linear-gradient(90deg,${rc.grad[0]},${rc.grad[1]})` }}/>
                 <div style={{ padding:'16px 18px' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:12 }}>
-                    <div style={{ width:44, height:44, borderRadius:14, background:`linear-gradient(135deg,${rc.grad[0]},${rc.grad[1]})`, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontWeight:800, fontSize:16, flexShrink:0 }}>{initials}</div>
+                    <div style={{ position:'relative', flexShrink:0 }}>
+                      <div style={{ width:44, height:44, borderRadius:14, background:`linear-gradient(135deg,${rc.grad[0]},${rc.grad[1]})`, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontWeight:800, fontSize:16 }}>{initials}</div>
+                      <div title={isOnline(user.id)?'Online now':'Offline'} style={{ position:'absolute', bottom:-1, right:-1, width:12, height:12, borderRadius:'50%', background:isOnline(user.id)?'#10b981':'#94a3b8', border:'2px solid #fff' }}/>
+                    </div>
                     <div style={{ minWidth:0 }}>
                       <div style={{ fontWeight:700, fontSize:14, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{user.full_name||'Unknown'}</div>
                       <div style={{ fontSize:11, color:'#94a3b8', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{user.email}</div>
@@ -451,7 +524,7 @@ export default function UsersPage() {
                     {inactive && <span style={{ fontSize:11, padding:'2px 8px', borderRadius:999, background:'#fee2e2', color:'#dc2626', fontWeight:700 }}>Inactive</span>}
                     {user.department?.name && <span style={{ fontSize:11, color:'#94a3b8' }}>{user.department.name}</span>}
                   </div>
-                  <div style={{ display:'flex', gap:6 }}>
+                  {!selectMode && <div style={{ display:'flex', gap:6 }}>
                     <button className="btn btn-ghost btn-sm" style={{ flex:1, justifyContent:'center' }} onClick={()=>openDetail(user)}>
                       <Eye size={13}/> Details
                     </button>
@@ -462,7 +535,7 @@ export default function UsersPage() {
                       </button>
                       <button className="btn btn-ghost btn-sm btn-icon" style={{color:'#ef4444'}} onClick={()=>setDelUser(user.id)}><Trash2 size={13}/></button>
                     </>}
-                  </div>
+                  </div>}
                 </div>
               </div>
             )
@@ -478,6 +551,8 @@ export default function UsersPage() {
         {createdUser ? <CreatedUserPanel createdUser={createdUser} /> : <UserForm form={form} setForm={setForm} depts={depts} users={users} roles={roles} rolesErr={rolesErr} editingId={editing?.id} editing={!!editing} err={err} />}
       </Modal>
       <Confirm open={!!delUser} message="Delete this user?" danger onConfirm={()=>deleteUser(delUser)} onCancel={()=>setDelUser(null)} />
+      <Confirm open={bulkDelConfirm} danger onCancel={()=>setBulkDelConfirm(false)} onConfirm={deleteSelected}
+        message={bulkDeleting ? 'Deleting…' : `Delete ${selected.size} selected user${selected.size!==1?'s':''}? This cannot be undone.`} />
 
       <Modal open={showBulkCreate} onClose={()=>setShowBulkCreate(false)} title="Bulk Add New Employees" size="xl">
         <ExcelImport type="new_employees" lookups={{ users, departments: depts }}
@@ -493,6 +568,12 @@ export default function UsersPage() {
 }
 
 function CreatedUserPanel({ createdUser }) {
+  const [mail, setMail] = useState({ busy: false, sent: false, err: '' })
+  async function emailDetails() {
+    setMail({ busy: true, sent: false, err: '' })
+    try { await sendWelcomeEmail(createdUser.id, createdUser.password); setMail({ busy: false, sent: true, err: '' }) }
+    catch (e) { setMail({ busy: false, sent: false, err: e.message }) }
+  }
   return (
     <div>
       <div style={{ padding:'10px 14px', borderRadius:8, background:'#dcfce7', color:'#15803d', fontSize:13, fontWeight:600, marginBottom:16 }}>
@@ -502,6 +583,13 @@ function CreatedUserPanel({ createdUser }) {
         <label className="form-label">Temporary Password</label>
         <input className="form-input" readOnly value={createdUser.password} style={{ fontFamily:'monospace', fontWeight:700 }} onFocus={e=>e.target.select()} />
         <div style={{ fontSize:11, color:'#94a3b8', marginTop:4 }}>Share this with the user directly — it isn't shown again. They should change it after first login.</div>
+      </div>
+      <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+        <button type="button" className="btn btn-outline btn-sm" onClick={emailDetails} disabled={mail.busy || mail.sent}>
+          <Mail size={13}/> {mail.sent ? 'Login details emailed' : mail.busy ? 'Sending…' : `Email login details to ${createdUser.email}`}
+        </button>
+        {mail.sent && <span style={{ fontSize:12, color:'#15803d' }}>Queued. The temporary password is removed from our records once it's sent.</span>}
+        {mail.err && <span style={{ fontSize:12, color:'#b91c1c' }}>{mail.err}</span>}
       </div>
       {createdUser.needsConfirmation && (
         <div style={{ fontSize:12, color:'#b45309', background:'#fffbeb', border:'1px solid #fde68a', borderRadius:8, padding:'8px 12px', marginTop:10 }}>
@@ -592,6 +680,51 @@ function UserForm({ form, setForm, depts, users, roles, rolesErr, editingId, edi
         <input type="checkbox" checked={form.is_active} onChange={e=>setForm(f=>({...f,is_active:e.target.checked}))} style={{ width:16, height:16, accentColor:'#10b981' }}/>
         Active User
       </label>
+      {editing && <ResetPasswordSection userId={editingId} />}
     </>
+  )
+}
+
+function ResetPasswordSection({ userId }) {
+  const [pwd, setPwd]         = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [saving, setSaving]   = useState(false)
+  const [msg, setMsg]         = useState(null)
+
+  async function handleReset() {
+    if (pwd.length < 6) { setMsg({ type:'danger', text:'Password must be at least 6 characters.' }); return }
+    if (pwd !== confirm) { setMsg({ type:'danger', text:'Passwords do not match.' }); return }
+    setSaving(true); setMsg(null)
+    try {
+      await adminResetPassword(userId, pwd)
+      setPwd(''); setConfirm('')
+      setMsg({ type:'success', text:'Password updated.' })
+    } catch (e) {
+      setMsg({ type:'danger', text:e.message })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div style={{ marginTop:20, paddingTop:16, borderTop:'1px solid #e2e8f0' }}>
+      <div style={{ fontSize:13, fontWeight:700, marginBottom:10, display:'flex', alignItems:'center', gap:6 }}>
+        <KeyRound size={14}/> Reset Password
+      </div>
+      <div className="form-row">
+        <div className="form-group">
+          <label className="form-label">New Password</label>
+          <input type="password" className="form-input" value={pwd} onChange={e=>setPwd(e.target.value)} placeholder="At least 6 characters" autoComplete="new-password"/>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Confirm Password</label>
+          <input type="password" className="form-input" value={confirm} onChange={e=>setConfirm(e.target.value)} autoComplete="new-password"/>
+        </div>
+      </div>
+      {msg && <div className={`alert alert-${msg.type}`} style={{ marginBottom:10 }}>{msg.text}</div>}
+      <button type="button" className="btn btn-outline btn-sm" onClick={handleReset} disabled={saving || !pwd}>
+        {saving ? 'Updating…' : 'Set New Password'}
+      </button>
+    </div>
   )
 }

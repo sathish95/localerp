@@ -31,7 +31,14 @@ export default function AssetsPage() {
   const [projects, setProjects] = useState([])
 
   const role = profile?.role || 'employee'
+  // Full control (create for anyone, edit/delete any asset, reassign to
+  // anyone else). Every other role can still self-register an asset —
+  // "Add Asset" is open to all roles, but the form locks Assigned To to
+  // themselves, and they can only edit (never delete) their own assets
+  // afterward — reassigning to someone else, or deleting the record
+  // outright, stays an admin/finance/manager action.
   const canEdit = ['admin', 'ceo', 'finance', 'manager'].includes(role)
+  const canEditAsset = (asset) => canEdit || asset?.assigned_to === profile?.id
 
   useEffect(() => { load(); loadProjects() }, [])
 
@@ -122,7 +129,7 @@ export default function AssetsPage() {
           <div className="page-title">Asset Management</div>
           <div className="page-subtitle">Track company assets — ThingsaliveWork</div>
         </div>
-        {canEdit && <button className="btn btn-primary" onClick={() => { setEditing(null); setForm(initForm()); setErr(''); setShowModal(true) }}><Plus size={15} /> Add Asset</button>}
+        <button className="btn btn-primary" onClick={() => { setEditing(null); setForm({ ...initForm(), assigned_to: canEdit ? '' : profile.id }); setErr(''); setShowModal(true) }}><Plus size={15} /> Add Asset</button>
       </div>
 
       {/* Status filter pills */}
@@ -169,7 +176,7 @@ export default function AssetsPage() {
                   <td>
                     <div style={{ display: 'flex', gap: 6 }}>
                       <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setShowDetail(a)} title="View"><Eye size={13} /></button>
-                      {canEdit && <button className="btn btn-ghost btn-sm btn-icon" onClick={() => openEdit(a)} title="Edit"><Edit2 size={13} /></button>}
+                      {canEditAsset(a) && <button className="btn btn-ghost btn-sm btn-icon" onClick={() => openEdit(a)} title="Edit"><Edit2 size={13} /></button>}
                       {canEdit && <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }} onClick={() => setDeleteConfirm(a.id)} title="Delete"><Trash2 size={13} /></button>}
                     </div>
                   </td>
@@ -234,10 +241,11 @@ export default function AssetsPage() {
         <div className="form-row">
           <div className="form-group">
             <label className="form-label">Assigned To</label>
-            <select className="form-select" value={form.assigned_to} onChange={e => setForm(f => ({ ...f, assigned_to: e.target.value }))}>
+            <select className="form-select" value={form.assigned_to} disabled={!canEdit} onChange={e => setForm(f => ({ ...f, assigned_to: e.target.value }))}>
               <option value="">Unassigned</option>
               {users.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
             </select>
+            {!canEdit && <div style={{ fontSize: 10, color: 'var(--ink-muted)', marginTop: 3 }}>Locked to yourself — only admin/finance/manager can assign an asset to someone else.</div>}
           </div>
           <div className="form-group">
             <label className="form-label">Status</label>
@@ -268,7 +276,7 @@ export default function AssetsPage() {
       {/* Detail Modal */}
       <Modal open={!!showDetail} onClose={() => setShowDetail(null)} title="Asset Details" size="lg"
         footer={<>
-          {canEdit && <button className="btn btn-primary btn-sm" onClick={() => { setShowDetail(null); openEdit(showDetail) }}>Edit Asset</button>}
+          {canEditAsset(showDetail) && <button className="btn btn-primary btn-sm" onClick={() => { setShowDetail(null); openEdit(showDetail) }}>Edit Asset</button>}
           <button className="btn btn-ghost" onClick={() => setShowDetail(null)}>Close</button>
         </>}>
         {showDetail && (

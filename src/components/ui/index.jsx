@@ -1,5 +1,25 @@
 import { X, Search, ChevronRight } from 'lucide-react'
 
+// ── Field Label with example tooltip ──
+// A form-field label with a small "?" info dot — hover (or focus, for
+// keyboard/touch users) shows an example value via the native title
+// attribute, no custom tooltip JS needed. `example` is plain text like
+// "e.g. ₹95/litre" or "e.g. 12 (as a %, not 0.12)".
+export function FieldLabel({ children, example, style }) {
+  return (
+    <label style={{ ...style, display: 'flex', alignItems: 'center', gap: 5 }}>
+      {children}
+      {example && (
+        <span tabIndex={0} title={example} aria-label={`Example: ${example}`} style={{
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          width: 14, height: 14, borderRadius: '50%', border: '1px solid currentColor',
+          fontSize: 9.5, fontWeight: 700, color: 'var(--text-muted)', cursor: 'help', flexShrink: 0,
+        }}>?</span>
+      )}
+    </label>
+  )
+}
+
 // ── Loader ──
 export function Loader() {
   return (
@@ -73,6 +93,8 @@ const STATUS_MAP = {
   superseded:       { label: 'Superseded',       bg: '#f1f5f9', color: '#475569' },
   open:               { label: 'Open',              bg: '#fef3c7', color: '#b45309' },
   in_progress:        { label: 'In Progress',       bg: '#dbeafe', color: '#1d4ed8' },
+  planned:            { label: 'Planned',           bg: '#f1f5f9', color: '#475569' },
+  confirmed:          { label: 'Confirmed',         bg: '#e0e7ff', color: '#4338ca' },
   waiting_on_customer:{ label: 'Waiting on You',    bg: '#fce7f3', color: '#be185d' },
   resolved:           { label: 'Resolved',          bg: '#dcfce7', color: '#15803d' },
 }
@@ -226,6 +248,21 @@ export function Stepper({ steps = [], activeIndex = 0, onStepClick, allowJumpAhe
         )
       })}
     </div>
+  )
+}
+
+// ── Toggle (switch) ──
+// Flat on/off switch — shared primitive for company-wide enable/disable
+// style controls. Renders a real <input type=checkbox role=switch> for
+// keyboard/AT support; the track + thumb are CSS (.switch in index.css).
+export function Toggle({ checked, onChange, disabled, label }) {
+  return (
+    <label className="switch" title={label}>
+      <input type="checkbox" role="switch" checked={!!checked} disabled={disabled}
+        aria-label={label} onChange={e => onChange?.(e.target.checked)} />
+      <span className="track" />
+      <span className="thumb" />
+    </label>
   )
 }
 

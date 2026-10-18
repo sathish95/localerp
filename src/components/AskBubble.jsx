@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Sparkles, X, Send, Receipt, ShoppingCart, CalendarDays, Plane, AlertTriangle, Wallet, TrendingUp, FileText, Building2, Users, ChevronRight, ChevronDown, Bot, Maximize2, Check, Boxes, Package, Zap, FileCheck, Truck, ArrowLeft, Radar } from 'lucide-react'
+import { Sparkles, X, Send, Receipt, ShoppingCart, CalendarDays, Plane, AlertTriangle, Wallet, TrendingUp, FileText, Building2, Users, ChevronRight, ChevronDown, Bot, Maximize2, Check, Boxes, Package, Zap, FileCheck, Truck, ArrowLeft, Radar, ClipboardList, Clock, Database } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
-import { QUESTIONS } from '../lib/quickAnswers'
+import { questionsForRole, matchQuestion } from '../lib/quickAnswers'
 import { LLM_MODELS, isModelUsable } from '../lib/llm'
-import { answerQuestion, getPreferredModel, setPreferredModel } from '../lib/assistant'
+import { answerQuestion, getPreferredModel, setPreferredModel, getAskMode, setAskMode } from '../lib/assistant'
 import { getEnabledCapabilities } from '../lib/aiCapabilities'
 
 // Capability picker (STEP: AI capabilities added alongside the original
@@ -38,6 +38,19 @@ const ICONS = {
   'pending-invoices': FileText,
   'department-budget-health': Building2,
   'active-employees': Users,
+  'my-open-tasks': ClipboardList,
+  'my-hours-this-month': Clock,
+  'my-pending-expenses': Receipt,
+  'my-pending-travel': Plane,
+  'pending-po': ShoppingCart,
+  'pending-grn': Truck,
+  'total-payments': Wallet,
+  'active-vendors': Building2,
+  'assets-summary': Boxes,
+  'pending-warranty': AlertTriangle,
+  'open-tasks-org': ClipboardList,
+  'pending-customer-invoices': FileCheck,
+  'products-customers-devices': Package,
 }
 
 const NUDGE_SEEN_KEY = 'nx_askbubble_nudge_seen'
@@ -52,6 +65,17 @@ export default function AskBubble() {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [capMenuOpen, setCapMenuOpen] = useState(false) // fan-out capability picker, shown before the panel opens
+  // Step aside while a drawer / modal / full-screen view is open, so the
+  // floating button never covers their footer buttons (Save, Send, …).
+  const [overlayOpen, setOverlayOpen] = useState(false)
+  useEffect(() => {
+    const SEL = '.modal-backdrop, .drawer-backdrop, .esg-overlay'
+    const check = () => setOverlayOpen(!!document.querySelector(SEL))
+    check()
+    const mo = new MutationObserver(check)
+    mo.observe(document.body, { childList: true, subtree: true })
+    return () => mo.disconnect()
+  }, [])
   const [enabledCaps, setEnabledCaps] = useState(null) // null while loading — treated as "show all" so nothing flashes hidden
   const [tab, setTab] = useState('ask')
   const [closing, setClosing] = useState(false)
@@ -61,6 +85,7 @@ export default function AskBubble() {
   const [modelId, setModelId] = useState(getPreferredModel())
   const [usableModels, setUsableModels] = useState(LLM_MODELS.filter(m => !m.envKey))
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
+  const [mode, setMode] = useState(getAskMode()) // 'llm' | 'db' — typed-text answer source
   const [showNudge, setShowNudge] = useState(false)
   const ref = useRef(null)
   const menuRef = useRef(null)
@@ -104,6 +129,12 @@ export default function AskBubble() {
   function selectModel(id) {
     setModelId(id)
     setPreferredModel(id)
+    setModelMenuOpen(false)
+  }
+
+  function selectMode(m) {
+    setMode(m)
+    setAskMode(m)
     setModelMenuOpen(false)
   }
 
@@ -191,6 +222,21 @@ export default function AskBubble() {
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     pushMessage('user', text)
     setBusy(true)
+
+    if (mode === 'db') {
+      // Non-LLM mode — never calls the AI. Matches typed text against the
+      // same canned question set as the starter chips (personal + org-wide,
+      // role-gated) and answers straight from Supabase, or says plainly
+      // that nothing matched rather than guessing.
+      const match = matchQuestion(text, questionsForRole(profile?.role))
+      const answer = match
+        ? await match.run(profile)
+        : "I don't have a database answer for that — try one of the suggested questions, rephrase it closer to one of them, or switch to LLM mode for open-ended questions."
+      pushMessage('bot', answer)
+      setBusy(false)
+      return
+    }
+
     const botId = pushMessage('bot', '', true)
     try {
       await answerQuestion(text, profile, { modelId: activeModel?.id, ollamaModel: 'qwen2.5-coder:7b', onToken: delta => appendToMessage(botId, delta) })
@@ -207,6 +253,8 @@ export default function AskBubble() {
   // access model, not one of the new module-AI features admins can turn
   // off. The other four are filtered by the org's saved settings.
   const visibleTabs = AI_TABS.filter(t => t.id === 'ask' || enabledCaps === null || enabledCaps[t.id] !== false)
+
+  if (overlayOpen && !open && !capMenuOpen) return null
 
   return (
     <div ref={ref}>
@@ -309,7 +357,7 @@ export default function AskBubble() {
                 <div style={{ fontSize: 12.5, color: 'var(--ink-soft)', lineHeight: 1.5, marginBottom: 2 }}>
                   Hi{profile?.full_name ? ` ${profile.full_name.split(' ')[0]}` : ''}! Pick a question to get an instant answer:
                 </div>
-                {QUESTIONS.map((q, i) => {
+                {questionsForRole(profile?.role).map((q, i) => {
                   const Icon = ICONS[q.id] || Sparkles
                   return (
                     <button key={q.id} disabled={busy} onClick={() => ask(q)} className="askbubble-card"
@@ -368,8 +416,23 @@ export default function AskBubble() {
             )}
           </div>
 
-          {tab === 'ask' && usableModels.length > 1 && (
-            <div ref={menuRef} style={{ position: 'relative', padding: '8px 12px 0', borderTop: '1px solid var(--border)', background: 'var(--surface)', flexShrink: 0 }}>
+          {tab === 'ask' && (
+            <div style={{ display: 'flex', gap: 6, padding: '8px 12px 0', borderTop: '1px solid var(--border)', background: 'var(--surface)', flexShrink: 0 }}>
+              <button onClick={() => selectMode('llm')} title="Answers come from the AI, grounded in a live data snapshot" style={{
+                display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 999, border: 'none', cursor: 'pointer',
+                background: mode === 'llm' ? 'var(--c1)' : 'var(--surface-2)', color: mode === 'llm' ? '#fff' : 'var(--text-muted)',
+                fontSize: 10.5, fontWeight: 700,
+              }}><Sparkles size={11} /> LLM</button>
+              <button onClick={() => selectMode('db')} title="Answers come straight from the database — no AI call at all" style={{
+                display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 999, border: 'none', cursor: 'pointer',
+                background: mode === 'db' ? 'var(--c1)' : 'var(--surface-2)', color: mode === 'db' ? '#fff' : 'var(--text-muted)',
+                fontSize: 10.5, fontWeight: 700,
+              }}><Database size={11} /> DB Only</button>
+            </div>
+          )}
+
+          {tab === 'ask' && mode === 'llm' && usableModels.length > 1 && (
+            <div ref={menuRef} style={{ position: 'relative', padding: '8px 12px 0', background: 'var(--surface)', flexShrink: 0 }}>
               <button onClick={() => setModelMenuOpen(o => !o)} title="Switch AI model" style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 8px 4px 10px',
                 borderRadius: 999, border: `1px solid ${activeModel?.color}40`, background: activeModel?.bg,
@@ -402,14 +465,14 @@ export default function AskBubble() {
           )}
 
           {tab === 'ask' && (
-            <div style={{ display: 'flex', gap: 8, padding: 12, alignItems: 'flex-end', borderTop: usableModels.length > 1 ? 'none' : '1px solid var(--border)', background: 'var(--surface)', flexShrink: 0 }}>
+            <div style={{ display: 'flex', gap: 8, padding: 12, alignItems: 'flex-end', borderTop: 'none', background: 'var(--surface)', flexShrink: 0 }}>
               <textarea
                 ref={textareaRef}
                 rows={1}
                 value={input}
                 onChange={e => { setInput(e.target.value); autoGrow(e.target) }}
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
-                placeholder="Ask a question…"
+                placeholder={mode === 'db' ? 'Ask a question (DB answers only)…' : 'Ask a question…'}
                 disabled={busy}
                 className="askbubble-textarea"
                 style={{

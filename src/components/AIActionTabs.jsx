@@ -204,7 +204,15 @@ export function ProductAiTab({ profile, onSaved }) {
 }
 
 // ── Prompt-Based Task Actions ──
-export function TaskActionsTab({ profile, onSaved }) {
+// `workItemId`/`workItemTitle` (both optional — default undefined, so the
+// AskBubble popover and TasksPage.jsx's existing usage are byte-identical
+// to before): when set (from WorkItemsPage.jsx's Phase 7/10 "AI-assisted"
+// entry point), this skips the "which project" question entirely — the
+// task is created as a Direct Task (project_id: null, per Phase 4) linked
+// to that work item instead. Status-change intents aren't supported in
+// this mode (no project to scope the task search to) — the bot says so
+// rather than guessing.
+export function TaskActionsTab({ profile, onSaved, workItemId, workItemTitle }) {
   const navigate = useNavigate()
   const perm = TASK_DEF_PERMS[profile?.role] || TASK_DEF_PERMS.employee
   const usersRef = useRef(null)
@@ -218,13 +226,32 @@ export function TaskActionsTab({ profile, onSaved }) {
     return usersRef.current
   }
 
+  // Best-effort audit trail (master prompt: every AI action must be
+  // audited). Fire-and-forget, matching Layout.jsx's own page_view
+  // logging convention (no .catch there either) — an audit-log failure
+  // must never block or surface as an error on the actual task action.
+  function auditLog(eventType, extra) {
+    try {
+      supabase.from('app_events').insert({
+        event_type: eventType,
+        path: workItemId ? `/work-items/${workItemId}` : '/tasks',
+        user_id: profile.id,
+        session_id: `ai-task-actions-${profile.id}`,
+      }).then(() => {}, () => {})
+    } catch {}
+  }
+
   if (!perm.can_create && !perm.can_change_status) return <PermissionNotice>Your role can't create tasks or change their status.</PermissionNotice>
 
-  const steps = [
-    { key:'projectId', type:'select', botMessage:'Which project is this for?',
-      options: async () => { const { data } = await supabase.from('projects').select('id,name').eq('status','active').order('name'); return (data || []).map(p => ({ value:p.id, label:p.name })) } },
-    { key:'prompt', type:'text', botMessage:'What would you like to do?', placeholder:'"Create a task to fix the login bug, assign to Priya, high priority" or "Mark \'Fix login bug\' as done"' },
-  ]
+  const steps = workItemId
+    ? [
+        { key:'prompt', type:'text', botMessage:`What task would you like to create for "${workItemTitle}"?`, placeholder:'"Inspect the HVAC unit, assign to Raj, high priority, due Friday"' },
+      ]
+    : [
+        { key:'projectId', type:'select', botMessage:'Which project is this for?',
+          options: async () => { const { data } = await supabase.from('projects').select('id,name').eq('status','active').order('name'); return (data || []).map(p => ({ value:p.id, label:p.name })) } },
+        { key:'prompt', type:'text', botMessage:'What would you like to do?', placeholder:'"Create a task to fix the login bug, assign to Priya, high priority" or "Mark \'Fix login bug\' as done"' },
+      ]
 
   async function onGenerate(answers) {
     if (answers.pickedTaskId) {
@@ -238,6 +265,7 @@ export function TaskActionsTab({ profile, onSaved }) {
       if (!perm.can_create) return { status:'error', message: "Your role can't create tasks." }
       return { status:'ready', draft: { ...parsed, kind:'create' } }
     }
+    if (workItemId) return { status:'error', message: "Status changes via AI aren't available from here yet — open the task from the list and change its status directly." }
     if (!perm.can_change_status) return { status:'error', message: "Your role can't change task status." }
     const { data: tasks } = await supabase.from('project_tasks').select('id,task_name,status').eq('project_id', answers.projectId)
     const candidates = matchTasks(parsed.task_match, tasks || [])
@@ -273,14 +301,18 @@ export function TaskActionsTab({ profile, onSaved }) {
     if (draft.kind === 'create') {
       const matched = matchMember(draft.assignee_name, usersRef.current)
       const { error } = await supabase.from('project_tasks').insert({
-        project_id: answers.projectId, task_name: draft.task_name || 'Untitled task', task_type:'task',
+        project_id: workItemId ? null : answers.projectId,
+        work_item_id: workItemId || null,
+        task_name: draft.task_name || 'Untitled task', task_type:'task',
         description: draft.description || null, priority: draft.priority || 'medium', status:'backlog',
         assigned_to: matched?.id || null, planned_end_date: draft.due_date || null, created_by: profile.id,
       })
       if (error) throw error
+      auditLog('ai_task_created')
     } else {
       const { error } = await supabase.from('project_tasks').update({ status: draft.new_status }).eq('id', draft.matchedTask.id)
       if (error) throw error
+      auditLog('ai_task_status_changed')
     }
     onSaved?.()
   }

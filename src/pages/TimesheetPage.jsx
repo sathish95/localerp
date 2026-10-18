@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { supabase, rupee, dateFmt } from '../lib/supabase'
+import { getTaskHoursByCheckinLog } from '../lib/workExecution'
 import { Loader, Empty, Modal } from '../components/ui'
 import { Clock, Plus, CheckCircle, Download, Calendar, User } from 'lucide-react'
 
@@ -22,6 +23,10 @@ export default function TimesheetPage() {
   const [selYear,   setSelYear]   = useState(new Date().getFullYear())
   const [showAdd,   setShowAdd]   = useState(false)
   const [submitting,setSub]       = useState(false)
+  // Phase 5 — Work Execution: Presence/Task/Unallocated breakdown, read-only,
+  // additive over the existing table. Never touches time_logs or the
+  // submission/approval flow (that's a separate page/table entirely).
+  const [taskMinutesByLog, setTaskMinutesByLog] = useState({})
 
   // Add entry form
   const [form, setForm] = useState({
@@ -51,10 +56,12 @@ export default function TimesheetPage() {
       supabase.from('resource_rates').select('employee_id,monthly_salary,hourly_rate'),
     ])
 
-    setLogs(logsRes.data || [])
+    const rows = logsRes.data || []
+    setLogs(rows)
     setUsers(usersRes.data || [])
     setProjects(projRes.data || [])
     setRates(ratesRes.data || [])
+    getTaskHoursByCheckinLog(rows.map(l => l.id)).then(setTaskMinutesByLog).catch(() => setTaskMinutesByLog({}))
     setLoading(false)
   }
 
@@ -234,10 +241,14 @@ export default function TimesheetPage() {
             <thead><tr>
               <th>Date</th>
               {isMgr && <th>Employee</th>}
-              <th>Project</th><th>Hours</th><th>Check In</th><th>Check Out</th><th>Work Done</th>
+              <th>Project</th><th>Hours</th><th>Task Hours</th><th>Unallocated</th><th>Check In</th><th>Check Out</th><th>Work Done</th>
             </tr></thead>
             <tbody>
-              {logs.map(l=>(
+              {logs.map(l=>{
+                const taskMinutes = taskMinutesByLog[l.id] || 0
+                const taskHours = taskMinutes / 60
+                const unallocated = l.hours_worked != null ? Math.max(0, l.hours_worked - taskHours) : null
+                return (
                 <tr key={l.id}>
                   <td style={{ fontWeight:600, fontSize:13 }}>{dateFmt(l.work_date)}</td>
                   {isMgr && (
@@ -248,11 +259,13 @@ export default function TimesheetPage() {
                   )}
                   <td>{l.project ? <span style={{ padding:'2px 8px', borderRadius:999, fontSize:11, fontWeight:700, background:'#ede9fe', color:'#6d28d9' }}>{l.project.name}</span> : <span style={{ color:'#94a3b8', fontSize:12 }}>—</span>}</td>
                   <td style={{ fontWeight:800, color:'#6366f1', fontSize:14 }}>{l.hours_worked!=null ? `${l.hours_worked}h` : <span style={{ color:'#10b981', fontSize:11 }}>⏳ Active</span>}</td>
+                  <td style={{ fontSize:12, color:'#059669', fontWeight:700 }}>{taskMinutes > 0 ? `${taskHours.toFixed(1)}h` : '—'}</td>
+                  <td style={{ fontSize:12, color:'#94a3b8' }}>{unallocated != null ? `${unallocated.toFixed(1)}h` : '—'}</td>
                   <td style={{ fontFamily:'monospace', fontSize:12, color:'#059669' }}>{l.check_in ? new Date(l.check_in).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : '—'}</td>
                   <td style={{ fontFamily:'monospace', fontSize:12, color:l.check_out?'#dc2626':'#f59e0b' }}>{l.check_out ? new Date(l.check_out).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : l.hours_worked ? '—' : '🟢 In'}</td>
                   <td style={{ fontSize:12, color:'#64748b', maxWidth:180, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{l.comment||'—'}</td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
         )}

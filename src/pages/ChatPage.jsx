@@ -212,6 +212,15 @@ export default function ChatPage() {
     return msgs[msgs.length - 1]
   }
 
+  // Default view is a proper conversation list — only people you've
+  // actually chatted with, most recent first — not the whole company
+  // directory every time. Searching still finds anyone (matched or not),
+  // so a first-time conversation can still be started.
+  const listUsers = search
+    ? filteredUsers
+    : [...filteredUsers].filter(u => getLastMsg(u.id))
+        .sort((a,b) => new Date(getLastMsg(b.id).created_at) - new Date(getLastMsg(a.id).created_at))
+
   if (loading) return <Loader/>
 
   return (
@@ -301,7 +310,12 @@ export default function ChatPage() {
               </div>
             </div>
             <div style={{ flex:1, overflowY:'auto' }}>
-              {filteredUsers.map(u => {
+              {listUsers.length===0 && (
+                <div style={{ padding:'24px 16px', textAlign:'center', color:'var(--text-muted)', fontSize:12 }}>
+                  {search ? 'No colleagues match your search.' : <>No conversations yet.<br/>Search for a colleague above to start one.</>}
+                </div>
+              )}
+              {listUsers.map(u => {
                 const last = getLastMsg(u.id)
                 const active = activeRoom?.otherUser?.id === u.id
                 const online = !!presence[u.id]

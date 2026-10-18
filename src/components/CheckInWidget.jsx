@@ -1,16 +1,25 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { supabase, dateFmt } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { notifyManagers } from '../lib/notifications'
+import { listFlows, makeStatusHelpers } from '../lib/departmentStatusFlows'
+import { ACTIVITY_TYPES, activityLabel, startVisit, checkOutLog, getGps, listLogDevices, addDeviceToLog, removeLogDevice, CHECKIN_EVENT } from '../lib/supportVisits'
 
 const SL = { backlog:'Backlog', todo:'To Do', in_progress:'In Progress', delayed:'Delayed', qa:'QA Testing', ready_for_demo:'Ready for Demo', closed:'Closed' }
 const SC = { backlog:'#64748b', todo:'#3b82f6', in_progress:'#f59e0b', delayed:'#e11d48', qa:'#8b5cf6', ready_for_demo:'#10b981', closed:'#94a3b8' }
 const STATUSES = ['backlog','todo','in_progress','delayed','qa','ready_for_demo','closed']
+// Pre-STEP198 fallback for a department with no configured flow row yet —
+// see makeStatusHelpers in departmentStatusFlows.js. Without this, tasks
+// belonging to a department with its OWN status pipeline (e.g. Application/
+// Firmware/Hardware, which use 'done' instead of 'closed') always showed
+// this global list's labels/colors here — the "status doesn't match
+// department, shows the default" confusion this fixes.
+const LEGACY_STEPS = STATUSES.map(s => ({ status_key: s, label: SL[s], color: SC[s], is_closed: s === 'closed' }))
 
 export default function CheckInWidget({ variant = 'widget' }) {
   const { profile } = useAuth()
   const [open, setOpen]        = useState(false)
-  const [phase, setPhase]      = useState('idle')   // idle | form | active | checkout
+  const [phase, setPhase]      = useState('idle')   // idle | form | active
   const [activeLog, setActiveLog] = useState(null)
   const [projects, setProjects]  = useState([])
   const [tasks, setTasks]        = useState([])
@@ -19,10 +28,26 @@ export default function CheckInWidget({ variant = 'widget' }) {
   const [comment, setComment]    = useState('')
   const [elapsed, setElapsed]    = useState('')
   const [loading, setLoading]    = useState(false)
-  const [coTasks, setCoTasks]    = useState([])
+  const [flows, setFlows]        = useState([])
+  // STEP248 support visits
+  const [visit, setVisit]        = useState(false)
+  const [engagements, setEngagements] = useState([])
+  const [selEng, setSelEng]      = useState('')
+  const [selSite, setSelSite]    = useState('')
+  const [logDevices, setLogDevices] = useState([])
+  const [visitDevices, setVisitDevices] = useState([])
+  const [addDev, setAddDev]      = useState({ deviceId: '', activity: 'INSPECTION', minutes: '', note: '' })
+  const [visitErr, setVisitErr]  = useState('')
   const timerRef = useRef(null)
+  const helpers = useMemo(() => makeStatusHelpers(flows, LEGACY_STEPS), [flows])
 
   useEffect(() => { if (profile?.id) init() }, [profile?.id])
+  // "Check in here" on a device view starts / extends a visit — reload when it does
+  useEffect(() => {
+    const reload = () => profile?.id && init()
+    window.addEventListener(CHECKIN_EVENT, reload)
+    return () => window.removeEventListener(CHECKIN_EVENT, reload)
+  }, [profile?.id])
 
   useEffect(() => {
     clearInterval(timerRef.current)
@@ -38,28 +63,94 @@ export default function CheckInWidget({ variant = 'widget' }) {
 
   async function init() {
     const today = new Date().toISOString().split('T')[0]
-    const [logRes, projRes] = await Promise.all([
+    const [logRes, projRes, flowsRes] = await Promise.all([
       supabase.from('time_logs').select('*,project:projects(id,name)').eq('employee_id', profile.id).eq('work_date', today).is('check_out', null).order('check_in', {ascending:false}).limit(1),
       supabase.from('projects').select('id,name').eq('status','active').order('name'),
+      listFlows(profile.organization_id).catch(() => []),
     ])
     const log = logRes.data?.[0] || null
     setActiveLog(log)
     setProjects(projRes.data || [])
+    supabase.from('golive_engagements').select('id,code,name,project_id,sites').in('status', ['ACTIVE', 'EXIT_REVIEW']).is('deleted_at', null).order('name')
+      .then(({ data }) => setEngagements(data || []))
+    if (log?.visit_type === 'SUPPORT') loadVisit(log); else { setLogDevices([]); setVisitDevices([]) }
+    setFlows(flowsRes || [])
     setPhase(log ? 'active' : 'idle')
+    loadTasks(selProject, flowsRes || [])
   }
 
-  async function loadTasks(projId) {
-    if (!projId) { setTasks([]); return }
-    const { data } = await supabase.from('project_tasks')
-      .select('id,task_id,task_name,status,priority,planned_start_date,planned_end_date,estimated_hours')
-      .eq('project_id', projId).eq('assigned_to', profile.id)
-      .not('status', 'in', '("closed","ready_for_demo")')
-      .order('planned_end_date')
-    setTasks(data || [])
+  // 'general' tasks are the universal miscellaneous/non-project work items —
+  // project-less by definition, so they never show up under a specific
+  // project's filter, and they should be checkin-able by anyone whether
+  // they're personally assigned or left open for whoever picks them up.
+  // They're always included alongside whatever project is selected (or
+  // even with none selected), rather than requiring a project pick first.
+  // Excludes "done" tasks using each task's OWN department status flow
+  // (not a hardcoded 'closed'/'ready_for_demo' key list — a custom flow
+  // may use 'done' instead, see LEGACY_STEPS comment above), so filtering
+  // client-side after fetch instead of in the query. `flowsList` defaults
+  // to state but init() passes flowsRes directly since setFlows() hasn't
+  // committed yet on first load.
+  async function loadTasks(projId, flowsList = flows) {
+    const h = makeStatusHelpers(flowsList, LEGACY_STEPS)
+    const cols = 'id,task_id,task_name,status,priority,planned_start_date,planned_end_date,estimated_hours,department_id'
+    const [projRes, genRes] = await Promise.all([
+      projId
+        ? supabase.from('project_tasks').select(cols)
+            .eq('project_id', projId).eq('assigned_to', profile.id)
+            .order('planned_end_date')
+        : Promise.resolve({ data: [] }),
+      supabase.from('project_tasks').select(cols)
+        .eq('task_type', 'general')
+        .or(`assigned_to.eq.${profile.id},assigned_to.is.null`)
+        .order('planned_end_date'),
+    ])
+    const merged = [...(genRes.data || []), ...(projRes.data || [])]
+    setTasks(merged.filter(t => !h.isTaskDone(t)))
+  }
+
+  // devices on the running visit, and the devices that can be added (the engagement's, else the project's)
+  async function loadVisit(log) {
+    setVisitErr('')
+    try { setLogDevices(await listLogDevices(log.id)) } catch (e) { setVisitErr(e.message) }
+    let list = []
+    if (log.engagement_id) {
+      const { data } = await supabase.from('golive_enrollments').select('device_id,equipment_id,equipment_name,site,device:device_instances(id,device_code,serial_number)')
+        .eq('engagement_id', log.engagement_id).is('deleted_at', null).is('unenrolled_at', null)
+      list = (data || []).map(e => ({ id: e.device_id, code: e.device?.serial_number || e.device?.device_code, equipment: [e.equipment_id, e.equipment_name].filter(Boolean).join(' · '), site: e.site }))
+    } else if (log.project_id) {
+      const { data } = await supabase.from('device_instances').select('id,device_code,serial_number,equipment_id,equipment_name,current_location').eq('project_id', log.project_id).order('device_code')
+      list = (data || []).map(d => ({ id: d.id, code: d.serial_number || d.device_code, equipment: [d.equipment_id, d.equipment_name].filter(Boolean).join(' · '), site: d.current_location }))
+    }
+    if (log.site) list.sort((a, b) => (b.site === log.site) - (a.site === log.site))
+    setVisitDevices(list)
+  }
+  async function addVisitDevice() {
+    setVisitErr('')
+    try {
+      await addDeviceToLog(activeLog.id, addDev)
+      setAddDev(a => ({ ...a, deviceId: '', minutes: '', note: '' }))
+      setLogDevices(await listLogDevices(activeLog.id))
+    } catch (e) { setVisitErr(e.message) }
+  }
+  async function removeVisitDevice(id) {
+    try { await removeLogDevice(id); setLogDevices(await listLogDevices(activeLog.id)) } catch (e) { setVisitErr(e.message) }
   }
 
   async function doCheckIn() {
     setLoading(true)
+    if (visit) {
+      try {
+        const eng = engagements.find(e => e.id === selEng)
+        const gps = await getGps()
+        await startVisit({ employeeId: profile.id, projectId: eng?.project_id || selProject || null, engagementId: selEng || null, site: selSite || null, comment, gps })
+        setComment(''); setSelProject(''); setSelEng(''); setSelSite(''); setVisit(false); setOpen(false)
+        notifyManagers({ type: 'checkin', title: `🟢 ${profile.full_name} started a support visit`, body: [eng?.name, selSite, comment].filter(Boolean).join(' · ') || 'Support visit', link: '/resources', senderId: profile.id })
+        init()
+      } catch (e) { alert(e.message) }
+      setLoading(false)
+      return
+    }
     try {
       const today = new Date().toISOString().split('T')[0]
       const { data: logData, error } = await supabase.from('time_logs').insert({
@@ -72,8 +163,17 @@ export default function CheckInWidget({ variant = 'widget' }) {
           checkin_log_id: logData.id, task_id: tid,
           employee_id: profile.id, work_date: today,
         })))
-        await supabase.from('project_tasks').update({ status:'in_progress' })
-          .in('id', selTasks).not('status', 'in', '("in_progress","qa","ready_for_demo","closed")')
+        // Only bump tasks whose OWN department flow actually has an
+        // 'in_progress' step — a custom flow (e.g. Application/Firmware/
+        // Hardware) may not use that key at all, and forcing it there would
+        // just create a new, worse status-confusion bug.
+        const bumpIds = selTasks.filter(tid => {
+          const t = tasks.find(x => x.id === tid)
+          if (!t) return false
+          if (['in_progress', 'qa', 'ready_for_demo', 'closed'].includes(t.status)) return false
+          return helpers.stepsForTask(t).some(s => s.status_key === 'in_progress' && !s.is_closed)
+        })
+        if (bumpIds.length) await supabase.from('project_tasks').update({ status:'in_progress' }).in('id', bumpIds)
       }
       setSelTasks([]); setComment(''); setSelProject(''); setOpen(false)
       // Notify managers about check-in
@@ -89,27 +189,15 @@ export default function CheckInWidget({ variant = 'widget' }) {
     setLoading(false)
   }
 
-  async function openCheckout() {
-    const { data: linked } = await supabase.from('checkin_tasks')
-      .select('*,task:project_tasks(id,task_id,task_name,status,estimated_hours)')
-      .eq('checkin_log_id', activeLog.id)
-    // Default: any task not yet completed (closed) is marked Delayed at checkout
-    setCoTasks((linked||[]).map(l => ({...l, new_status: l.task?.status === 'closed' ? 'closed' : 'delayed'})))
-    setPhase('checkout')
-  }
-
+  // Checkout no longer prompts for (or applies) a task status change —
+  // it only closes the time_logs session. Task status is managed solely
+  // from the task itself (Task Detail / Kanban), never as a side effect
+  // of ending a check-in session.
   async function doCheckOut() {
     setLoading(true)
     try {
-      const now = new Date()
-      const hrs = Math.round((now - new Date(activeLog.check_in)) / 3600000 * 100) / 100
-      await supabase.from('time_logs').update({ check_out: now.toISOString(), hours_worked: hrs }).eq('id', activeLog.id)
-      for (const ct of coTasks) {
-        if (ct.task?.id && ct.new_status !== ct.task?.status) {
-          await supabase.from('project_tasks').update({ status: ct.new_status }).eq('id', ct.task.id)
-          await supabase.from('checkin_tasks').update({ status_update: ct.new_status }).eq('id', ct.id)
-        }
-      }
+      const gps = activeLog.visit_type === 'SUPPORT' ? await getGps() : null
+      const hrs = await checkOutLog(activeLog, gps)
       // Notify managers about checkout
       notifyManagers({
         type: 'checkout',
@@ -118,13 +206,13 @@ export default function CheckInWidget({ variant = 'widget' }) {
         link: '/resources',
         senderId: profile.id,
       })
-      setOpen(false); setPhase('idle'); setActiveLog(null); setCoTasks([])
+      setOpen(false); setPhase('idle'); setActiveLog(null)
       init()
     } catch(e) { alert(e.message) }
     setLoading(false)
   }
 
-  const isActive = phase === 'active' || phase === 'checkout'
+  const isActive = phase === 'active'
 
   const widgetStyle = {
     display:'flex', alignItems:'center', gap:6, padding:'5px 12px',
@@ -162,6 +250,25 @@ export default function CheckInWidget({ variant = 'widget' }) {
               <div style={{fontWeight:700,fontSize:13,marginBottom:12,display:'flex',alignItems:'center',gap:7}}>
                 <span style={{fontSize:16}}>▶</span> Start Work Session
               </div>
+              <label style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderRadius:7,border:`1px solid ${visit?'var(--c1)':'var(--border)'}`,background:visit?'rgba(99,102,241,.08)':'transparent',marginBottom:10,cursor:'pointer',fontSize:12,fontWeight:600}}>
+                <input type="checkbox" checked={visit} onChange={e=>setVisit(e.target.checked)}/> Support / site visit
+                <span style={{fontWeight:400,color:'var(--text-muted)',fontSize:10.5}}>record devices worked on · billed to project support</span>
+              </label>
+              {visit && engagements.length > 0 && (
+                <div style={{marginBottom:10}}>
+                  <div style={{fontSize:11,fontWeight:600,color:'var(--text-muted)',marginBottom:5}}>Go-live engagement</div>
+                  <select style={inputStyle} value={selEng} onChange={e=>{const g=engagements.find(x=>x.id===e.target.value);setSelEng(e.target.value);setSelSite('');if(g?.project_id){setSelProject(g.project_id);loadTasks(g.project_id)}}}>
+                    <option value="">None (project only)</option>
+                    {engagements.map(g=><option key={g.id} value={g.id}>{g.code} · {g.name}</option>)}
+                  </select>
+                  {(engagements.find(g=>g.id===selEng)?.sites||[]).length>0&&(
+                    <select style={{...inputStyle,marginTop:6}} value={selSite} onChange={e=>setSelSite(e.target.value)}>
+                      <option value="">Site…</option>
+                      {engagements.find(g=>g.id===selEng).sites.map(s=><option key={s} value={s}>{s}</option>)}
+                    </select>
+                  )}
+                </div>
+              )}
               <div style={{marginBottom:10}}>
                 <div style={{fontSize:11,fontWeight:600,color:'var(--text-muted)',marginBottom:5}}>Project</div>
                 <select style={inputStyle} value={selProject}
@@ -182,8 +289,8 @@ export default function CheckInWidget({ variant = 'widget' }) {
                       return (
                         <div key={t.id} onClick={()=>setSelTasks(p=>sel?p.filter(x=>x!==t.id):[...p,t.id])}
                           style={{display:'flex',alignItems:'flex-start',gap:8,padding:'8px 10px',borderRadius:7,cursor:'pointer',
-                            background:sel?`${SC[t.status]}12`:'var(--surface-2)',
-                            border:`1px solid ${sel?SC[t.status]:'var(--border)'}`,transition:'all .12s'}}>
+                            background:sel?`${helpers.colorFor(t)}12`:'var(--surface-2)',
+                            border:`1px solid ${sel?helpers.colorFor(t):'var(--border)'}`,transition:'all .12s'}}>
                           <div style={{width:15,height:15,borderRadius:4,border:`2px solid ${sel?'var(--c1)':'var(--border)'}`,
                             background:sel?'var(--c1)':'transparent',flexShrink:0,marginTop:1,
                             display:'flex',alignItems:'center',justifyContent:'center'}}>
@@ -193,7 +300,7 @@ export default function CheckInWidget({ variant = 'widget' }) {
                             <div style={{fontSize:12,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.task_name}</div>
                             <div style={{display:'flex',gap:5,marginTop:2,fontSize:10,color:'var(--text-muted)',flexWrap:'wrap'}}>
                               <span style={{fontFamily:'var(--font-mono)',color:'var(--c1)'}}>{t.task_id}</span>
-                              <span style={{padding:'1px 5px',borderRadius:3,background:`${SC[t.status]}15`,color:SC[t.status],fontWeight:600}}>{SL[t.status]}</span>
+                              <span style={{padding:'1px 5px',borderRadius:3,background:`${helpers.colorFor(t)}15`,color:helpers.colorFor(t),fontWeight:600}}>{helpers.labelFor(t)}</span>
                               {t.planned_end_date&&<span>📅 {dateFmt(t.planned_end_date)}</span>}
                               {t.estimated_hours&&<span>⏱ {t.estimated_hours}h</span>}
                             </div>
@@ -239,54 +346,40 @@ export default function CheckInWidget({ variant = 'widget' }) {
                   {activeLog?.project?.name||'No project'} · Since {activeLog?.check_in?new Date(activeLog.check_in).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:false}):'—'}
                 </div>
                 {activeLog?.comment&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2,fontStyle:'italic'}}>"{activeLog.comment}"</div>}
+                {activeLog?.visit_type==='SUPPORT'&&<div style={{fontSize:10.5,color:'var(--c1)',marginTop:4,fontWeight:700}}>Support visit{activeLog.site?` · ${activeLog.site}`:''}</div>}
               </div>
-              <button style={{...btnPrimary,background:'#e11d48'}} onClick={openCheckout}>⏹ Check Out</button>
-            </div>
-          )}
-
-          {/* CHECKOUT: task status update */}
-          {phase === 'checkout' && (
-            <div style={{padding:16}}>
-              <div style={{fontWeight:700,fontSize:13,marginBottom:3}}>Check Out</div>
-              <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:12}}>Session: {elapsed} · Update task statuses</div>
-
-              {coTasks.length > 0 && (
+              {activeLog?.visit_type==='SUPPORT'&&(
                 <div style={{marginBottom:12}}>
-                  <div style={{fontSize:11,fontWeight:600,color:'var(--text-muted)',marginBottom:7}}>TASKS WORKED ON</div>
-                  <div style={{display:'flex',flexDirection:'column',gap:7,maxHeight:200,overflowY:'auto'}}>
-                    {coTasks.map((ct,i) => (
-                      <div key={ct.id} style={{padding:'9px 11px',borderRadius:8,background:'var(--surface-2)',border:'1px solid var(--border)'}}>
-                        <div style={{fontSize:12,fontWeight:600,marginBottom:5}}>
-                          <span style={{fontFamily:'var(--font-mono)',color:'var(--c1)',fontSize:10}}>{ct.task?.task_id} </span>
-                          {ct.task?.task_name}
-                        </div>
-                        <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:5}}>
-                          Was: <span style={{color:SC[ct.task?.status||'todo'],fontWeight:600}}>{SL[ct.task?.status||'todo']}</span>
-                          {ct.task?.estimated_hours&&<span> · {ct.task.estimated_hours}h est</span>}
-                        </div>
-                        <select style={{...inputStyle,color:SC[ct.new_status]||'var(--c1)',fontWeight:600,fontSize:11,
-                          background:`${SC[ct.new_status]||'var(--c1)'}12`,
-                          border:`1px solid ${SC[ct.new_status]||'var(--c1)'}30`}}
-                          value={ct.new_status}
-                          onChange={e=>setCoTasks(p=>p.map((x,j)=>j===i?{...x,new_status:e.target.value}:x))}>
-                          {STATUSES.map(s=><option key={s} value={s}>{SL[s]}</option>)}
-                        </select>
+                  <div style={{fontSize:11,fontWeight:700,color:'var(--text-muted)',marginBottom:6}}>Devices worked on ({logDevices.length})</div>
+                  {visitErr&&<div style={{fontSize:11,color:'#b91c1c',marginBottom:6}}>{visitErr}</div>}
+                  <div style={{display:'flex',flexDirection:'column',gap:4,maxHeight:150,overflowY:'auto',marginBottom:6}}>
+                    {logDevices.map(d=>{const dev=visitDevices.find(v=>v.id===d.device_id);return (
+                      <div key={d.id} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 8px',borderRadius:6,background:'var(--surface-2)',fontSize:11.5}}>
+                        <span style={{fontFamily:'var(--font-mono)',fontWeight:700}}>{dev?.code||'Device'}</span>
+                        <span style={{color:'var(--text-muted)',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{activityLabel(d.activity_type)}{d.minutes!=null?` · ${d.minutes} min`:''}{d.note?` · ${d.note}`:''}</span>
+                        <button onClick={()=>removeVisitDevice(d.id)} title="Remove" style={{border:'none',background:'none',cursor:'pointer',color:'#b91c1c',fontSize:13,padding:0}}>×</button>
                       </div>
-                    ))}
+                    )})}
                   </div>
+                  <select style={inputStyle} value={addDev.deviceId} onChange={e=>setAddDev(a=>({...a,deviceId:e.target.value}))}>
+                    <option value="">{visitDevices.length?'Add a device…':'No devices on this engagement / project'}</option>
+                    {visitDevices.filter(v=>!logDevices.some(d=>d.device_id===v.id)).map(v=><option key={v.id} value={v.id}>{v.code}{v.equipment?` · ${v.equipment}`:''}{v.site&&v.site!==activeLog.site?` · ${v.site}`:''}</option>)}
+                  </select>
+                  {addDev.deviceId&&(
+                    <div style={{display:'flex',flexDirection:'column',gap:5,marginTop:5}}>
+                      <div style={{display:'flex',gap:5}}>
+                        <select style={{...inputStyle,flex:2}} value={addDev.activity} onChange={e=>setAddDev(a=>({...a,activity:e.target.value}))}>{ACTIVITY_TYPES.map(a=><option key={a.key} value={a.key}>{a.label}</option>)}</select>
+                        <input style={{...inputStyle,flex:1}} type="number" min="0" placeholder="min" value={addDev.minutes} onChange={e=>setAddDev(a=>({...a,minutes:e.target.value}))}/>
+                      </div>
+                      <input style={inputStyle} placeholder="What was done (optional)" value={addDev.note} onChange={e=>setAddDev(a=>({...a,note:e.target.value}))} onKeyDown={e=>e.key==='Enter'&&addVisitDevice()}/>
+                      <button style={{...btnPrimary,padding:'7px',fontSize:12}} onClick={addVisitDevice}>Add device</button>
+                    </div>
+                  )}
                 </div>
               )}
-
-              {coTasks.length===0&&(
-                <div style={{padding:'9px 11px',borderRadius:8,background:'var(--surface-2)',fontSize:12,color:'var(--text-muted)',marginBottom:12}}>No tasks linked to this session</div>
-              )}
-
-              <div style={{display:'flex',gap:8}}>
-                <button onClick={()=>setPhase('active')} style={{flex:1,padding:'9px',background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:8,color:'var(--text-soft)',fontWeight:600,fontSize:12,cursor:'pointer',fontFamily:'inherit'}}>← Back</button>
-                <button onClick={doCheckOut} disabled={loading} style={{flex:2,padding:'9px',background:'#e11d48',border:'none',borderRadius:8,color:'#fff',fontWeight:700,fontSize:12,cursor:'pointer',fontFamily:'inherit'}}>
-                  {loading?'Saving…':'✓ Confirm Checkout'}
-                </button>
-              </div>
+              <button style={{...btnPrimary,background:'#e11d48'}} onClick={doCheckOut} disabled={loading}>
+                {loading?'Checking out…':'⏹ Check Out'}
+              </button>
             </div>
           )}
     </>

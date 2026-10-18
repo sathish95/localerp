@@ -1,8 +1,17 @@
+export { Appear } from './Appear';
 export { Avatar } from './Avatar';
 export { Badge } from './Badge';
 export { Button, IconButton } from './Button';
 export { Card } from './Card';
+export { Chip } from './Chip';
+export { DateField } from './DateField';
 export { EmptyState } from './EmptyState';
+export { GradientCard } from './GradientCard';
+export { GradientIconBadge } from './GradientIconBadge';
+export { MetricTile } from './MetricTile';
+export { NotificationBell } from './NotificationBell';
+export { PageHeader } from './PageHeader';
+export { PressableScale } from './PressableScale';
 export { Screen } from './Screen';
 export { ScreenHeader } from './ScreenHeader';
 export { TextField } from './TextField';

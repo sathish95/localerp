@@ -1,6 +1,16 @@
 [build]
   command = "npm run build"
   publish = "dist"
+
+# Supabase through this site's own domain, for networks / ISPs that can't
+# reach *.supabase.co (src/lib/supabase.js switches to it automatically).
+# Must stay above the SPA fallback.
+[[redirects]]
+  from = "/sb/*"
+  to = "https://zjyriyogntcyevlpitpe.supabase.co/:splat"
+  status = 200
+  force = true
+
 [[redirects]]
   from = "/*"
   to = "/index.html"

@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bell, Check, Trash2, X } from 'lucide-react'
+import { Bell, Check, Trash2, X, Mail } from 'lucide-react'
 import { useNotifications } from '../context/NotificationContext'
+import EmailPreferencesModal from './EmailPreferencesModal'
 
 const TYPE_ICON = {
   task_assigned:        '📋',
@@ -27,6 +28,7 @@ function timeAgo(ts) {
 export default function NotificationBell() {
   const { notifications, unreadCount, markRead, markAllRead, clearAll } = useNotifications()
   const [open, setOpen] = useState(false)
+  const [prefsOpen, setPrefsOpen] = useState(false)
   const ref  = useRef(null)
   const nav  = useNavigate()
 
@@ -77,6 +79,9 @@ export default function NotificationBell() {
                   <Check size={11} style={{ marginRight:3, verticalAlign:'middle' }}/>Mark all read
                 </button>
               )}
+              <button onClick={() => { setOpen(false); setPrefsOpen(true) }} title="Email preferences" style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-muted)', padding:2, marginRight:6 }}>
+                <Mail size={13}/>
+              </button>
               <button onClick={clearAll} title="Clear all" style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-muted)', padding:2 }}>
                 <Trash2 size={13}/>
               </button>
@@ -114,6 +119,7 @@ export default function NotificationBell() {
           </div>
         </>
       )}
+      {prefsOpen && <EmailPreferencesModal onClose={() => setPrefsOpen(false)} />}
     </div>
   )
 }

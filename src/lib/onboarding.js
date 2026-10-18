@@ -40,6 +40,7 @@ export async function updateOrgProfile(patch) {
   const { error } = await supabase.rpc('update_org_profile', {
     p_name: patch.name ?? null, p_industry: patch.industry ?? null, p_country: patch.country ?? null,
     p_timezone: patch.timezone ?? null, p_currency: patch.currency ?? null, p_address: patch.address ?? null, p_logo: patch.logo ?? null,
+    p_company_size: patch.companySize ?? null,
   })
   if (error) throw error
 }
@@ -52,6 +53,11 @@ export async function listDepartments(orgId) {
 
 export async function createDepartment(orgId, name, code) {
   const { error } = await supabase.from('departments').insert({ organization_id: orgId, name, code: code || null })
+  if (error) throw error
+}
+
+export async function updateDepartment(id, name, code) {
+  const { error } = await supabase.from('departments').update({ name, code: code || null }).eq('id', id)
   if (error) throw error
 }
 

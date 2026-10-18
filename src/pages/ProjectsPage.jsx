@@ -1,17 +1,21 @@
 import { useState, useEffect, useMemo } from 'react'
+import ProjectDocuments from '../components/ei/DocumentFiling'
 import { useSearchParams, useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { supabase, rupee, dateFmt } from '../lib/supabase'
-import { Modal, Loader, Empty, Confirm, SearchBox, StatusBadge } from '../components/ui'
+import { Modal, Loader, Empty, Confirm, SearchBox, StatusBadge, Alert } from '../components/ui'
 import AllocationGantt from '../components/AllocationGantt'
 import GanttChart from '../components/GanttChart'
-import { recomputeForProject, getActualCostSnapshot, getBurnRate } from '../lib/actualCost'
+import { recomputeForProject, getActualCostSnapshot, getBurnRate, resolveHourlyRate } from '../lib/actualCost'
 import { MARGIN_VISIBLE_ROLES, recomputeMargin, getMargin } from '../lib/profitMargin'
 import { findOpportunityForProject, recomputeSalesProfitAttribution } from '../lib/salesFinance'
 import { findCampaignForOpportunity, recomputeCampaignResult } from '../lib/marketingCampaigns'
 import { getFindings } from '../lib/spendAnalyzer'
 import { getWarrantyCostSummaryForProject } from '../lib/warrantyCost'
-import { Plus, Edit2, Trash2, FolderOpen, Eye, ArrowLeft, RefreshCw, AlertTriangle, TrendingDown, Percent, Radar } from 'lucide-react'
+import { listProposalsForProject } from '../lib/roiProposals'
+import { listProjectDepartments, addProjectDepartment, removeProjectDepartment, signOffDepartment, undoSignOffDepartment, closeFundFlow, reopenFundFlow } from '../lib/projectClosure'
+import { checkAllocationConflict, submitAllocationRequest, updateAllocation, deleteAllocation, getRemainingCapacityPct } from '../lib/allocations'
+import { Plus, Edit2, Trash2, FolderOpen, Eye, ArrowLeft, RefreshCw, AlertTriangle, TrendingDown, Percent, Radar, Lock, Unlock, UserCheck } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 
 /* ─── constants ─────────────────────────────────────── */
@@ -19,14 +23,17 @@ const SC   = { active:'#10b981', on_hold:'#f59e0b', completed:'#3b82f6', cancell
 const MSC  = { pending:'#94a3b8', in_progress:'#d97706', completed:'#059669', delayed:'#e11d48' }
 const TSC  = { backlog:'#64748b', todo:'#3b82f6', in_progress:'#f59e0b', delayed:'#e11d48', qa:'#8b5cf6', ready_for_demo:'#10b981', closed:'#94a3b8' }
 const MOS  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+// month is 1-12, matching project_resource_alloc.month — used to amortize
+// that table's whole-month allocated_hours into an hrs/week figure.
+const daysInMonth=(month,year)=>new Date(year,month,0).getDate()
 const CCLR = ['#3b82f6','#10b981','#f59e0b','#e11d48','#8b5cf6','#14b8a6','#f43f5e','#a855f7']
 const SW0  = ['server','third_party','saas','license','other']
-const HW0  = ['component','logistics','assembly','other']
+const HW0  = ['component','iot_device','logistics','assembly','other']
 const SUP0 = ['device_logger','support_expense','maintenance','other']
 const PI   = {critical:'🔴',high:'🟠',medium:'🔵',low:'🟢'}
 const PRIOS= ['critical','high','medium','low']
 const CR_ST= ['draft','submitted','under_review','approved','rejected','implemented']
-const iP   = ()=>({name:'',description:'',budget:'',reserved_budget:'',start_date:'',end_date:'',status:'active',customer_id:'',department_id:'',project_type:''})
+const iP   = ()=>({name:'',description:'',goal:'',budget:'',reserved_budget:'',start_date:'',end_date:'',status:'active',customer_id:'',department_id:'',project_type:'',involvedDeptIds:[]})
 const iMS  = ()=>({title:'',description:'',start_date:'',due_date:'',actual_start:'',actual_end:'',budget:'',status:'pending'})
 const iCR  = ()=>({title:'',description:'',reason:'',priority:'medium',status:'draft',estimated_hours:'',actual_hours:'',estimated_cost:'',actual_cost:''})
 
@@ -67,7 +74,9 @@ const EmptyRow=({colSpan,icon,text})=>(
 /* ─── KPI engine ────────────────────────────────────── */
 function computeKPIs(dd) {
   if (!dd) return {}
-  const {sw=[],hw=[],sup=[],ra=[],rates=[],timelogs=[],expenses=[],milestones=[],changereqs=[]}=dd
+  const {sw=[],hw=[],sup=[],ra=[],rates=[],timelogs:allLogs=[],expenses=[],milestones=[],changereqs=[]}=dd
+  // support-visit check-ins are billed on the Support tab (STEP248), so HR cost counts ordinary work only
+  const timelogs=allLogs.filter(l=>l.visit_type!=='SUPPORT'),supportHrs=allLogs.filter(l=>l.visit_type==='SUPPORT').reduce((s,l)=>s+(l.hours_worked||0),0)
   const swCo=sw.reduce((s,r)=>s+(r.cost_company||0),0),swCl=sw.reduce((s,r)=>s+(r.cost_client||0),0),swPr=sw.reduce((s,r)=>s+(r.proposal_cost||0),0)
   const hwCo=hw.reduce((s,r)=>s+(r.cost_company||0),0),hwCl=hw.reduce((s,r)=>s+(r.cost_client||0),0),hwPr=hw.reduce((s,r)=>s+(r.proposal_cost||0),0)
   const spCo=sup.reduce((s,r)=>s+(r.cost_company||0),0),spCl=sup.reduce((s,r)=>s+(r.cost_client||0),0),spPr=sup.reduce((s,r)=>s+(r.proposal_cost||0),0)
@@ -85,7 +94,7 @@ function computeKPIs(dd) {
   const msByHrs=milestones.map(m=>({id:m.id,title:m.title,budget:m.budget||0,logged:m.start_date&&m.due_date?timelogs.filter(l=>l.work_date>=m.start_date&&l.work_date<=m.due_date).reduce((s,l)=>s+(l.hours_worked||0),0):0,allocated:ra.filter(r=>r.milestone_id===m.id).reduce((s,r)=>s+(r.allocated_hours||0),0)}))
   const expByMonth=MOS.map((mn,mi)=>({month:mn,expenses:expenses.filter(e=>new Date(e.expense_date||e.created_at).getMonth()===mi).reduce((s,e)=>s+(e.total_amount||e.amount||0),0),hrCost:timelogs.filter(l=>new Date(l.work_date).getMonth()===mi).reduce((s,l)=>s+(l.hours_worked||0),0)*avgRate}))
   const crCount=changereqs.length,crHrs=changereqs.reduce((s,r)=>s+(r.actual_hours||0),0),crCost=changereqs.reduce((s,r)=>s+(r.actual_cost||0),0)
-  return {swCo,swCl,swPr,hwCo,hwCl,hwPr,spCo,spCl,spPr,expOk,wtyCo,wtyClaimCount,totalHrs,hrCost,totalCo,totalCl,totalPr,msBudget,msSpent,msByHrs,expByMonth,crCount,crHrs,crCost}
+  return {supportHrs,swCo,swCl,swPr,hwCo,hwCl,hwPr,spCo,spCl,spPr,expOk,wtyCo,wtyClaimCount,totalHrs,hrCost,totalCo,totalCl,totalPr,msBudget,msSpent,msByHrs,expByMonth,crCount,crHrs,crCost}
 }
 
 /* ─── category manager widget ───────────────────────── */
@@ -110,7 +119,13 @@ function SWForm({form,setForm,cats,setCats,ms}) {
   function auto(co){const v=parseFloat(co)||0;setForm(f=>({...f,cost_company:co,cost_client:f.cost_client||String((v*1.3).toFixed(0)),proposal_cost:f.proposal_cost||String((v*1.5).toFixed(0))}))}
   function qty(q,up){const co=(q*up).toFixed(0);setForm(f=>({...f,qty:String(q),unit_price:String(up),cost_company:co,cost_client:String((q*up*1.3).toFixed(0)),proposal_cost:String((q*up*1.5).toFixed(0))}))}
   return (<><CatMgr cats={cats} setCats={setCats} label="SW Categories"/>
+    <div style={{padding:'10px 12px',border:'1.5px solid var(--border)',borderRadius:8,marginBottom:12,background:form.per_seat?'var(--c1-soft)':'transparent'}}>
+      <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13,fontWeight:600}}><input type="checkbox" checked={!!form.per_seat} onChange={e=>setForm(f=>({...f,per_seat:e.target.checked}))}/> Priced per user (seat)</label>
+      <div style={{fontSize:11,color:'var(--text-muted)',marginTop:3}}>Cost follows the people who check in to this project: one seat per person per billing period in which they checked in.</div>
+      {form.per_seat&&<div className="form-group" style={{marginTop:8,marginBottom:0}}><label className="form-label">Price per user per billing cycle (₹)</label><input className="form-input" type="number" min="0" value={form.seat_price||''} onChange={e=>setForm(f=>({...f,seat_price:e.target.value}))} placeholder="e.g. 800"/></div>}
+    </div>
     <div className="form-row"><div className="form-group"><label className="form-label">Name *</label><input className="form-input" value={form.name||''} onChange={e=>setForm(f=>({...f,name:e.target.value}))} required/></div><div className="form-group"><label className="form-label">Category</label><select className="form-select" value={form.category||cats[0]||'other'} onChange={e=>setForm(f=>({...f,category:e.target.value}))}>{cats.map(c=><option key={c} value={c}>{c.replace(/_/g,' ')}</option>)}</select></div></div>
+    {!form.per_seat&&<>
     <div className="form-row"><div className="form-group"><label className="form-label">Qty</label><input className="form-input" type="number" min="1" value={form.qty||1} onChange={e=>{const q=parseFloat(e.target.value)||1,up=parseFloat(form.unit_price)||0;up>0?qty(q,up):setForm(f=>({...f,qty:e.target.value}))}}/></div><div className="form-group"><label className="form-label">Unit Price (₹)</label><input className="form-input" type="number" value={form.unit_price||''} onChange={e=>{const up=parseFloat(e.target.value)||0,q=parseFloat(form.qty)||1;up>0?qty(q,up):setForm(f=>({...f,unit_price:e.target.value}))}}/></div></div>
     {parseFloat(form.unit_price)>0&&<div style={{padding:'5px 10px',borderRadius:5,background:'var(--c1-soft)',fontSize:12,fontWeight:600,color:'var(--c1)',marginBottom:8}}>Total: {rupee((parseFloat(form.qty)||1)*(parseFloat(form.unit_price)||0))}</div>}
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10}}>
@@ -118,6 +133,7 @@ function SWForm({form,setForm,cats,setCats,ms}) {
       <div className="form-group"><label className="form-label">Cost Client ×1.3</label><input className="form-input" type="number" value={form.cost_client||''} onChange={e=>setForm(f=>({...f,cost_client:e.target.value}))}/></div>
       <div className="form-group"><label className="form-label">Proposal ×1.5</label><input className="form-input" type="number" value={form.proposal_cost||''} onChange={e=>setForm(f=>({...f,proposal_cost:e.target.value}))}/></div>
     </div>
+    </>}
     <div className="form-row"><div className="form-group"><label className="form-label">Billing</label><select className="form-select" value={form.billing_cycle||'monthly'} onChange={e=>setForm(f=>({...f,billing_cycle:e.target.value}))}>{['monthly','yearly','quarterly','one_time'].map(c=><option key={c} value={c}>{c.replace(/_/g,' ')}</option>)}</select></div><div className="form-group"><label className="form-label">Milestone</label><select className="form-select" value={form.milestone_id||''} onChange={e=>setForm(f=>({...f,milestone_id:e.target.value}))}><option value="">—</option>{ms.map(m=><option key={m.id} value={m.id}>{m.title}</option>)}</select></div></div>
     <div className="form-group"><label className="form-label">Notes</label><textarea className="form-textarea" rows={2} value={form.notes||''} onChange={e=>setForm(f=>({...f,notes:e.target.value}))}/></div></>)
 }
@@ -152,6 +168,34 @@ function SupForm({form,setForm,cats,setCats,ms}) {
 }
 
 /* ─── budget config panel ───────────────────────────── */
+function ROISummaryCard({projectId}) {
+  const [proposals,setProposals]=useState(null)
+  useEffect(()=>{ listProposalsForProject(projectId).then(setProposals).catch(()=>setProposals([])) },[projectId])
+  const latest = proposals?.[0]
+  return (
+    <div className="card">
+      <div className="card-header"><span className="card-title">📈 ROI Planning</span></div>
+      <div className="card-body">
+        {proposals===null ? <div style={{fontSize:12,color:'var(--text-muted)'}}>Loading…</div> : proposals.length===0 ? (
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:10}}>
+            <div style={{fontSize:12,color:'var(--text-muted)'}}>No ROI proposals for this project yet</div>
+            <Link to={`/roi-planning?project=${projectId}`} className="btn btn-outline btn-sm">Create ROI Proposal</Link>
+          </div>
+        ) : (
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:14}}>
+            <div style={{display:'flex',gap:24,flexWrap:'wrap'}}>
+              <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase'}}>Proposals</div><div style={{fontSize:18,fontWeight:800}}>{proposals.length}</div></div>
+              <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase'}}>Latest</div><div style={{fontSize:14,fontWeight:700}}>{latest.name}</div></div>
+              <div><div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase'}}>Status</div><StatusBadge status={latest.status}/></div>
+            </div>
+            <Link to={`/roi-planning?project=${projectId}`} className="btn btn-primary btn-sm">Open ROI Planning</Link>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function BudgetPanel({detail,kpi,dd}) {
   const key=`budcfg_${detail?.id}`
   const [cfg,setCfg]=useState(()=>{try{return JSON.parse(localStorage.getItem(key)||'null')||{cm:30,pm:50,incExp:true,incHr:true}}catch{return{cm:30,pm:50,incExp:true,incHr:true}}})
@@ -189,16 +233,47 @@ function BudgetPanel({detail,kpi,dd}) {
 }
 
 /* ─── project form ──────────────────────────────────── */
-function ProjForm({form,setForm,customers=[],departments=[]}) {
+function ProjForm({form,setForm,customers=[],departments=[],isNew=false}) {
   const avail=Math.max(0,(parseFloat(form.budget)||0)-(parseFloat(form.reserved_budget)||0))
+  // Only while CREATING a new project — auto-include the primary
+  // Department in Departments Involved too, so it doesn't have to be
+  // checked twice. Never applied on Edit: an existing project's involved
+  // list may have deliberately diverged from its primary department
+  // since (e.g. that department already signed off and was removed).
+  function onDeptChange(deptId){
+    setForm(f=>{
+      const next={...f,department_id:deptId}
+      if(isNew&&deptId&&!(f.involvedDeptIds||[]).includes(deptId)){
+        next.involvedDeptIds=[...(f.involvedDeptIds||[]),deptId]
+      }
+      return next
+    })
+  }
   return (<>
     <div className="form-row">
       <div className="form-group"><label className="form-label">Project Name *</label><input className="form-input" value={form.name||''} onChange={e=>setForm(f=>({...f,name:e.target.value}))} required/></div>
       <div className="form-group"><label className="form-label">Customer</label><select className="form-select" value={form.customer_id||''} onChange={e=>setForm(f=>({...f,customer_id:e.target.value}))}><option value="">No customer</option>{customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
     </div>
     <div className="form-row">
-      <div className="form-group"><label className="form-label">Department</label><select className="form-select" value={form.department_id||''} onChange={e=>setForm(f=>({...f,department_id:e.target.value}))}><option value="">Unassigned</option>{departments.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select><div style={{fontSize:10,color:'var(--text-muted)',marginTop:3}}>Powers company-wide Spend Analyzer department rollups</div></div>
+      <div className="form-group"><label className="form-label">Department</label><select className="form-select" value={form.department_id||''} onChange={e=>onDeptChange(e.target.value)}><option value="">Unassigned</option>{departments.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select><div style={{fontSize:10,color:'var(--text-muted)',marginTop:3}}>Powers company-wide Spend Analyzer department rollups{isNew&&' — auto-added to Departments Involved below'}</div></div>
       <div className="form-group"><label className="form-label">Project Type</label><input className="form-input" list="project-types" value={form.project_type||''} onChange={e=>setForm(f=>({...f,project_type:e.target.value}))} placeholder="e.g. IoT Deployment, Internal Tool"/><div style={{fontSize:10,color:'var(--text-muted)',marginTop:3}}>Used to compare similar projects in Benchmarking</div></div>
+    </div>
+    <div className="form-group">
+      <label className="form-label">Departments Involved (multiple)</label>
+      <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+        {departments.map(d=>{
+          const checked=(form.involvedDeptIds||[]).includes(d.id)
+          return (
+            <label key={d.id} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 12px',borderRadius:20,border:'1.5px solid var(--border)',background:checked?'var(--c1-soft)':'var(--surface)',cursor:'pointer',fontSize:12,fontWeight:checked?700:500,color:checked?'var(--c1)':'inherit'}}>
+              <input type="checkbox" checked={checked} style={{accentColor:'var(--c1)'}}
+                onChange={e=>setForm(f=>{const cur=f.involvedDeptIds||[];return {...f,involvedDeptIds:e.target.checked?[...cur,d.id]:cur.filter(id=>id!==d.id)}})}/>
+              {d.name}
+            </label>
+          )
+        })}
+        {departments.length===0&&<span style={{fontSize:12,color:'var(--text-muted)'}}>No departments configured — add some in Settings → Departments.</span>}
+      </div>
+      <div style={{fontSize:10,color:'var(--text-muted)',marginTop:3}}>Each department checked here must sign off (Fund Flow tab) before this project's fund flow can close</div>
     </div>
     <div className="form-row">
       <div className="form-group"><label className="form-label">Status</label><select className="form-select" value={form.status||'active'} onChange={e=>setForm(f=>({...f,status:e.target.value}))}>{['active','on_hold','completed','cancelled'].map(s=><option key={s} value={s}>{s.replace(/_/g,' ')}</option>)}</select></div>
@@ -212,7 +287,8 @@ function ProjForm({form,setForm,customers=[],departments=[]}) {
       <div className="form-group"><label className="form-label">Start Date</label><input className="form-input" type="date" value={form.start_date||''} onChange={e=>setForm(f=>({...f,start_date:e.target.value}))}/></div>
       <div className="form-group"><label className="form-label">End Date</label><input className="form-input" type="date" value={form.end_date||''} min={form.start_date} onChange={e=>setForm(f=>({...f,end_date:e.target.value}))}/></div>
     </div>
-    <div className="form-group"><label className="form-label">Description</label><textarea className="form-textarea" value={form.description||''} onChange={e=>setForm(f=>({...f,description:e.target.value}))} placeholder="Goals and scope…"/></div>
+    <div className="form-group"><label className="form-label">Goal</label><textarea className="form-textarea" value={form.goal||''} onChange={e=>setForm(f=>({...f,goal:e.target.value}))} placeholder="What this project is trying to achieve…" rows={2}/><div style={{fontSize:10,color:'var(--text-muted)',marginTop:3}}>Shown as a summary on this project's report</div></div>
+    <div className="form-group"><label className="form-label">Description</label><textarea className="form-textarea" value={form.description||''} onChange={e=>setForm(f=>({...f,description:e.target.value}))} placeholder="Scope, notes…"/></div>
     <datalist id="project-types"><option value="IoT Deployment"/><option value="Internal Tool"/><option value="Client Services"/><option value="R&D"/></datalist>
   </>)
 }
@@ -244,6 +320,10 @@ export default function ProjectsPage() {
   const [ganttWindow,setGanttWindow]=useState(()=>new Date())
   const [financeLoading,setFinanceLoading]=useState(false)
   const [financeLoaded,setFinanceLoaded]=useState(false)
+  const [closureLoading,setClosureLoading]=useState(false)
+  const [closureLoaded,setClosureLoaded]=useState(false)
+  const [closureDepts,setClosureDepts]=useState([])
+  const [addDeptId,setAddDeptId]=useState('')
 
   // MS
   const [showMS,setShowMS]=useState(false);const [editMS,setEditMS]=useState(null)
@@ -251,9 +331,36 @@ export default function ProjectsPage() {
   // SW/HW/Sup/RA
   const [showSW,setShowSW]=useState(false);const [editSW,setEditSW]=useState(null);const [swForm,setSwForm]=useState({})
   const [showHW,setShowHW]=useState(false);const [editHW,setEditHW]=useState(null);const [hwForm,setHwForm]=useState({})
+  // STEP246 — hardware lines generated from Device Instances (devices + fitted sensors)
+  const [autoHW,setAutoHW]=useState(null);const [hwSyncing,setHwSyncing]=useState(false)
+  async function resyncHW(){
+    setHwSyncing(true)
+    try{const {error}=await supabase.rpc('sync_project_device_hardware',{p_project:detail.id});if(error)throw error;openDetail(detail)}
+    catch(e){alert(/does not exist|schema cache/i.test(e.message)?'Run sql/STEP246_project_hardware_from_devices.sql in the Supabase SQL Editor first.':e.message)}
+    finally{setHwSyncing(false)}
+  }
+  async function saveAutoHW(){
+    setSubCost(true)
+    try{
+      const q=Number(autoHW.qty)||0,override=!autoHW.useCatalogue,up=override?(parseFloat(autoHW.unit_price)||0):Number(autoHW.row.unit_price)||0,co=Math.round(q*up*100)/100
+      const {error}=await supabase.from('project_hardware_costs').update({price_override:override,unit_price:up,total_price:co,cost_company:co,cost_client:parseFloat(autoHW.cost_client)||co*1.3,proposal_cost:parseFloat(autoHW.proposal_cost)||co*1.5}).eq('id',autoHW.row.id)
+      if(error)throw error
+      await supabase.rpc('sync_project_device_hardware',{p_project:detail.id})
+      setAutoHW(null);openDetail(detail)
+    }catch(e){alert(e.message)}finally{setSubCost(false)}
+  }
   const [showSup,setShowSup]=useState(false);const [editSup,setEditSup]=useState(null);const [supForm,setSupForm]=useState({})
   const [showRA,setShowRA]=useState(false);const [editRA,setEditRA]=useState(null);const [raForm,setRaForm]=useState({})
   const [subCost,setSubCost]=useState(false);const [delItem,setDelItem]=useState(null)
+  // %-based Allocations (the `allocations` table, approval-workflow) —
+  // create/edit directly from the Resourcing tab instead of only from the
+  // separate Allocations page. Deliberately a distinct state set from
+  // showRA/editRA/raForm above (the legacy hours-per-month modal) — the
+  // two write to different tables with different shapes.
+  const [showAlloc,setShowAlloc]=useState(false);const [editAlloc,setEditAlloc]=useState(null)
+  const [allocForm,setAllocForm]=useState({employee_id:'',allocation_percent:50,role_on_project:'',start_date:'',end_date:'',override:false,override_justification:''})
+  const [allocConflict,setAllocConflict]=useState(null);const [subAlloc,setSubAlloc]=useState(false);const [delAlloc,setDelAlloc]=useState(null)
+  const [allocRemainingPct,setAllocRemainingPct]=useState(null) // this employee's capacity left, company-wide — same definition as "Still Available"
   // CR
   const [showCR,setShowCR]=useState(false);const [editCR,setEditCR]=useState(null)
   const [crForm,setCrForm]=useState(iCR());const [subCR,setSubCR]=useState(false)
@@ -273,27 +380,46 @@ export default function ProjectsPage() {
   }
 
   async function openDetail(proj) {
-    setDetail(proj);setDDLoad(true);setDD(null);setFinanceLoaded(false)
+    setDetail(proj);setDDLoad(true);setDD(null);setFinanceLoaded(false);setClosureLoaded(false);setClosureDepts([])
     setSearchParams(prev=>{const p=new URLSearchParams(prev);p.set('pname',proj.name);p.set('pid',proj.id);if(!p.get('view'))p.set('view','overview');return p},{replace:true})
     try {
-      const[eR,lR,mR,swR,hwR,suR,raR,rtR,emR,crR,alR,invR,warrantySummary,tkR,spR]=await Promise.all([
+      const[eR,lR,mR,swR,hwR,suR,raR,rtR,emR,crR,alR,invR,warrantySummary,tkR,spR,rrR]=await Promise.all([
         supabase.from('expense_requests').select('amount,total_amount,status,expense_date,category,requester:profiles!requested_by(full_name)').eq('project_id',proj.id),
-        supabase.from('time_logs').select('hours_worked,work_date,employee:profiles!employee_id(id,full_name)').eq('project_id',proj.id),
+        supabase.from('time_logs').select('*,employee:profiles!employee_id(id,full_name)').eq('project_id',proj.id),
         supabase.from('project_milestones').select('*').eq('project_id',proj.id).order('due_date'),
         supabase.from('project_software_costs').select('*').eq('project_id',proj.id).order('created_at',{ascending:false}),
         supabase.from('project_hardware_costs').select('*').eq('project_id',proj.id).order('created_at',{ascending:false}),
         supabase.from('project_support_costs').select('*').eq('project_id',proj.id).order('created_at',{ascending:false}),
-        supabase.from('project_resource_alloc').select('*,employee:profiles!employee_id(id,full_name,role),milestone:project_milestones(title)').eq('project_id',proj.id),
+        supabase.from('project_resource_alloc').select('*,employee:profiles!employee_id(id,full_name,role,designation,default_weekly_capacity_hours),milestone:project_milestones(title)').eq('project_id',proj.id),
         supabase.from('resource_rates').select('*'),
         supabase.from('profiles').select('id,full_name,role').order('full_name'),
         supabase.from('change_requests').select('*,requester:profiles!requested_by(full_name)').eq('project_id',proj.id).order('created_at',{ascending:false}),
-        supabase.from('allocations').select('*,employee:profiles!employee_id(full_name,role)').eq('project_id',proj.id).order('start_date'),
+        supabase.from('allocations').select('*,employee:profiles!employee_id(full_name,role,designation)').eq('project_id',proj.id).order('start_date'),
         supabase.from('invoices').select('*,vendor:vendors(name)').eq('project_id',proj.id).order('created_at',{ascending:false}),
         getWarrantyCostSummaryForProject(proj.id).catch(()=>null),
         supabase.from('project_tasks').select('id,task_name,status,planned_start_date,planned_end_date,progress_pct,sprint_id,assignee:profiles!assigned_to(full_name)').eq('project_id',proj.id),
         supabase.from('sprints').select('id,name').eq('project_id',proj.id).order('start_date'),
+        supabase.from('role_rates').select('*'),
       ])
-      setDD({expenses:eR.data||[],timelogs:lR.data||[],milestones:mR.data||[],sw:swR.data||[],hw:hwR.data||[],sup:suR.data||[],ra:raR.data||[],rates:rtR.data||[],employees:emR.data||[],changereqs:crR.data||[],allocations:alR.data||[],invoices:invR.data||[],warranty:warrantySummary,tasks:tkR.data||[],sprints:spR.data||[]})
+      // Company-wide (every project, not just this one) committed capacity
+      // per employee — needed to show "how much capacity does this resource
+      // still have left" for the people allocated to THIS project; their
+      // availability depends on ALL their allocations, not just this one.
+      // Two disconnected allocation systems exist in this app (the newer
+      // %-based `allocations` table, and the legacy hours-per-month
+      // `project_resource_alloc` table tied to a milestone) — a resource
+      // fully booked via the legacy system on some OTHER project must still
+      // reduce what this view reports as their availability, so both are
+      // queried company-wide and combined below.
+      const now=new Date(); const curMonth=now.getMonth()+1, curYear=now.getFullYear()
+      const allocatedEmployeeIds=[...new Set([...(alR.data||[]),...(raR.data||[])].map(a=>a.employee_id).filter(Boolean))]
+      const [allAllocR,allLegacyAllocR]=allocatedEmployeeIds.length
+        ? await Promise.all([
+            supabase.from('allocations').select('employee_id,allocation_percent,status').in('employee_id',allocatedEmployeeIds).in('status',['approved','active']),
+            supabase.from('project_resource_alloc').select('employee_id,allocated_hours,employee:profiles!employee_id(default_weekly_capacity_hours)').in('employee_id',allocatedEmployeeIds).eq('month',curMonth).eq('year',curYear),
+          ])
+        : [{data:[]},{data:[]}]
+      setDD({expenses:eR.data||[],timelogs:lR.data||[],milestones:mR.data||[],sw:swR.data||[],hw:hwR.data||[],sup:suR.data||[],ra:raR.data||[],rates:rtR.data||[],employees:emR.data||[],changereqs:crR.data||[],allocations:alR.data||[],invoices:invR.data||[],warranty:warrantySummary,tasks:tkR.data||[],sprints:spR.data||[],roleRates:rrR.data||[],allEmployeeAllocations:allAllocR.data||[],allEmployeeLegacyAllocations:allLegacyAllocR.data||[],curMonth,curYear})
     }catch(e){console.error(e)}
     setDDLoad(false)
   }
@@ -338,6 +464,42 @@ export default function ProjectsPage() {
     if (tab === 'finance' && detail?.id && !financeLoaded && !financeLoading) loadFinance(detail.id)
   }, [tab, detail?.id])
 
+  async function loadClosure(projectId) {
+    setClosureLoading(true)
+    try { setClosureDepts(await listProjectDepartments(projectId)) }
+    catch (e) { console.error(e) } finally { setClosureLoading(false); setClosureLoaded(true) }
+  }
+
+  useEffect(() => {
+    if (tab === 'closure' && detail?.id && !closureLoaded && !closureLoading) loadClosure(detail.id)
+  }, [tab, detail?.id])
+
+  async function handleAddDept() {
+    if (!addDeptId || !detail?.id) return
+    try { await addProjectDepartment(detail.id, addDeptId); setAddDeptId(''); await loadClosure(detail.id) }
+    catch (e) { alert(e.message) }
+  }
+  async function handleRemoveDept(id) {
+    try { await removeProjectDepartment(id); await loadClosure(detail.id) }
+    catch (e) { alert(e.message) }
+  }
+  async function handleSignOff(id) {
+    try { await signOffDepartment(id, profile.id); await loadClosure(detail.id) }
+    catch (e) { alert(e.message) }
+  }
+  async function handleUndoSignOff(id) {
+    try { await undoSignOffDepartment(id); await loadClosure(detail.id) }
+    catch (e) { alert(e.message) }
+  }
+  async function handleCloseFundFlow() {
+    try { await closeFundFlow(detail.id, profile.id); const {data}=await supabase.from('projects').select('*').eq('id',detail.id).single(); if(data)setDetail(data); await loadClosure(detail.id) }
+    catch (e) { alert(e.message) }
+  }
+  async function handleReopenFundFlow() {
+    try { await reopenFundFlow(detail.id); const {data}=await supabase.from('projects').select('*').eq('id',detail.id).single(); if(data)setDetail(data) }
+    catch (e) { alert(e.message) }
+  }
+
   // Sidebar "Switch Project" sets ?pid=<id> — open that project once it's available
   useEffect(()=>{
     const pid=searchParams.get('pid')
@@ -346,12 +508,31 @@ export default function ProjectsPage() {
     if(proj)openDetail(proj)
   },[searchParams,projects])
 
+  async function openEditProject(proj) {
+    setEditP(proj)
+    let involvedDeptIds=[]
+    try { involvedDeptIds=(await listProjectDepartments(proj.id)).map(d=>d.department_id) } catch(e){ console.error(e) }
+    setPForm({name:proj.name,description:proj.description||'',goal:proj.goal||'',budget:proj.budget||'',reserved_budget:proj.reserved_budget||'',start_date:proj.start_date||'',end_date:proj.end_date||'',status:proj.status,customer_id:proj.customer_id||'',department_id:proj.department_id||'',project_type:proj.project_type||'',involvedDeptIds})
+    setShowPM(true)
+  }
+
   async function saveProject(e) {
     e.preventDefault();setSubP(true)
     try {
-      const p={name:pForm.name,description:pForm.description||null,budget:parseFloat(pForm.budget)||0,reserved_budget:parseFloat(pForm.reserved_budget)||0,start_date:pForm.start_date||null,end_date:pForm.end_date||null,status:pForm.status,customer_id:pForm.customer_id||null,department_id:pForm.department_id||null,project_type:pForm.project_type||null}
+      const p={name:pForm.name,description:pForm.description||null,goal:pForm.goal||null,budget:parseFloat(pForm.budget)||0,reserved_budget:parseFloat(pForm.reserved_budget)||0,start_date:pForm.start_date||null,end_date:pForm.end_date||null,status:pForm.status,customer_id:pForm.customer_id||null,department_id:pForm.department_id||null,project_type:pForm.project_type||null}
+      let projectId=editP?.id
       if(editP){await supabase.from('projects').update(p).eq('id',editP.id);if(detail?.id===editP.id)setDetail(d=>({...d,...p}))}
-      else await supabase.from('projects').insert({...p,code:'PRJ-'+Date.now().toString().slice(-6),created_by:profile.id})
+      else {
+        const {data}=await supabase.from('projects').insert({...p,code:'PRJ-'+Date.now().toString().slice(-6),created_by:profile.id}).select().single()
+        projectId=data?.id
+      }
+      if(projectId){
+        const current=await listProjectDepartments(projectId)
+        const wanted=pForm.involvedDeptIds||[]
+        for(const id of wanted) if(!current.some(c=>c.department_id===id)) await addProjectDepartment(projectId,id)
+        for(const c of current) if(!wanted.includes(c.department_id)) await removeProjectDepartment(c.id)
+        if(detail?.id===projectId) loadClosure(projectId)
+      }
       setShowPM(false);loadList()
     }catch(e){alert(e.message)}finally{setSubP(false)}
   }
@@ -372,6 +553,80 @@ export default function ProjectsPage() {
       editItem?await supabase.from(table).update(p).eq('id',editItem.id):await supabase.from(table).insert({...p,created_by:profile.id})
       if(closeFn)closeFn();openDetail(detail)
     }catch(e){alert(e.message)}finally{setSubCost(false)}
+  }
+
+  // %-based Allocations, created/edited directly from the Resourcing tab.
+  // Conflict re-checked live as the form changes, same overlap rule the
+  // Allocations page itself uses (src/lib/allocations.js) — a project
+  // owner staffing from here sees the exact same over-allocation warning
+  // a request from that separate page would.
+  useEffect(() => {
+    (async () => {
+      if (showAlloc && allocForm.employee_id && allocForm.start_date && allocForm.allocation_percent) {
+        const c = await checkAllocationConflict(allocForm.employee_id, allocForm.allocation_percent, allocForm.start_date, allocForm.end_date, editAlloc?.id)
+        setAllocConflict(c)
+      } else setAllocConflict(null)
+    })()
+  }, [showAlloc, allocForm.employee_id, allocForm.start_date, allocForm.end_date, allocForm.allocation_percent, editAlloc])
+
+  // Shows (and caps the % field at) how much capacity this person has
+  // left, company-wide — same figure as "Still Available" in the table
+  // below, so it never disagrees with what shows up there afterward.
+  // Excludes the allocation being edited from its own total.
+  useEffect(() => {
+    if (!showAlloc || !allocForm.employee_id) { setAllocRemainingPct(null); return }
+    let cancelled = false
+    getRemainingCapacityPct(allocForm.employee_id, editAlloc?.id).then(pct => {
+      if (cancelled) return
+      setAllocRemainingPct(pct)
+      setAllocForm(f => (Number(f.allocation_percent) > pct ? { ...f, allocation_percent: Math.max(0, pct) } : f))
+    })
+    return () => { cancelled = true }
+  }, [showAlloc, allocForm.employee_id, editAlloc])
+
+  function openAddAlloc() {
+    setEditAlloc(null)
+    setAllocForm({employee_id:'',allocation_percent:50,role_on_project:'',start_date:'',end_date:'',override:false,override_justification:''})
+    setAllocConflict(null); setShowAlloc(true)
+  }
+  function openEditAlloc(a) {
+    setEditAlloc(a)
+    setAllocForm({employee_id:a.employee_id,allocation_percent:a.allocation_percent,role_on_project:a.role_on_project||'',start_date:a.start_date||'',end_date:a.end_date||'',override:false,override_justification:''})
+    setAllocConflict(null); setShowAlloc(true)
+  }
+
+  async function submitAllocForm(e) {
+    e.preventDefault()
+    if (allocConflict && !allocForm.override) { alert('Resolve the over-allocation warning first — check the override box to proceed.'); return }
+    setSubAlloc(true)
+    try {
+      const employee = (dd?.employees||[]).find(u=>u.id===allocForm.employee_id)
+      // Employees fetched for this project's pickers don't carry
+      // reporting_manager_id/default_weekly_capacity_hours — fetch fresh
+      // rather than assume every caller of openDetail() widens that select.
+      const {data:empFull} = await supabase.from('profiles').select('id,full_name,reporting_manager_id,default_weekly_capacity_hours').eq('id',allocForm.employee_id).maybeSingle()
+      if (editAlloc) {
+        await updateAllocation(editAlloc.id, {
+          percent: allocForm.allocation_percent, roleOnProject: allocForm.role_on_project,
+          startDate: allocForm.start_date, endDate: allocForm.end_date, weeklyCapacity: empFull?.default_weekly_capacity_hours,
+        })
+      } else {
+        await submitAllocationRequest({
+          employeeId: allocForm.employee_id, projectId: detail.id, percent: allocForm.allocation_percent,
+          roleOnProject: allocForm.role_on_project, startDate: allocForm.start_date, endDate: allocForm.end_date,
+          requestedBy: profile.id, weeklyCapacity: empFull?.default_weekly_capacity_hours,
+          conflict: allocConflict, overrideJustification: allocForm.override_justification,
+          reportingManagerId: empFull?.reporting_manager_id, employeeName: employee?.full_name, projectName: detail.name,
+        })
+      }
+      setShowAlloc(false); setEditAlloc(null); openDetail(detail)
+      if (!editAlloc) alert(empFull?.reporting_manager_id ? 'Request submitted for approval.' : 'Request saved — but this employee has no reporting manager set, so it cannot be approved until one is assigned on the Users page.')
+    } catch (e) { alert(e.message) } finally { setSubAlloc(false) }
+  }
+
+  async function removeAlloc(id) {
+    try { await deleteAllocation(id); setDelAlloc(null); openDetail(detail) }
+    catch (e) { alert(e.message) }
   }
 
   async function saveCR(e) {
@@ -422,10 +677,14 @@ export default function ProjectsPage() {
                 {detail.customer_id&&<span style={{padding:'2px 10px',borderRadius:20,background:'var(--c1-soft)',color:'var(--c1)',fontWeight:700,fontSize:11}}>🏢 {customers.find(c=>c.id===detail.customer_id)?.name||'Customer'}</span>}
                 {(detail.start_date||detail.end_date)&&<span>📅 {dateFmt(detail.start_date)||'—'} → {dateFmt(detail.end_date)||'—'}</span>}
               </div>
+              {detail.goal&&<div style={{marginTop:12,padding:'10px 14px',borderRadius:10,background:'var(--c1-soft)',maxWidth:680}}>
+                <div style={{fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'.05em',color:'var(--c1)',marginBottom:3}}>🎯 Goal</div>
+                <div style={{fontSize:13,color:'var(--text-soft)',lineHeight:1.5}}>{detail.goal}</div>
+              </div>}
               {detail.description&&<div style={{marginTop:12,fontSize:13,color:'var(--text-soft)',maxWidth:680,lineHeight:1.5}}>{detail.description}</div>}
             </div>
             {canEdit&&<div style={{display:'flex',gap:8,flexShrink:0}}>
-              <button className="btn btn-outline btn-sm" onClick={()=>{setEditP(detail);setPForm({name:detail.name,description:detail.description||'',budget:detail.budget||'',reserved_budget:detail.reserved_budget||'',start_date:detail.start_date||'',end_date:detail.end_date||'',status:detail.status,customer_id:detail.customer_id||'',department_id:detail.department_id||'',project_type:detail.project_type||''});setShowPM(true)}}><Edit2 size={12}/> Edit</button>
+              <button className="btn btn-outline btn-sm" onClick={()=>openEditProject(detail)}><Edit2 size={12}/> Edit</button>
               <button className="btn btn-primary btn-sm" onClick={()=>{setEditMS(null);setMsForm(iMS());setShowMS(true)}}><Plus size={12}/> Milestone</button>
             </div>}
           </div>
@@ -492,6 +751,48 @@ export default function ProjectsPage() {
           const raList=dd.ra||[]
           const raEmployees=new Set(raList.map(r=>r.employee_id||r.employee?.id)).size
 
+          // Forward-looking weekly cost of the CURRENT active/approved team —
+          // resolveHourlyRate falls back through role_rates (by designation)
+          // to resource_rates, the same chain computePeopleCostForProject
+          // uses for the to-date Finance-tab rollup, so this snapshot and
+          // that rollup never silently disagree on what a designation costs.
+          const activeAllocsForCost=(dd.allocations||[]).filter(a=>['approved','active'].includes(a.status))
+          const weeklyResourcingCost=activeAllocsForCost.reduce((s,a)=>{
+            const hr=resolveHourlyRate({designation:a.employee?.designation,employeeId:a.employee_id,roleRates:dd.roleRates,resourceRates:dd.rates})
+            return s+(a.allocation_hours_per_week||0)*hr
+          },0)
+          // Average weeks/month (365.25/12/7), not a flat ×4 — a flat
+          // multiplier understates most months and silently drifts further
+          // every leap year.
+          const monthlyResourcingCost=weeklyResourcingCost*(365.25/12/7)
+          // Legacy system (project_resource_alloc — hours for a specific
+          // month/milestone, no approval workflow) has no clean weekly
+          // figure of its own, but allocated_hours IS already a whole
+          // month's hours, so it folds straight into the monthly total —
+          // this is what makes "Monthly Cost Run-Rate" match the unified
+          // Resourcing table below instead of silently excluding anyone
+          // only allocated the legacy way (see openDetail()'s comment).
+          const legacyMonthlyCost=(dd.ra||[]).reduce((s,r)=>{
+            const hr=resolveHourlyRate({designation:r.employee?.designation,employeeId:r.employee_id,roleRates:dd.roleRates,resourceRates:dd.rates})
+            return s+(Number(r.allocated_hours)||0)*hr
+          },0)
+          // Same legacy rows, but divided back down to a weekly figure
+          // using THAT row's own actual month (28-31 days ÷ 7), not the
+          // flat average factor above — so "Wk Cost Run-Rate ×
+          // weeks-in-that-month" reconciles exactly back to
+          // legacyMonthlyCost for every legacy allocation, instead of
+          // introducing rounding drift for the one source where the exact
+          // month is already known.
+          const legacyWeeklyCost=(dd.ra||[]).reduce((s,r)=>{
+            const hr=resolveHourlyRate({designation:r.employee?.designation,employeeId:r.employee_id,roleRates:dd.roleRates,resourceRates:dd.rates})
+            const weeks=daysInMonth(r.month,r.year)/7
+            const hrsWk=weeks>0?(Number(r.allocated_hours)||0)/weeks:0
+            return s+hrsWk*hr
+          },0)
+          const unifiedWeeklyCost=weeklyResourcingCost+legacyWeeklyCost
+          const unifiedMonthlyCost=monthlyResourcingCost+legacyMonthlyCost
+          const unifiedActiveTeamCount=new Set([...activeAllocsForCost.map(a=>a.employee_id),...(dd.ra||[]).map(r=>r.employee_id)]).size
+
           const KPI_SETS={
             overview:[
               {l:'Hours Logged',   v:`${Math.round(kpi.totalHrs||0)}h`,c:'#3b82f6'},
@@ -516,9 +817,10 @@ export default function ProjectsPage() {
               {l:'Employees',      v:raEmployees,                      c:'#6366f1'},
             ],
             resourcing:[
-              {l:'Active Team',    v:(dd.allocations||[]).filter(a=>['approved','active'].includes(a.status)).length, c:'#6366f1'},
+              {l:'Active Team',    v:unifiedActiveTeamCount, c:'#6366f1'},
               {l:'Requested',      v:(dd.allocations||[]).filter(a=>a.status==='requested').length, c:'#f59e0b'},
-              {l:'Wk Cost Run-Rate', v:rupee((dd.allocations||[]).filter(a=>['approved','active'].includes(a.status)).reduce((s,a)=>{const rt=(dd.rates||[]).find(x=>x.employee_id===a.employee_id);const hr=rt?(rt.hourly_rate||rt.monthly_salary/(22*8)):0;return s+(a.allocation_hours_per_week||0)*hr},0)), c:'var(--rose)'},
+              {l:'Wk Cost Run-Rate', v:rupee(unifiedWeeklyCost), c:'var(--rose)'},
+              {l:'Monthly Cost Run-Rate', v:rupee(unifiedMonthlyCost), c:'var(--rose)'},
             ],
             software:[
               {l:'SW Items',       v:(dd.sw||[]).length,               c:'#7c3aed'},
@@ -564,6 +866,11 @@ export default function ProjectsPage() {
               {l:'Hardware Cost',  v:rupee(dd.actualCost?.hardware_cost||0), c:'#f59e0b'},
               {l:'Total Actual',   v:rupee(dd.actualCost?.total_actual_cost||0), c:'var(--rose)'},
               {l:'Spend vs Budget',v:dd.burnRate?.budgetAllocated>0?`${dd.burnRate.spendPct}%`:'—', c:(dd.burnRate?.willExceedBudget)?'var(--rose)':'var(--c1)'},
+            ],
+            closure:[
+              {l:'Status',         v:detail.fund_flow_status==='closed'?'Closed':'Open', c:detail.fund_flow_status==='closed'?'var(--rose)':'#059669'},
+              {l:'Tasks Closed',   v:`${(dd.tasks||[]).filter(t=>t.status==='closed').length}/${(dd.tasks||[]).length}`, c:'#3b82f6'},
+              {l:'Depts Signed Off', v:`${closureDepts.filter(d=>d.status==='signed_off').length}/${closureDepts.length}`, c:'#8b5cf6'},
             ],
           }
           const activeKpis=KPI_SETS[tab]||KPI_SETS.overview
@@ -716,28 +1023,103 @@ export default function ProjectsPage() {
         {!ddLoad&&tab==='resourcing'&&(()=>{
           const activeAllocs=(dd?.allocations||[]).filter(a=>['approved','active'].includes(a.status))
           const ganttRows=activeAllocs.map(a=>({id:a.id,label:a.employee?.full_name||'—',segments:[{start:a.start_date,end:a.end_date,color:'#6366f1',label:`${a.allocation_percent}%${a.role_on_project?' '+a.role_on_project:''}`}]}))
+          const monthlyFactor=365.25/12/7
+
+          // Company-wide committed % per employee, combining BOTH allocation
+          // systems this app has (see openDetail()'s comment) — "still
+          // available" must reflect everything a person is booked on,
+          // whichever system it was entered through, not just one.
+          const committedPctByEmp={}
+          ;(dd?.allEmployeeAllocations||[]).forEach(a=>{committedPctByEmp[a.employee_id]=(committedPctByEmp[a.employee_id]||0)+(Number(a.allocation_percent)||0)})
+          ;(dd?.allEmployeeLegacyAllocations||[]).forEach(a=>{
+            const weeklyCap=a.employee?.default_weekly_capacity_hours||40
+            const weeks=daysInMonth(dd.curMonth,dd.curYear)/7
+            const pct=weeks>0&&weeklyCap>0?((Number(a.allocated_hours)||0)/weeks)/weeklyCap*100:0
+            committedPctByEmp[a.employee_id]=(committedPctByEmp[a.employee_id]||0)+pct
+          })
+
+          // Actual hours logged this month per employee, ON THIS PROJECT —
+          // dd.timelogs is already loaded for the whole project, so no new
+          // fetch needed. Lets each row show planned vs actual instead of
+          // just the plan.
+          const now=new Date(), curMonthStart=new Date(now.getFullYear(),now.getMonth(),1)
+          const actualHoursByEmp={}
+          ;(dd?.timelogs||[]).forEach(t=>{
+            if(!t.work_date||new Date(t.work_date)<curMonthStart) return
+            const eid=t.employee?.id; if(!eid) return
+            actualHoursByEmp[eid]=(actualHoursByEmp[eid]||0)+(Number(t.hours_worked)||0)
+          })
+
+          // Merge both sources into one list — % / hrs-per-week / monthly
+          // cost are computed consistently regardless of source; legacy
+          // rows have no date range or approval status, just a month/year
+          // + milestone, shown as "Period" and a plain "Legacy" tag instead.
+          // Only `allocations`-table rows (allocId set) can be edited/
+          // deleted from here — legacy rows still only come from the
+          // Resources tab.
+          let totalMonthlyCost=0
+          const rows=[
+            ...(dd?.allocations||[]).map(a=>{
+              const isActive=['approved','active'].includes(a.status)
+              const hourlyRate=isActive?resolveHourlyRate({designation:a.employee?.designation,employeeId:a.employee_id,roleRates:dd.roleRates,resourceRates:dd.rates}):0
+              const monthlyCost=isActive?(a.allocation_hours_per_week||0)*hourlyRate*monthlyFactor:0
+              if(isActive) totalMonthlyCost+=monthlyCost
+              return {key:`alloc-${a.id}`,allocId:a.id,raw:a,employee:a.employee,employeeId:a.employee_id,percent:a.allocation_percent,hrsWk:a.allocation_hours_per_week,
+                monthlyCost,isActive,noRate:isActive&&hourlyRate===0,period:`${dateFmt(a.start_date)} → ${a.end_date?dateFmt(a.end_date):'Ongoing'}`,status:a.status}
+            }),
+            ...(dd?.ra||[]).map(r=>{
+              const weeklyCap=r.employee?.default_weekly_capacity_hours||40
+              const weeks=daysInMonth(r.month,r.year)/7
+              const hrsWk=weeks>0?(Number(r.allocated_hours)||0)/weeks:0
+              const percent=weeklyCap>0?Math.round((hrsWk/weeklyCap)*100):0
+              const hourlyRate=resolveHourlyRate({designation:r.employee?.designation,employeeId:r.employee_id,roleRates:dd.roleRates,resourceRates:dd.rates})
+              const monthlyCost=(Number(r.allocated_hours)||0)*hourlyRate
+              totalMonthlyCost+=monthlyCost
+              return {key:`legacy-${r.id}`,allocId:null,raw:r,employee:r.employee,employeeId:r.employee_id,percent,hrsWk:Math.round(hrsWk*10)/10,
+                monthlyCost,isActive:true,noRate:hourlyRate===0,period:`${MOS[r.month-1]||r.month} ${r.year}${r.milestone?.title?' · '+r.milestone.title:''}`,status:null}
+            }),
+          ]
+
           return (
             <div style={{display:'flex',flexDirection:'column',gap:14}}>
+              <div style={{display:'flex',justifyContent:'flex-end'}}>
+                {canEdit&&<button className="btn btn-primary btn-sm" onClick={openAddAlloc}><Plus size={13}/> Add Allocation</button>}
+              </div>
               <AllocationGantt rows={ganttRows} windowStart={ganttWindow} weeks={10}
                 onShiftWindow={delta=>setGanttWindow(w=>{const n=new Date(w);n.setDate(n.getDate()+delta*7);return n})}/>
               <div className="table-wrap"><table>
-                <thead><tr><TH c="Employee"/><TH c="Role"/><TH c="%"/><TH c="Hrs/Wk"/><TH c="Start"/><TH c="End"/><TH c="Status"/></tr></thead>
+                <thead><tr><TH c="Employee"/><TH c="Role"/><TH c="%"/><TH c="Hrs/Wk"/><TH c="Actual (Mo.)"/><TH c="Monthly Cost"/><TH c="Still Available"/><TH c="Period"/><TH c="Source"/>{canEdit&&<TH c=""/>}</tr></thead>
                 <tbody>
-                  {(dd?.allocations||[]).length===0?<EmptyRow colSpan={7} icon="📅" text="No allocations for this project yet — request one from the Allocations page"/>
-                    :(dd?.allocations||[]).map(a=>(
-                      <tr key={a.id}>
+                  {rows.length===0?<EmptyRow colSpan={canEdit?10:9} icon="📅" text="No allocations for this project yet — click Add Allocation above, or allocate hours from the Resources tab"/>
+                    :rows.map(a=>{
+                      const committedPct=committedPctByEmp[a.employeeId]||0
+                      const availablePct=Math.round(100-committedPct)
+                      const actualHrs=actualHoursByEmp[a.employeeId]||0
+                      const plannedThisMonth=a.hrsWk?a.hrsWk*(daysInMonth(now.getMonth()+1,now.getFullYear())/7):0
+                      const variancePct=plannedThisMonth>0?Math.round((actualHrs/plannedThisMonth)*100):null
+                      return (
+                      <tr key={a.key}>
                         <TD c={<div><div style={{fontWeight:600}}>{a.employee?.full_name||'—'}</div><div style={{fontSize:10,color:'var(--text-muted)',textTransform:'capitalize'}}>{a.employee?.role}</div></div>}/>
-                        <TD c={a.role_on_project||'—'}/>
-                        <TD c={<span style={{fontFamily:'var(--font-mono)',fontWeight:700,color:'var(--c1)'}}>{a.allocation_percent}%</span>}/>
-                        <TD c={<span style={{fontFamily:'var(--font-mono)'}}>{a.allocation_hours_per_week??'—'}h</span>}/>
-                        <TD c={dateFmt(a.start_date)}/>
-                        <TD c={a.end_date?dateFmt(a.end_date):'Ongoing'}/>
-                        <TD c={<StatusBadge status={a.status}/>}/>
+                        <TD c={a.employee?.role||'—'}/>
+                        <TD c={<span style={{fontFamily:'var(--font-mono)',fontWeight:700,color:'var(--c1)'}}>{a.percent}%</span>}/>
+                        <TD c={<span style={{fontFamily:'var(--font-mono)'}}>{a.hrsWk??'—'}h</span>}/>
+                        <TD c={<div><span style={{fontFamily:'var(--font-mono)',fontWeight:700}}>{actualHrs.toFixed(1)}h</span>{variancePct!=null&&<div style={{fontSize:9.5,color:variancePct<70?'var(--rose)':variancePct>130?'var(--amber)':'var(--text-muted)'}}>{variancePct}% of plan</div>}</div>}/>
+                        <TD c={!a.isActive?<span style={{color:'var(--text-muted)'}}>—</span>:a.noRate?<span title="No rate configured for this designation or employee — set one in Settings → Role Rates, or on this person in the Resources tab" style={{fontSize:11,fontWeight:700,color:'#f59e0b'}}>⚠ No rate</span>:<span style={{fontFamily:'var(--font-mono)',fontWeight:700,color:'var(--rose)'}}>{rupee(a.monthlyCost)}</span>}/>
+                        <TD c={<span title="Across every project and system this person is allocated in, not just this one" style={{fontFamily:'var(--font-mono)',fontWeight:700,color:availablePct<0?'var(--rose)':availablePct<20?'var(--amber)':'var(--emerald)'}}>{availablePct<0?`⚠ Over by ${Math.abs(availablePct)}%`:`${availablePct}%`}</span>}/>
+                        <TD c={<span style={{fontSize:11.5}}>{a.period}</span>}/>
+                        <TD c={a.status?<StatusBadge status={a.status}/>:<span style={{padding:'2px 8px',borderRadius:4,fontSize:10,fontWeight:700,background:'#f1f5f9',color:'#64748b'}}>Legacy (hrs)</span>}/>
+                        {canEdit&&<TD c={a.allocId?<div style={{display:'flex',gap:3}}><button className="btn btn-ghost btn-sm btn-icon" title="Edit" onClick={()=>openEditAlloc(a.raw)}><Edit2 size={12}/></button><button className="btn btn-ghost btn-sm btn-icon" style={{color:'var(--rose)'}} title="Delete" onClick={()=>setDelAlloc(a.allocId)}><Trash2 size={12}/></button></div>:<span style={{fontSize:10,color:'var(--text-muted)'}}>—</span>}/>}
                       </tr>
-                    ))}
+                      )
+                    })}
                 </tbody>
+                {rows.length>0&&<tfoot><tr>
+                  <td colSpan={5} style={{padding:'8px 14px',fontWeight:700,fontSize:12,textAlign:'right',borderTop:'2px solid var(--border)'}}>This Month's Resource Cost</td>
+                  <td style={{padding:'8px 14px',fontWeight:800,fontFamily:'var(--font-mono)',color:'var(--rose)',borderTop:'2px solid var(--border)'}}>{rupee(totalMonthlyCost)}</td>
+                  <td colSpan={canEdit?4:3} style={{borderTop:'2px solid var(--border)'}}/>
+                </tr></tfoot>}
               </table></div>
-              <div style={{fontSize:11,color:'var(--text-muted)'}}>Weekly cost run-rate reflects the current active team only — it is a snapshot, not an accumulated to-date cost.</div>
+              <div style={{fontSize:11,color:'var(--text-muted)'}}>Combines both allocation systems this app has — the %-based Allocations (Gantt above only shows this one) and the legacy hours-per-month Resources tab. "Still Available" is each person's remaining capacity across every project and system they're booked in. "Actual (Mo.)" is hours logged this calendar month via check-in/timesheets on this project, vs. their planned hrs/wk × weeks elapsed this month.</div>
             </div>
           )
         })()}
@@ -751,7 +1133,7 @@ export default function ProjectsPage() {
             </div>
             <div className="table-wrap"><table>
               <thead><tr><TH c="Name"/><TH c="Cat"/><TH c="Qty"/><TH c="Unit"/><TH c="Cost(Co.)"/><TH c="Cost(Cl.)"/><TH c="Proposal"/><TH c="Billing"/><TH c="Milestone"/>{canEdit&&<TH c=""/>}</tr></thead>
-              <tbody>{(dd?.sw||[]).length===0?<EmptyRow colSpan={10} icon="💻" text="No software costs recorded"/>:(dd?.sw||[]).map(r=><tr key={r.id}><TD c={<span style={{fontWeight:600}}>{r.name}</span>}/><TD c={<span className="badge badge-info" style={{fontSize:10}}>{r.category}</span>}/><TD c={<span style={{fontFamily:'var(--font-mono)'}}>{r.qty||1}</span>}/><TD c={<span style={{fontFamily:'var(--font-mono)'}}>{rupee(r.unit_price||0)}</span>}/><MTD v={r.cost_company} color="#e11d48"/><MTD v={r.cost_client} color="#059669"/><MTD v={r.proposal_cost} color="#7c3aed"/><TD c={<span style={{fontSize:10,color:'var(--text-muted)'}}>{r.billing_cycle?.replace(/_/g,' ')}</span>}/><TD c={<span style={{fontSize:10,color:'var(--text-muted)'}}>{ms.find(m=>m.id===r.milestone_id)?.title||'—'}</span>}/>{canEdit&&<TD c={<div style={{display:'flex',gap:3}}><EBtn onClick={()=>{setEditSW(r);setSwForm({name:r.name,category:r.category,qty:r.qty||1,unit_price:r.unit_price||'',cost_company:r.cost_company||'',cost_client:r.cost_client||'',proposal_cost:r.proposal_cost||'',billing_cycle:r.billing_cycle||'monthly',notes:r.notes||'',milestone_id:r.milestone_id||''});setShowSW(true)}}/><DBtn t="project_software_costs" id={r.id}/></div>}/>}</tr>)}</tbody>
+              <tbody>{(dd?.sw||[]).length===0?<EmptyRow colSpan={10} icon="💻" text="No software costs recorded"/>:(dd?.sw||[]).map(r=><tr key={r.id}><TD c={<div><span style={{fontWeight:600}}>{r.name}</span>{r.per_seat&&<><span className="badge badge-info" style={{fontSize:9.5,marginLeft:6}}>Per seat</span><div style={{fontSize:10.5,color:'var(--text-muted)',marginTop:2}}>{rupee(r.seat_price||0)} / user / {String(r.billing_cycle||'monthly').replace(/ly$/,'').replace('one_time','project')} · {r.qty||0} checked in this period · {r.seat_periods||0} seat-period{r.seat_periods===1?'':'s'} to date</div></>}</div>}/><TD c={<span className="badge badge-info" style={{fontSize:10}}>{r.category}</span>}/><TD c={<span style={{fontFamily:'var(--font-mono)'}}>{r.qty||1}</span>}/><TD c={<span style={{fontFamily:'var(--font-mono)'}}>{rupee(r.unit_price||0)}</span>}/><MTD v={r.cost_company} color="#e11d48"/><MTD v={r.cost_client} color="#059669"/><MTD v={r.proposal_cost} color="#7c3aed"/><TD c={<span style={{fontSize:10,color:'var(--text-muted)'}}>{r.billing_cycle?.replace(/_/g,' ')}</span>}/><TD c={<span style={{fontSize:10,color:'var(--text-muted)'}}>{ms.find(m=>m.id===r.milestone_id)?.title||'—'}</span>}/>{canEdit&&<TD c={<div style={{display:'flex',gap:3}}><EBtn onClick={()=>{setEditSW(r);setSwForm({name:r.name,category:r.category,qty:r.qty||1,unit_price:r.unit_price||'',cost_company:r.cost_company||'',cost_client:r.cost_client||'',proposal_cost:r.proposal_cost||'',billing_cycle:r.billing_cycle||'monthly',notes:r.notes||'',milestone_id:r.milestone_id||'',per_seat:!!r.per_seat,seat_price:r.seat_price||''});setShowSW(true)}}/><DBtn t="project_software_costs" id={r.id}/></div>}/>}</tr>)}</tbody>
             </table></div>
           </div>
         )}
@@ -761,11 +1143,36 @@ export default function ProjectsPage() {
           <div>
             <div style={{display:'flex',gap:10,justifyContent:'space-between',marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
               <div style={{display:'flex',gap:10,flexWrap:'wrap'}}><SCard label="Cost (Co.)" value={rupee(kpi.hwCo||0)} color="#e11d48"/><SCard label="Cost (Client)" value={rupee(kpi.hwCl||0)} color="#059669"/><SCard label="Proposal" value={rupee(kpi.hwPr||0)} color="#7c3aed"/></div>
-              {canEdit&&<button className="btn btn-primary btn-sm" onClick={()=>{setEditHW(null);setHwForm({name:'',category:hwCats[0],qty:'1',unit_price:'',cost_company:'',cost_client:'',proposal_cost:'',vendor:'',notes:'',milestone_id:''});setShowHW(true)}}><Plus size={12}/> Add HW</button>}
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                {canEdit&&<button className="btn btn-ghost btn-sm" disabled={hwSyncing} onClick={resyncHW} title="Rebuild the automatic lines from the devices and sensors assigned to this project"><RefreshCw size={12}/> {hwSyncing?'Syncing…':'Resync from devices'}</button>}
+                {canEdit&&<button className="btn btn-primary btn-sm" onClick={()=>{setEditHW(null);setHwForm({name:'',category:hwCats[0],qty:'1',unit_price:'',cost_company:'',cost_client:'',proposal_cost:'',vendor:'',notes:'',milestone_id:''});setShowHW(true)}}><Plus size={12}/> Add HW</button>}
+              </div>
             </div>
+            {(()=>{
+              const auto=(dd?.hw||[]).filter(r=>r.source==='DEVICE_REGISTER')
+              if(!auto.length) return <div className="alert alert-info" style={{fontSize:12.5,marginBottom:12}}>Devices assigned to this project in Device Instances, and the sensors fitted on them, appear here automatically as <strong>Auto</strong> lines priced from the product catalog. None are assigned yet{canEdit?' — or press Resync from devices':''}.</div>
+              const dev=auto.filter(r=>r.category==='device').reduce((n,r)=>n+Number(r.qty||0),0),sen=auto.filter(r=>r.category==='sensor').reduce((n,r)=>n+Number(r.qty||0),0)
+              const unpriced=auto.filter(r=>!Number(r.unit_price))
+              const lc=x=>String(x||'').toLowerCase()
+              const dupes=(dd?.hw||[]).filter(r=>r.source!=='DEVICE_REGISTER'&&auto.some(a=>{const part=(a.source_key||'').startsWith('device:')?a.source_key.slice(7):null;return (part&&lc(r.name).includes(lc(part)))||lc(r.name)===lc(a.name.replace(/\s*\(.*\)$/,''))}))
+              return (
+                <div className="alert alert-info" style={{fontSize:12.5,marginBottom:12}}>
+                  <strong>{dev} device{dev===1?'':'s'} and {sen} sensor{sen===1?'':'s'}</strong> from Device Instances are included as <strong>Auto</strong> lines ({rupee(auto.reduce((n,r)=>n+Number(r.cost_company||0),0))}). They update when devices or sensors are assigned, moved or removed, or when catalog prices change.
+                  {unpriced.length>0&&<div style={{marginTop:6,color:'#b45309'}}>{unpriced.length} line{unpriced.length===1?' has':'s have'} no price: {unpriced.map(r=>r.name).join(', ')} — set a standard cost in Products or a unit cost in the Sensor catalog, or override the price on the line.</div>}
+                  {dupes.length>0&&<div style={{marginTop:6,color:'#b45309'}}>Possible double count: manual line{dupes.length===1?'':'s'} {dupes.map(r=>`“${r.name}”`).join(', ')} may duplicate an Auto line — delete {dupes.length===1?'it':'them'} if so.</div>}
+                </div>
+              )
+            })()}
             <div className="table-wrap"><table>
               <thead><tr><TH c="Name"/><TH c="Type"/><TH c="Qty"/><TH c="Unit"/><TH c="Total"/><TH c="Cost(Co.)"/><TH c="Cost(Cl.)"/><TH c="Proposal"/><TH c="Vendor"/>{canEdit&&<TH c=""/>}</tr></thead>
-              <tbody>{(dd?.hw||[]).length===0?<EmptyRow colSpan={10} icon="🔧" text="No hardware costs recorded"/>:(dd?.hw||[]).map(r=><tr key={r.id}><TD c={<span style={{fontWeight:600}}>{r.name}</span>}/><TD c={<span className="badge badge-warning" style={{fontSize:10}}>{r.category}</span>}/><TD c={<span style={{fontFamily:'var(--font-mono)'}}>{r.qty}</span>}/><MTD v={r.unit_price}/><MTD v={r.total_price} color="var(--amber)"/><MTD v={r.cost_company} color="#e11d48"/><MTD v={r.cost_client} color="#059669"/><MTD v={r.proposal_cost} color="#7c3aed"/><TD c={<span style={{fontSize:11,color:'var(--text-muted)'}}>{r.vendor||'—'}</span>}/>{canEdit&&<TD c={<div style={{display:'flex',gap:3}}><EBtn onClick={()=>{setEditHW(r);setHwForm({name:r.name,category:r.category,qty:r.qty||'1',unit_price:r.unit_price||'',cost_company:r.cost_company||'',cost_client:r.cost_client||'',proposal_cost:r.proposal_cost||'',vendor:r.vendor||'',notes:r.notes||'',milestone_id:r.milestone_id||''});setShowHW(true)}}/><DBtn t="project_hardware_costs" id={r.id}/></div>}/>}</tr>)}</tbody>
+              <tbody>{(dd?.hw||[]).length===0?<EmptyRow colSpan={10} icon="🔧" text="No hardware costs recorded"/>:(dd?.hw||[]).map(r=>r.source==='DEVICE_REGISTER'?(
+                <tr key={r.id} style={{background:'#fafbff'}}>
+                  <TD c={<div><span style={{fontWeight:600}}>{r.name}</span> <span className="badge badge-info" style={{fontSize:9.5,marginLeft:4}}>Auto</span>{r.price_override&&<span className="badge badge-warning" style={{fontSize:9.5,marginLeft:4}}>Price override</span>}<div style={{fontSize:10.5,color:'var(--text-muted)',marginTop:2,maxWidth:340,whiteSpace:'normal'}}>{r.notes}</div></div>}/>
+                  <TD c={<span className="badge badge-warning" style={{fontSize:10}}>{r.category}</span>}/><TD c={<span style={{fontFamily:'var(--font-mono)'}}>{r.qty}</span>}/><MTD v={r.unit_price}/><MTD v={r.total_price} color="var(--amber)"/><MTD v={r.cost_company} color="#e11d48"/><MTD v={r.cost_client} color="#059669"/><MTD v={r.proposal_cost} color="#7c3aed"/>
+                  <TD c={<span style={{fontSize:11,color:'var(--text-muted)'}}>Device register</span>}/>
+                  {canEdit&&<TD c={<EBtn onClick={()=>setAutoHW({row:r,qty:r.qty,useCatalogue:!r.price_override,unit_price:r.unit_price||'',cost_client:r.cost_client||'',proposal_cost:r.proposal_cost||''})}/>}/>}
+                </tr>
+              ):<tr key={r.id}><TD c={<span style={{fontWeight:600}}>{r.name}</span>}/><TD c={<span className="badge badge-warning" style={{fontSize:10}}>{r.category}</span>}/><TD c={<span style={{fontFamily:'var(--font-mono)'}}>{r.qty}</span>}/><MTD v={r.unit_price}/><MTD v={r.total_price} color="var(--amber)"/><MTD v={r.cost_company} color="#e11d48"/><MTD v={r.cost_client} color="#059669"/><MTD v={r.proposal_cost} color="#7c3aed"/><TD c={<span style={{fontSize:11,color:'var(--text-muted)'}}>{r.vendor||'—'}</span>}/>{canEdit&&<TD c={<div style={{display:'flex',gap:3}}><EBtn onClick={()=>{setEditHW(r);setHwForm({name:r.name,category:r.category,qty:r.qty||'1',unit_price:r.unit_price||'',cost_company:r.cost_company||'',cost_client:r.cost_client||'',proposal_cost:r.proposal_cost||'',vendor:r.vendor||'',notes:r.notes||'',milestone_id:r.milestone_id||''});setShowHW(true)}}/><DBtn t="project_hardware_costs" id={r.id}/></div>}/>}</tr>)}</tbody>
             </table></div>
           </div>
         )}
@@ -773,13 +1180,36 @@ export default function ProjectsPage() {
         {/* ── SUPPORT ── */}
         {!ddLoad&&tab==='support'&&(
           <div>
+            {(()=>{
+              const auto=(dd?.sup||[]).filter(r=>r.source==='SUPPORT_VISITS')
+              const hrsBilled=auto.reduce((n,r)=>n+Number(r.hours||0),0)
+              return (
+                <div className="alert alert-info" style={{fontSize:12.5,marginBottom:12,display:'flex',gap:12,flexWrap:'wrap',alignItems:'center'}}>
+                  <div style={{flex:'1 1 320px'}}>
+                    <strong>Support visits</strong> (Check-In → Support / site visit, or “Check in here” on a device) are billed here automatically, one line per month{auto.length?<> — <strong>{Math.round(hrsBilled*10)/10} h</strong> so far</>:''}. Cost = hours × each engineer's rate; client = hours × the support rate{detail.support_hourly_rate?'':' (not set — billed at cost × 1.3)'}. These hours are left out of HR cost so they aren't counted twice.
+                  </div>
+                  {canEdit&&<div style={{display:'flex',gap:6,alignItems:'center'}}>
+                    <span style={{fontSize:12,fontWeight:600}}>Support rate ₹/h</span>
+                    <input className="form-input" type="number" min="0" style={{width:110,padding:'5px 8px'}} defaultValue={detail.support_hourly_rate??''} key={detail.id+'-'+(detail.support_hourly_rate??'')}
+                      onBlur={async e=>{const v=e.target.value===''?null:Number(e.target.value);if(v===(detail.support_hourly_rate??null))return;const {error}=await supabase.from('projects').update({support_hourly_rate:v}).eq('id',detail.id);if(error){alert(/support_hourly_rate|schema cache/i.test(error.message)?'Run sql/STEP248_support_visits.sql in the Supabase SQL Editor first.':error.message);return};openDetail({...detail,support_hourly_rate:v})}}/>
+                    <button className="btn btn-ghost btn-sm" title="Rebuild the monthly support-visit lines" onClick={async()=>{const {error}=await supabase.rpc('sync_project_support_visits',{p_project:detail.id});if(error)alert(/does not exist|schema cache/i.test(error.message)?'Run sql/STEP248_support_visits.sql first.':error.message);else openDetail(detail)}}><RefreshCw size={12}/> Resync</button>
+                  </div>}
+                </div>
+              )
+            })()}
             <div style={{display:'flex',gap:10,justifyContent:'space-between',marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
               <div style={{display:'flex',gap:10,flexWrap:'wrap'}}><SCard label="Cost (Co.)" value={rupee(kpi.spCo||0)} color="#e11d48"/><SCard label="Cost (Client)" value={rupee(kpi.spCl||0)} color="#059669"/><SCard label="Proposal" value={rupee(kpi.spPr||0)} color="#7c3aed"/></div>
               {canEdit&&<button className="btn btn-primary btn-sm" onClick={()=>{setEditSup(null);setSupForm({name:'',category:supCats[0],cost_company:'',cost_client:'',proposal_cost:'',date:'',notes:'',milestone_id:''});setShowSup(true)}}><Plus size={12}/> Add</button>}
             </div>
             <div className="table-wrap"><table>
               <thead><tr><TH c="Name"/><TH c="Category"/><TH c="Cost(Co.)"/><TH c="Cost(Cl.)"/><TH c="Proposal"/><TH c="Date"/><TH c="Milestone"/>{canEdit&&<TH c=""/>}</tr></thead>
-              <tbody>{(dd?.sup||[]).length===0?<EmptyRow colSpan={8} icon="🛠" text="No support costs recorded"/>:(dd?.sup||[]).map(r=><tr key={r.id}><TD c={<span style={{fontWeight:600}}>{r.name}</span>}/><TD c={<span className="badge badge-teal" style={{fontSize:10}}>{r.category?.replace(/_/g,' ')}</span>}/><MTD v={r.cost_company} color="#e11d48"/><MTD v={r.cost_client} color="#059669"/><MTD v={r.proposal_cost} color="#7c3aed"/><TD c={<span style={{fontSize:11,color:'var(--text-muted)'}}>{dateFmt(r.date)}</span>}/><TD c={<span style={{fontSize:11,color:'var(--text-muted)'}}>{ms.find(m=>m.id===r.milestone_id)?.title||'—'}</span>}/>{canEdit&&<TD c={<div style={{display:'flex',gap:3}}><EBtn onClick={()=>{setEditSup(r);setSupForm({name:r.name,category:r.category,cost_company:r.cost_company||'',cost_client:r.cost_client||'',proposal_cost:r.proposal_cost||'',date:r.date||'',notes:r.notes||'',milestone_id:r.milestone_id||''});setShowSup(true)}}/><DBtn t="project_support_costs" id={r.id}/></div>}/>}</tr>)}</tbody>
+              <tbody>{(dd?.sup||[]).length===0?<EmptyRow colSpan={8} icon="🛠" text="No support costs recorded"/>:(dd?.sup||[]).map(r=>r.source==='SUPPORT_VISITS'?(
+                <tr key={r.id} style={{background:'#fafbff'}}>
+                  <TD c={<div><span style={{fontWeight:600}}>{r.name}</span> <span className="badge badge-info" style={{fontSize:9.5,marginLeft:4}}>Auto · visits</span><div style={{fontSize:10.5,color:'var(--text-muted)',marginTop:2}}>{r.notes}</div></div>}/>
+                  <TD c={<span className="badge badge-teal" style={{fontSize:10}}>support visits</span>}/><MTD v={r.cost_company} color="#e11d48"/><MTD v={r.cost_client} color="#059669"/><MTD v={r.proposal_cost} color="#7c3aed"/>
+                  <TD c={<span style={{fontSize:11}}>{r.date?dateFmt(r.date):'—'}</span>}/><TD c={<span style={{fontSize:10,color:'var(--text-muted)'}}>{r.hours!=null?`${r.hours} h`:'—'}</span>}/>{canEdit&&<TD c=""/>}
+                </tr>
+              ):<tr key={r.id}><TD c={<span style={{fontWeight:600}}>{r.name}</span>}/><TD c={<span className="badge badge-teal" style={{fontSize:10}}>{r.category?.replace(/_/g,' ')}</span>}/><MTD v={r.cost_company} color="#e11d48"/><MTD v={r.cost_client} color="#059669"/><MTD v={r.proposal_cost} color="#7c3aed"/><TD c={<span style={{fontSize:11,color:'var(--text-muted)'}}>{dateFmt(r.date)}</span>}/><TD c={<span style={{fontSize:11,color:'var(--text-muted)'}}>{ms.find(m=>m.id===r.milestone_id)?.title||'—'}</span>}/>{canEdit&&<TD c={<div style={{display:'flex',gap:3}}><EBtn onClick={()=>{setEditSup(r);setSupForm({name:r.name,category:r.category,cost_company:r.cost_company||'',cost_client:r.cost_client||'',proposal_cost:r.proposal_cost||'',date:r.date||'',notes:r.notes||'',milestone_id:r.milestone_id||''});setShowSup(true)}}/><DBtn t="project_support_costs" id={r.id}/></div>}/>}</tr>)}</tbody>
             </table></div>
           </div>
         )}
@@ -856,6 +1286,8 @@ export default function ProjectsPage() {
                   )}
                 </div>
               </div>
+
+              <ROISummaryCard projectId={detail.id}/>
 
               {br && br.elapsedPct!=null && (
                 <div className="card">
@@ -936,6 +1368,96 @@ export default function ProjectsPage() {
           )
         })()}
 
+        {!ddLoad&&tab==='documents'&&<ProjectDocuments project={detail}/>}
+        {!ddLoad&&tab==='closure'&&(()=>{
+          const allTasks=dd?.tasks||[]
+          const tasksClosed=allTasks.filter(t=>t.status==='closed').length
+          const tasksTotal=allTasks.length
+          const tasksAllDone=tasksTotal>0&&tasksClosed===tasksTotal
+          const openTasks=allTasks.filter(t=>t.status!=='closed')
+          const allSignedOff=closureDepts.length>0&&closureDepts.every(d=>d.status==='signed_off')
+          const canClose=tasksAllDone&&allSignedOff&&detail.fund_flow_status!=='closed'
+          const availableDepts=departments.filter(dp=>!closureDepts.some(cd=>cd.department_id===dp.id))
+          const isClosed=detail.fund_flow_status==='closed'
+          const canSignOffRow=d=>['admin','ceo'].includes(role)||(['department_head','manager'].includes(role)&&profile?.department_id===d.department_id)
+          return (
+            <div style={{display:'flex',flexDirection:'column',gap:16}}>
+              <div className="card">
+                <div className="card-header"><span className="card-title">{isClosed?<Lock size={14} style={{verticalAlign:'-2px',marginRight:4}}/>:<Unlock size={14} style={{verticalAlign:'-2px',marginRight:4}}/>} Fund Flow Status</span></div>
+                <div className="card-body" style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:12}}>
+                  <div>
+                    <span style={{padding:'4px 12px',borderRadius:20,fontSize:12,fontWeight:700,background:isClosed?'#fef2f2':'#ecfdf5',color:isClosed?'#dc2626':'#059669'}}>{isClosed?'Closed':'Open'}</span>
+                    {isClosed&&detail.fund_flow_closed_at&&<span style={{marginLeft:10,fontSize:12,color:'var(--text-muted)'}}>Closed {dateFmt(detail.fund_flow_closed_at)}</span>}
+                  </div>
+                  {closureLoading?<div style={{fontSize:12,color:'var(--text-muted)'}}>Loading…</div>:isClosed?(
+                    ['admin','ceo','finance'].includes(role)&&<button className="btn btn-outline btn-sm" onClick={handleReopenFundFlow}><Unlock size={13}/> Reopen</button>
+                  ):(
+                    <button className="btn btn-primary btn-sm" disabled={!canClose} onClick={handleCloseFundFlow} title={!canClose?'All tasks must be closed and every department signed off first':''}><Lock size={13}/> Close Fund Flow</button>
+                  )}
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="card-header"><span className="card-title">📋 Tasks</span></div>
+                <div className="card-body">
+                  <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>{tasksClosed}/{tasksTotal} tasks closed {tasksAllDone&&tasksTotal>0&&<span style={{color:'#059669'}}>✓</span>}</div>
+                  {openTasks.length>0&&(
+                    <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                      {openTasks.slice(0,8).map(t=>(
+                        <div key={t.id} style={{fontSize:12,color:'var(--text-soft)',display:'flex',justifyContent:'space-between'}}>
+                          <span>{t.task_name}</span><span style={{color:'var(--text-muted)'}}>{t.status?.replace(/_/g,' ')}</span>
+                        </div>
+                      ))}
+                      {openTasks.length>8&&<div style={{fontSize:11,color:'var(--text-muted)',fontStyle:'italic'}}>+{openTasks.length-8} more</div>}
+                    </div>
+                  )}
+                  {tasksTotal===0&&<div style={{fontSize:12,color:'var(--text-muted)',fontStyle:'italic'}}>No tasks yet on this project</div>}
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="card-header"><span className="card-title"><UserCheck size={14} style={{verticalAlign:'-2px',marginRight:4}}/> Department Sign-off</span></div>
+                <div className="card-body">
+                  {closureDepts.length===0?(
+                    <div style={{fontSize:12,color:'var(--text-muted)',fontStyle:'italic',marginBottom:12}}>No departments added to this project yet.</div>
+                  ):(
+                    <div className="table-wrap" style={{marginBottom:12}}>
+                      <table>
+                        <thead><tr><TH c="Department"/><TH c="Status"/><TH c=""/></tr></thead>
+                        <tbody>
+                          {closureDepts.map(d=>(
+                            <tr key={d.id}>
+                              <TD c={d.department?.name||'—'}/>
+                              <TD c={<span style={{padding:'3px 10px',borderRadius:20,fontSize:11,fontWeight:700,background:d.status==='signed_off'?'#ecfdf5':'#fffbeb',color:d.status==='signed_off'?'#059669':'#d97706'}}>{d.status==='signed_off'?'Signed off':'Pending'}</span>}/>
+                              <TD c={<div style={{display:'flex',gap:6,justifyContent:'flex-end'}}>
+                                {d.status==='signed_off'?(
+                                  canSignOffRow(d)&&!isClosed&&<button className="btn btn-ghost btn-sm" onClick={()=>handleUndoSignOff(d.id)}>Undo</button>
+                                ):(
+                                  canSignOffRow(d)&&!isClosed&&<button className="btn btn-outline btn-sm" onClick={()=>handleSignOff(d.id)}><UserCheck size={12}/> Sign Off</button>
+                                )}
+                                {canEdit&&!isClosed&&<DBtn t="project_departments" id={d.id}/>}
+                              </div>}/>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  {canEdit&&!isClosed&&availableDepts.length>0&&(
+                    <div style={{display:'flex',gap:8}}>
+                      <select className="form-select" value={addDeptId} onChange={e=>setAddDeptId(e.target.value)} style={{maxWidth:260}}>
+                        <option value="">Select department…</option>
+                        {availableDepts.map(dp=><option key={dp.id} value={dp.id}>{dp.name}</option>)}
+                      </select>
+                      <button className="btn btn-primary btn-sm" disabled={!addDeptId} onClick={handleAddDept}><Plus size={13}/> Add Department</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        })()}
+
         {/* ════ ALL MODALS ════ */}
         {/* Milestone */}
         <Modal open={showMS} onClose={()=>setShowMS(false)} title={editMS?'Edit Milestone':'Add Milestone'} size="lg"
@@ -948,10 +1470,23 @@ export default function ProjectsPage() {
         </Modal>
         {/* SW */}
         <Modal open={showSW} onClose={()=>setShowSW(false)} title={editSW?'Edit Software':'Add Software'} size="lg"
-          footer={<><button className="btn btn-ghost" onClick={()=>setShowSW(false)}>Cancel</button><button className="btn btn-primary" onClick={()=>saveCost('project_software_costs',{name:swForm.name,category:swForm.category,qty:parseFloat(swForm.qty)||1,unit_price:parseFloat(swForm.unit_price)||0,cost_company:parseFloat(swForm.cost_company)||0,cost_client:parseFloat(swForm.cost_client)||0,proposal_cost:parseFloat(swForm.proposal_cost)||0,billing_cycle:swForm.billing_cycle||'monthly',notes:swForm.notes||null,milestone_id:swForm.milestone_id||null},editSW,()=>{setShowSW(false);setEditSW(null)})} disabled={subCost}>{subCost?'Saving…':'Save'}</button></>}>
+          footer={<><button className="btn btn-ghost" onClick={()=>setShowSW(false)}>Cancel</button><button className="btn btn-primary" onClick={()=>saveCost('project_software_costs',{name:swForm.name,category:swForm.category,qty:parseFloat(swForm.qty)||1,unit_price:parseFloat(swForm.unit_price)||0,cost_company:parseFloat(swForm.cost_company)||0,cost_client:parseFloat(swForm.cost_client)||0,proposal_cost:parseFloat(swForm.proposal_cost)||0,billing_cycle:swForm.billing_cycle||'monthly',notes:swForm.notes||null,milestone_id:swForm.milestone_id||null,...(swForm.per_seat||editSW?.per_seat?{per_seat:!!swForm.per_seat,seat_price:parseFloat(swForm.seat_price)||0}:{})},editSW,()=>{setShowSW(false);setEditSW(null)})} disabled={subCost}>{subCost?'Saving…':'Save'}</button></>}>
           <SWForm form={swForm} setForm={setSwForm} cats={swCats} setCats={setSwCats} ms={dd?.milestones||[]}/>
         </Modal>
         {/* HW */}
+        <Modal open={!!autoHW} onClose={()=>setAutoHW(null)} title={`Auto line · ${autoHW?.row?.name||''}`}
+          footer={<><button className="btn btn-ghost" onClick={()=>setAutoHW(null)}>Cancel</button><button className="btn btn-primary" disabled={subCost} onClick={saveAutoHW}>{subCost?'Saving…':'Save'}</button></>}>
+          {autoHW&&<div>
+            <p style={{fontSize:12.5,color:'var(--text-muted)',marginTop:0}}>Quantity comes from Device Instances ({autoHW.qty}) and can't be edited here. {autoHW.row.notes}</p>
+            <label style={{display:'flex',gap:8,alignItems:'center',fontSize:13,marginBottom:10}}><input type="checkbox" checked={autoHW.useCatalogue} onChange={e=>setAutoHW(a=>({...a,useCatalogue:e.target.checked}))}/> Use the catalog price (product standard cost / sensor unit cost)</label>
+            {!autoHW.useCatalogue&&<div className="form-group"><label className="form-label">Unit price for this project (₹)</label><input type="number" min={0} className="form-input" value={autoHW.unit_price} onChange={e=>setAutoHW(a=>({...a,unit_price:e.target.value}))}/></div>}
+            <div className="form-row">
+              <div className="form-group"><label className="form-label">Cost to client (₹)</label><input type="number" min={0} className="form-input" value={autoHW.cost_client} onChange={e=>setAutoHW(a=>({...a,cost_client:e.target.value}))}/></div>
+              <div className="form-group"><label className="form-label">Proposal cost (₹)</label><input type="number" min={0} className="form-input" value={autoHW.proposal_cost} onChange={e=>setAutoHW(a=>({...a,proposal_cost:e.target.value}))}/></div>
+            </div>
+            <div style={{fontSize:11,color:'var(--text-muted)'}}>The client and proposal mark-up you set here is kept as a ratio when the quantity or price changes.</div>
+          </div>}
+        </Modal>
         <Modal open={showHW} onClose={()=>setShowHW(false)} title={editHW?'Edit Hardware':'Add Hardware'} size="lg"
           footer={<><button className="btn btn-ghost" onClick={()=>setShowHW(false)}>Cancel</button><button className="btn btn-primary" onClick={()=>{const q=parseFloat(hwForm.qty)||1,up=parseFloat(hwForm.unit_price)||0,co=parseFloat(hwForm.cost_company)||(q*up);saveCost('project_hardware_costs',{name:hwForm.name,category:hwForm.category,qty:q,unit_price:up,total_price:q*up,cost_company:co,cost_client:parseFloat(hwForm.cost_client)||(co*1.3),proposal_cost:parseFloat(hwForm.proposal_cost)||(co*1.5),vendor:hwForm.vendor||null,notes:hwForm.notes||null,milestone_id:hwForm.milestone_id||null},editHW,()=>{setShowHW(false);setEditHW(null)})}} disabled={subCost}>{subCost?'Saving…':'Save'}</button></>}>
           <HWForm form={hwForm} setForm={setHwForm} cats={hwCats} setCats={setHwCats} ms={dd?.milestones||[]}/>
@@ -970,6 +1505,53 @@ export default function ProjectsPage() {
           <div className="form-row"><div className="form-group"><label className="form-label">Month</label><select className="form-select" value={raForm.month||new Date().getMonth()+1} onChange={e=>setRaForm(f=>({...f,month:e.target.value}))}>{MOS.map((m,i)=><option key={i+1} value={i+1}>{m}</option>)}</select></div><div className="form-group"><label className="form-label">Year</label><input className="form-input" type="number" value={raForm.year||new Date().getFullYear()} onChange={e=>setRaForm(f=>({...f,year:e.target.value}))}/></div></div>
           <div className="form-group"><label className="form-label">Notes</label><textarea className="form-textarea" rows={2} value={raForm.notes||''} onChange={e=>setRaForm(f=>({...f,notes:e.target.value}))}/></div>
         </Modal>
+        {/* %-based Allocation (allocations table) — create/edit without leaving the project */}
+        <Modal open={showAlloc} onClose={()=>setShowAlloc(false)} title={editAlloc?'Edit Allocation':'Add Allocation'} size="lg"
+          footer={<><button className="btn btn-ghost" onClick={()=>setShowAlloc(false)}>Cancel</button><button className="btn btn-primary" onClick={submitAllocForm} disabled={subAlloc||(allocConflict&&(!allocForm.override||!allocForm.override_justification.trim()))}>{subAlloc?'Saving…':editAlloc?'Save Changes':'Submit Request'}</button></>}>
+          <div className="form-group"><label className="form-label">Employee *</label>
+            <select className="form-select" value={allocForm.employee_id} onChange={e=>setAllocForm(f=>({...f,employee_id:e.target.value}))} disabled={!!editAlloc} required>
+              <option value="">Select employee…</option>{(dd?.employees||[]).map(u=><option key={u.id} value={u.id}>{u.full_name} ({u.role})</option>)}
+            </select>
+            {editAlloc&&<div style={{fontSize:10,color:'var(--text-muted)',marginTop:3}}>Employee can't be changed on an existing allocation — delete and create a new one instead.</div>}
+          </div>
+          <div className="form-row">
+            <div className="form-group"><label className="form-label">Allocation % *</label>
+              <input className="form-input" type="number" min={1} max={allocRemainingPct!=null?Math.max(1,allocRemainingPct):100} value={allocForm.allocation_percent} onChange={e=>setAllocForm(f=>({...f,allocation_percent:e.target.value}))} required/>
+              {allocRemainingPct!=null&&(
+                <div style={{fontSize:11,marginTop:3,fontWeight:600,color:allocRemainingPct<=0?'#dc2626':allocRemainingPct<20?'#b45309':'#16a34a'}}>
+                  {allocRemainingPct<=0?`⚠ Fully booked (${Math.abs(allocRemainingPct)}% over) across their other allocations`:`${allocRemainingPct}% available — everything else they're on already uses ${100-allocRemainingPct}%`}
+                </div>
+              )}
+            </div>
+            <div className="form-group"><label className="form-label">Role on Project</label><input className="form-input" value={allocForm.role_on_project} onChange={e=>setAllocForm(f=>({...f,role_on_project:e.target.value}))} placeholder="e.g. Firmware Engineer"/></div>
+          </div>
+          <div className="form-row">
+            <div className="form-group"><label className="form-label">Start Date *</label><input className="form-input" type="date" value={allocForm.start_date} onChange={e=>setAllocForm(f=>({...f,start_date:e.target.value}))} required/></div>
+            <div className="form-group"><label className="form-label">End Date</label><input className="form-input" type="date" value={allocForm.end_date} min={allocForm.start_date} onChange={e=>setAllocForm(f=>({...f,end_date:e.target.value}))}/>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:3}}>Leave blank for an open-ended allocation</div>
+            </div>
+          </div>
+          {!editAlloc&&<div style={{fontSize:11,color:'var(--text-muted)',marginBottom:10}}>New allocations still go through the same approval workflow as the Allocations page — this saves as "Requested" until the employee's manager approves it.</div>}
+          {allocConflict&&(
+            <div style={{marginBottom:14}}>
+              <Alert type="warning" message={
+                <div>
+                  <div style={{display:'flex',alignItems:'center',gap:6,fontWeight:700,marginBottom:6}}><AlertTriangle size={14}/> Over-allocation warning</div>
+                  <div style={{fontSize:12.5,marginBottom:6}}>Already committed {allocConflict.committedPct}% for overlapping dates — this would bring total to <strong>{allocConflict.projectedTotal}%</strong>:</div>
+                  <ul style={{margin:'0 0 8px',paddingLeft:18,fontSize:12}}>
+                    {allocConflict.overlapping.map(o=><li key={o.id}>{o.project?.name} — {o.allocation_percent}% ({dateFmt(o.start_date)} → {o.end_date?dateFmt(o.end_date):'ongoing'})</li>)}
+                  </ul>
+                  <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:12.5,fontWeight:600,marginBottom:6}}>
+                    <input type="checkbox" checked={allocForm.override} onChange={e=>setAllocForm(f=>({...f,override:e.target.checked}))}/> Override and proceed anyway
+                  </label>
+                  {allocForm.override&&<textarea className="form-textarea" placeholder="Justification for override…" value={allocForm.override_justification} onChange={e=>setAllocForm(f=>({...f,override_justification:e.target.value}))} style={{minHeight:50,fontSize:12.5}} required/>}
+                </div>
+              }/>
+            </div>
+          )}
+        </Modal>
+        <Confirm open={!!delAlloc} message="Delete this allocation? This does not affect any hours already logged." danger
+          onConfirm={()=>removeAlloc(delAlloc)} onCancel={()=>setDelAlloc(null)}/>
         {/* Change Request */}
         <Modal open={showCR} onClose={()=>setShowCR(false)} title={editCR?`Edit ${editCR.cr_id||'CR'}`:'New Change Request'} size="lg"
           footer={<><button className="btn btn-ghost" onClick={()=>setShowCR(false)}>Cancel</button><button className="btn btn-primary" onClick={saveCR} disabled={subCR}>{subCR?'Saving…':'Save CR'}</button></>}>
@@ -989,10 +1571,10 @@ export default function ProjectsPage() {
         {/* Project edit */}
         <Modal open={showPM} onClose={()=>setShowPM(false)} title={editP?'Edit Project':'New Project'}
           footer={<><button className="btn btn-ghost" onClick={()=>setShowPM(false)}>Cancel</button><button className="btn btn-primary" onClick={saveProject} disabled={subP}>{subP?'Saving…':editP?'Update':'Create'}</button></>}>
-          <ProjForm form={pForm} setForm={setPForm} customers={customers} departments={departments}/>
+          <ProjForm form={pForm} setForm={setPForm} customers={customers} departments={departments} isNew={!editP}/>
         </Modal>
         <Confirm open={!!delItem} message="Delete this item permanently?" danger
-          onConfirm={async()=>{if(!delItem)return;await supabase.from(delItem.table).delete().eq('id',delItem.id);setDelItem(null);openDetail(detail)}}
+          onConfirm={async()=>{if(!delItem)return;await supabase.from(delItem.table).delete().eq('id',delItem.id);setDelItem(null);if(delItem.table==='project_departments'){loadClosure(detail.id)}else{openDetail(detail)}}}
           onCancel={()=>setDelItem(null)}/>
       </div>
     )
@@ -1043,7 +1625,7 @@ export default function ProjectsPage() {
                     </div>
                     <div style={{display:'flex',gap:4,alignItems:'center',flexShrink:0}}>
                       <Pill s={p.status} map={SC}/>
-                      {canEdit&&<><button className="btn btn-ghost btn-sm btn-icon" onClick={e=>{e.stopPropagation();setEditP(p);setPForm({name:p.name,description:p.description||'',budget:p.budget||'',reserved_budget:p.reserved_budget||'',start_date:p.start_date||'',end_date:p.end_date||'',status:p.status});setShowPM(true)}}><Edit2 size={11}/></button><button className="btn btn-ghost btn-sm btn-icon" style={{color:'var(--rose)'}} onClick={e=>{e.stopPropagation();setDelP(p.id)}}><Trash2 size={11}/></button></>}
+                      {canEdit&&<><button className="btn btn-ghost btn-sm btn-icon" onClick={e=>{e.stopPropagation();openEditProject(p)}}><Edit2 size={11}/></button><button className="btn btn-ghost btn-sm btn-icon" style={{color:'var(--rose)'}} onClick={e=>{e.stopPropagation();setDelP(p.id)}}><Trash2 size={11}/></button></>}
                     </div>
                   </div>
                   {p.description&&<div style={{fontSize:12,color:'var(--text-muted)',marginBottom:12,lineHeight:1.5,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{p.description}</div>}
@@ -1079,7 +1661,7 @@ export default function ProjectsPage() {
       {/* Modals */}
       <Modal open={showPM} onClose={()=>setShowPM(false)} title={editP?'Edit Project':'New Project'}
         footer={<><button className="btn btn-ghost" onClick={()=>setShowPM(false)}>Cancel</button><button className="btn btn-primary" onClick={saveProject} disabled={subP}>{subP?'Saving…':editP?'Update':'Create Project'}</button></>}>
-        <ProjForm form={pForm} setForm={setPForm} customers={customers} departments={departments}/>
+        <ProjForm form={pForm} setForm={setPForm} customers={customers} departments={departments} isNew={!editP}/>
       </Modal>
       <Confirm open={!!delP} message="Delete this project and all linked milestones, costs and tasks? Expenses and timelogs will be retained." danger
         onConfirm={async()=>{try{const{error}=await supabase.from('projects').delete().eq('id',delP);if(error)throw error;setDelP(null);loadList()}catch(e){setDelP(null);alert('Delete failed: '+e.message+'\n\nRun STEP19-task-fixes.sql in Supabase SQL Editor.')}}}

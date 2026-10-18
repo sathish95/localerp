@@ -16,7 +16,8 @@ export function Screen({
 }) {
   const t = useTheme();
   const content = (
-    <View style={{ padding: padded ? Spacing.lg : 0, paddingBottom: Spacing.xxxl, gap: Spacing.lg }}>{children}</View>
+    // extra bottom room so the floating pill tab bar never covers content
+    <View style={{ padding: padded ? Spacing.lg : 0, paddingBottom: 110, gap: Spacing.lg }}>{children}</View>
   );
 
   return (

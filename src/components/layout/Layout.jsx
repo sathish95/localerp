@@ -3,20 +3,28 @@ import CheckInWidget from '../CheckInWidget'
 import NotificationBell from '../NotificationBell'
 import AskBubble from '../AskBubble'
 import GlobalSearchModal from '../GlobalSearchModal'
+import MyProfileModal from './MyProfileModal'
+import WalkthroughModal from '../onboarding/WalkthroughModal'
+import AppTour from '../onboarding/AppTour'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { useTabVisibility } from '../../context/TabVisibilityContext'
+import { useWorkspace } from '../../context/WorkspaceContext'
+import { isModuleInWorkspace } from '../../lib/workspace'
 import { useAppName } from '../../context/BrandingContext'
+import { useMaintenance } from '../../context/MaintenanceContext'
 import { supabase } from '../../lib/supabase'
+import { listSlides, listTourSteps, markWalkthroughSeen, markTourSeen } from '../../lib/appWalkthrough'
+import { FEATURE_FLAGS } from '../../config/featureFlags'
 import {
-  LayoutDashboard, Receipt, Users, FolderOpen, PieChart, Box, CheckSquare,
+  LayoutDashboard, BarChart3, Receipt, Users, FolderOpen, PieChart, Box, CheckSquare,
   FileText, TrendingUp, Settings, LogOut, Menu, X, ChevronLeft, ChevronDown, ChevronRight,
   Truck, Plane, ShoppingCart, Briefcase, CreditCard, Building2, Package, BarChart2,
   Calendar, Clock, FileSpreadsheet, Megaphone, ClipboardList, FileClock,
   MessageSquare, Activity, Sparkles, Cpu, GraduationCap, CalendarRange, Gauge,
   DollarSign, FileCheck, Wallet, History, Percent, Radar, ShieldCheck, Coins, BookOpen, Boxes, Warehouse,
   Target, Award, UserCheck, Scale, LineChart, UserPlus, Landmark, FlaskConical, Rocket, CalendarDays, Image, Link2, LayoutTemplate, CalendarClock, Search, Trophy, Medal, Star, FileBadge2, Calculator, KeyRound,
-  Layers, GitCompareArrows, ClipboardCheck, LifeBuoy
+  Layers, GitCompareArrows, ClipboardCheck, LifeBuoy, Ticket, Library, Compass, Wrench, Radio, Contact, MailCheck, Mail, FileSignature
 } from 'lucide-react'
 
 // One brand accent used everywhere (sidebar, avatars, active nav state) —
@@ -27,7 +35,7 @@ const ACCENT = '#6366f1'
 const roleLabel = {
   admin: 'Administrator', ceo: 'Chief Executive', manager: 'Manager',
   finance: 'Finance', employee: 'Employee', department_head: 'Dept. Head',
-  procurement_lead: 'Procurement Lead', pm: 'Project Manager', cto: 'CTO',
+  procurement_lead: 'Procurement Lead', pm: 'Project Manager', cto: 'CTO', lead: 'Tech Lead',
   sales_rep: 'Sales Rep', regional_sales_head: 'Regional Sales Head', sales_head: 'Sales Head', sales_ops: 'Sales Ops', cmo: 'CMO',
   campaign_manager: 'Campaign Manager', sales_lead: 'Sales Head', field_technician: 'Field Technician',
 }
@@ -37,6 +45,9 @@ const ALL_NAV = [
     { to: '/', tab: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { to: '/org-home', tab: 'org-home', label: 'Company Home', icon: Megaphone },
     { to: '/knowledge-base', tab: 'knowledge-base', label: 'Knowledge Base', icon: BookOpen },
+    { to: '/wiki', tab: 'wiki', label: 'ThingsAlive Wiki', icon: Library },
+    { to: '/email-to-tasks', tab: 'email-to-tasks', label: 'NeoX Email Intelligence', icon: MailCheck },
+    { to: '/agreements', tab: 'agreements', label: 'Agreements & e-Sign', icon: FileSignature },
   ]},
   { section: 'Expenses & Travel', items: [
     { to: '/expenses', tab: 'expenses', label: 'Expenses', icon: Receipt },
@@ -44,6 +55,7 @@ const ALL_NAV = [
     { to: '/approvals', tab: 'approvals', label: 'Approvals', icon: CheckSquare },
   ]},
   { section: 'Operations', items: [
+    { to: '/portfolio', tab: 'project-portfolio', label: 'Project Portfolio', icon: BarChart3 },
     { to: '/projects', tab: 'projects', label: 'Projects', icon: FolderOpen, subTabs: [
       { id: 'overview', label: 'Overview', icon: '📊' },
       { id: 'gantt', label: 'Gantt', icon: '📅' },
@@ -57,6 +69,8 @@ const ALL_NAV = [
       { id: 'changes', label: 'Changes', icon: '🔄' },
       { id: 'budget', label: 'Budget Config', icon: '⚙️' },
       { id: 'finance', label: 'Finance', icon: '💰' },
+      { id: 'closure', label: 'Fund Flow', icon: '🔒' },
+      { id: 'documents', label: 'Documents', icon: '📄' },
     ]},
     { to: '/tasks', tab: 'tasks', label: 'Task Management', icon: ClipboardList, subTabs: [
       { id: 'kanban', label: 'Kanban', icon: '⊞' },
@@ -66,9 +80,15 @@ const ALL_NAV = [
       { id: 'reports', label: 'Reports', icon: '📊' },
       { id: 'dashboards', label: 'Dashboards', icon: '🧩' },
     ]},
+    { to: '/work-items', tab: 'work-items', label: 'Work Items', icon: Wrench },
+    { to: '/my-work', tab: 'my-work', label: 'My Work', icon: ClipboardCheck },
+    { to: '/team-work', tab: 'team-work', label: 'Team Work', icon: UserCheck },
+    { to: '/daily-status', tab: 'daily-status', label: 'Daily Status', icon: ClipboardList },
     { to: '/neo-task-ai', tab: 'neo-task-ai', label: 'Neo Task AI', icon: Sparkles },
     { to: '/budget', tab: 'budget', label: 'Budget', icon: PieChart },
     { to: '/assets', tab: 'assets', label: 'Assets', icon: Box },
+    { to: '/roi-planning', tab: 'roi-planning', label: 'ROI Planning', icon: Calculator },
+    { to: '/activity-planner', tab: 'activity-planner', label: 'Activity Planner', icon: CalendarDays },
   ]},
   { section: 'Resourcing', items: [
     { to: '/skill-matrix', tab: 'skill-matrix', label: 'Skill Matrix', icon: GraduationCap },
@@ -118,6 +138,7 @@ const ALL_NAV = [
     { to: '/devices', tab: 'devices', label: 'Devices', icon: Cpu },
     { to: '/procurement', tab: 'procurement', label: 'Purchase Request', icon: ShoppingCart },
     { to: '/warranty', tab: 'warranty', label: 'Warranty', icon: ShieldCheck },
+    { to: '/golive', tab: 'golive-support', label: 'Go-Live Support', icon: Radio },
     { to: '/pos', tab: 'pos', label: 'PO', icon: Package },
     { to: '/invoices', tab: 'invoices', label: 'Invoice', icon: FileText },
     { to: '/grn', tab: 'grn', label: 'GRN', icon: Briefcase },
@@ -125,6 +146,7 @@ const ALL_NAV = [
   { section: 'Vendors & Partners', items: [
     { to: '/customers', tab: 'customers', label: 'Customers', icon: Building2 },
     { to: '/vendors', tab: 'vendors', label: 'Vendors', icon: Truck },
+    { to: '/contacts', tab: 'contacts', label: 'Contacts', icon: Contact },
     { to: '/fundflow', tab: 'fundflow', label: 'Fund Flow', icon: TrendingUp },
   ]},
   { section: 'Scenario Planning', items: [
@@ -164,7 +186,9 @@ const ALL_NAV = [
     { to: '/timesheet', tab: 'timesheet', label: 'Timesheet', icon: FileSpreadsheet },
     { to: '/timesheet-approvals', tab: 'timesheet-approvals', label: 'Timesheet Approvals', icon: FileClock },
     { to: '/chat', tab: 'chat', label: 'Chat', icon: MessageSquare },
+    { to: '/outlook-inbox', tab: 'outlook-inbox', label: 'Outlook Email', icon: Mail },
     { to: '/data-assistant', tab: 'data-assistant', label: 'Data Assistant', icon: Sparkles },
+    { to: '/it-helpdesk', tab: 'it-helpdesk', label: 'IT Helpdesk', icon: Ticket },
     { to: '/support', tab: 'support', label: 'Support', icon: LifeBuoy },
   ]},
   { section: 'Admin', items: [
@@ -186,6 +210,31 @@ const ALL_NAV = [
     { to: '/super-admin/support', label: 'Support Desk', icon: LifeBuoy, platformOnly: true },
   ]},
 ]
+
+// Maps a nav item's route to its app-tour anchor key (src/lib/appTourTargets.js)
+const NAV_TOUR_KEY = {
+  '/': 'web-nav-dashboard',
+  '/tasks': 'web-nav-tasks',
+  '/projects': 'web-nav-projects',
+  '/wiki': 'web-nav-wiki',
+}
+
+// Industry-Adaptive Platform — Phase 3. A DELIBERATELY SMALL, explicit
+// set of nav items whose current label is a clean 1:1 match for one of
+// the master prompt's universal terminology keys (section 11) — not
+// every label, just the ones a terminology override can safely replace
+// wholesale without losing meaning. Keyed by route (`to`) since that's
+// unique in ALL_NAV; `label` is passed through as term()'s fallback so
+// an org with no override (every existing org) renders byte-identical
+// to before this phase.
+const NAV_TERMINOLOGY_KEY = {
+  '/projects': 'project',
+  '/tasks': 'task',
+  '/timesheet': 'timesheet',
+  '/assets': 'asset',
+  '/users': 'person',
+  '/customers': 'client',
+}
 
 // Stable session ID for this browser tab's lifetime
 const SESSION_ID = Math.random().toString(36).slice(2)
@@ -227,12 +276,54 @@ export default function Layout({ children }) {
     try { localStorage.setItem('nav-collapsed-sections', JSON.stringify(collapsedSections)) } catch {}
   }, [collapsedSections])
   const toggleSection = (name) => setCollapsedSections(prev => ({ ...prev, [name]: !prev[name] }))
-  const { profile, signOut } = useAuth()
+  const { profile, signOut, refreshProfile } = useAuth()
+  const { maintenanceOn } = useMaintenance()
   const { isTabVisible } = useTabVisibility()
+  const { workspace, term } = useWorkspace()
   const appName = useAppName()
   const navigate = useNavigate()
   const location = useLocation()
   const role = profile?.role || 'employee'
+
+  // First-run walkthrough + guided tour (STEP179) — content is
+  // admin-editable from Settings → Onboarding & Tour, per organization.
+  // Walkthrough shows first (if unseen); the tour auto-starts right
+  // after it (or immediately, if the walkthrough was already seen or
+  // has no slides), also gated on its own "seen" flag. Re-run on demand
+  // via the topbar compass button regardless of seen state.
+  const [walkthroughSlides, setWalkthroughSlides] = useState([])
+  const [tourSteps, setTourSteps] = useState([])
+  const [showWalkthrough, setShowWalkthrough] = useState(false)
+  const [showTour, setShowTour] = useState(false)
+  const [showProfileModal, setShowProfileModal] = useState(false)
+  useEffect(() => {
+    if (!profile?.id || !profile?.organization_id) return
+    let cancelled = false
+    Promise.all([
+      listSlides(profile.organization_id, 'web'),
+      listTourSteps(profile.organization_id, 'web'),
+    ]).then(([slides, steps]) => {
+      if (cancelled) return
+      const liveSteps = steps.filter(s => document.querySelector(`[data-tour="${s.target_key}"]`))
+      setWalkthroughSlides(slides)
+      setTourSteps(liveSteps)
+      if (slides.length > 0 && !profile.walkthrough_seen_at) setShowWalkthrough(true)
+      else if (liveSteps.length > 0 && !profile.tour_seen_at) setShowTour(true)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [profile?.id, profile?.organization_id])
+
+  async function finishWalkthrough() {
+    setShowWalkthrough(false)
+    if (profile?.id) { try { await markWalkthroughSeen(profile.id) } catch {} }
+    await refreshProfile?.()
+    if (tourSteps.length > 0 && !profile?.tour_seen_at) setShowTour(true)
+  }
+  async function finishTour() {
+    setShowTour(false)
+    if (profile?.id) { try { await markTourSeen(profile.id) } catch {} }
+    await refreshProfile?.()
+  }
   const initials = (profile?.full_name || 'U').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
 
   // Close sidebar on mobile nav, and drop any active nav search so it
@@ -284,7 +375,32 @@ export default function Layout({ children }) {
       // Tab visibility guard — the single source of truth for per-role nav
       // gating (Settings -> Roles & Modules), admin/ceo bypass this
       if (!isTabVisible(item.tab)) return false
+      // Industry-Adaptive Platform — Phase 3, additive second gate on top
+      // of the one above (never a replacement for it). enabled_module_keys
+      // is `null` for every org that hasn't completed the new workspace
+      // onboarding wizard (every existing org today, plus any new org that
+      // skipped customization) — Array.isArray(null) is false, so the
+      // whole condition short-circuits and this item's visibility is
+      // decided purely by the existing gate above, exactly as before this
+      // phase. Only an org with a concrete enabled_module_keys array
+      // (i.e. one that finished Phase 2's wizard) can have this hide
+      // anything, and even then only for keys present in modules.js today.
+      // isModuleInWorkspace() keeps modules added after the list was saved
+      // visible — only a module the admin saw and unticked is hidden.
+      if (FEATURE_FLAGS.adaptiveNavigation && !isModuleInWorkspace(workspace, item.tab)) return false
       return true
+    }).map(item => {
+      // Industry-Adaptive Platform — Phase 3 terminology. Only the small
+      // explicit set of routes in NAV_TERMINOLOGY_KEY are eligible; term()
+      // resolves org override -> industry default -> `item.label`
+      // (fallback), so for every org without an explicit override or a
+      // matching industry default (every existing org today) `resolved`
+      // is reference-equal to `item.label` and this returns the exact
+      // same item object, unchanged.
+      const tKey = NAV_TERMINOLOGY_KEY[item.to]
+      if (!FEATURE_FLAGS.adaptiveTerminology || !tKey) return item
+      const resolved = term(tKey, item.label)
+      return resolved === item.label ? item : { ...item, label: resolved }
     })
   })).filter(s => s.items.length > 0)
 
@@ -328,24 +444,24 @@ export default function Layout({ children }) {
 
   const pageMap = {
     '/': 'Dashboard', '/knowledge-base': 'Knowledge Base', '/expenses': 'Expenses', '/travel': 'Travel Requests',
-    '/approvals': 'Approvals', '/vendors': 'Vendors', '/projects': 'Projects',
-    '/tasks': 'Task Management',
+    '/approvals': 'Approvals', '/vendors': 'Vendors', '/contacts': 'Contacts', '/projects': 'Projects', '/portfolio': 'Project Portfolio', '/agreements': 'Agreements & e-Sign',
+    '/tasks': 'Task Management', '/email-to-tasks': 'NeoX Email Intelligence',
     '/budget': 'Budget', '/assets': 'Assets', '/procurement': 'Procurement',
     '/invoices': 'Invoices', '/fundflow': 'Fund Flow', '/pos': 'Purchase Orders',
     '/grn': 'GRN', '/users': 'Users', '/settings': 'Settings', '/reports': 'Reports',
     '/timesheet': 'Timesheet', '/timesheet-approvals': 'Timesheet Approvals', '/content': 'Landing Content',
-    '/chat': 'Chat', '/app-monitor': 'App Monitor', '/llm-monitor': 'LLM Usage Monitor', '/neo-task-ai': 'Neo Task AI', '/data-assistant': 'Data Assistant',
-    '/customers': 'Customers', '/products': 'Products', '/bom': 'BOM Management', '/inventory': 'Inventory Management', '/devices': 'Device Instances', '/warranty': 'Warranty Management',
+    '/chat': 'Chat', '/outlook-inbox': 'Outlook Email', '/app-monitor': 'App Monitor', '/llm-monitor': 'LLM Usage Monitor', '/neo-task-ai': 'Neo Task AI', '/data-assistant': 'Data Assistant',
+    '/customers': 'Customers', '/products': 'Products', '/bom': 'BOM Management', '/inventory': 'Inventory Management', '/devices': 'Device Instances', '/warranty': 'Warranty Management', '/golive': 'Go-Live Support',
     '/proposals': 'Proposals',
     '/sales/leads': 'Leads', '/sales/landing-links': 'Landing Links', '/sales/meeting-pages': 'Meeting Booking Pages', '/sales/opportunities': 'Opportunities', '/sales/tasks': 'Sales Tasks',
     '/sales/product-launches': 'Product Launches', '/sales/tenders': 'Tenders', '/sales/pilot-projects': 'Pilot Projects',
     '/sales/bootstrap-programs': 'Bootstrap Program', '/sales/timeline': 'Sales Timeline', '/sales/dashboard': 'Sales Dashboard',
     '/marketing/campaigns': 'Campaigns', '/marketing/landing-pages': 'Landing Pages', '/marketing/content-assets': 'Content Assets', '/marketing/calendar': 'Marketing Calendar',
-    '/skill-matrix': 'Skill Matrix', '/allocations': 'Allocations', '/capacity': 'Capacity',
+    '/activity-planner': 'Activity Planner', '/skill-matrix': 'Skill Matrix', '/allocations': 'Allocations', '/capacity': 'Capacity',
     '/role-rates': 'Role Rates', '/customer-invoices': 'Customer Invoices', '/delivery-notes': 'Delivery Notes', '/payments': 'Payments',
     '/aging-report': 'Aging Report', '/profit-margins': 'Profit Margins', '/spend-analyzer': 'Spend Analyzer',
   }
-  const pageTitle = pageMap[location.pathname] || appName
+  const pageTitle = pageMap[location.pathname] || (location.pathname.startsWith('/golive/') ? 'Go-Live Support' : appName)
 
   const SidebarContent = () => (
     <div className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
@@ -362,7 +478,8 @@ export default function Layout({ children }) {
       </div>
 
       {/* Profile chip */}
-      <div className="sidebar-profile" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
+      <div className="sidebar-profile" style={{ background: 'var(--surface)', borderColor: 'var(--border)', cursor: 'pointer' }}
+        onClick={() => setShowProfileModal(true)} title="My Profile">
         <div className="avatar" style={{ background: ACCENT }}>{initials}</div>
         {!collapsed && (
           <div className="profile-info">
@@ -459,6 +576,7 @@ export default function Layout({ children }) {
               return (
                 <div key={item.to} style={{ position: 'relative' }}>
                   <NavLink to={item.to} end={item.to === '/'} title={collapsed ? item.label : undefined}
+                    data-tour={NAV_TOUR_KEY[item.to]}
                     className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
                     style={({ isActive }) => ({
                       ...(isActive ? { '--link-color': ACCENT } : {}),
@@ -554,6 +672,16 @@ export default function Layout({ children }) {
 
       {/* Main */}
       <div className="main-area">
+        {/* Maintenance mode banner — only ever visible to admin/ceo/hr/super-admin
+            (App.jsx already routes every other role to MaintenancePage instead
+            of here whenever maintenanceOn is true). */}
+        {maintenanceOn && (
+          <div style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 16px', background:'#f59e0b', color:'#fff', fontSize:12.5, fontWeight:600 }}>
+            <Wrench size={14} />
+            Maintenance mode is ON — other users are blocked from the app right now.
+            {profile?.is_super_admin && <NavLink to="/super-admin" style={{ color:'#fff', textDecoration:'underline', marginLeft:4 }}>Manage in Super Admin</NavLink>}
+          </div>
+        )}
         {/* Topbar */}
         <header className="topbar">
           <button className="mobile-menu-btn" onClick={() => setSidebarOpen(true)}>
@@ -568,13 +696,20 @@ export default function Layout({ children }) {
             </div>
           )}
           <div className="topbar-right" style={{display:'flex',alignItems:'center',gap:10}}>
-            <button onClick={() => setGlobalSearchOpen(true)} title="Search (Ctrl/Cmd+K)"
+            <button onClick={() => setGlobalSearchOpen(true)} title="Search (Ctrl/Cmd+K)" data-tour="web-topbar-search"
               style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 10px', borderRadius:8, border:'1px solid var(--border)', background:'transparent', cursor:'pointer', color:'var(--ink-muted)', fontSize:12 }}>
               <Search size={14} /> <span className="desktop-only" style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0 5px', fontSize:10.5 }}>Ctrl K</span>
             </button>
-            <NotificationBell />
-            <CheckInWidget />
-            <div className="topbar-avatar" style={{ background: ACCENT }}>{initials}</div>
+            {tourSteps.length > 0 && (
+              <button onClick={() => setShowTour(true)} title="Take a tour"
+                style={{ display:'flex', alignItems:'center', justifyContent:'center', width:30, height:30, borderRadius:8, border:'1px solid var(--border)', background:'transparent', cursor:'pointer', color:'var(--ink-muted)' }}>
+                <Compass size={15} />
+              </button>
+            )}
+            <span data-tour="web-topbar-notifications" style={{ display: 'inline-flex' }}><NotificationBell /></span>
+            <span data-tour="web-topbar-checkin" style={{ display: 'inline-flex' }}><CheckInWidget /></span>
+            <div className="topbar-avatar" data-tour="web-topbar-avatar" style={{ background: ACCENT, cursor: 'pointer' }}
+              onClick={() => setShowProfileModal(true)} title="My Profile">{initials}</div>
           </div>
         </header>
 
@@ -585,6 +720,9 @@ export default function Layout({ children }) {
       </div>
       <AskBubble />
       <GlobalSearchModal open={globalSearchOpen} onClose={() => setGlobalSearchOpen(false)} />
+      <MyProfileModal open={showProfileModal} onClose={() => setShowProfileModal(false)} />
+      {showWalkthrough && walkthroughSlides.length > 0 && <WalkthroughModal slides={walkthroughSlides} onDone={finishWalkthrough} />}
+      {showTour && tourSteps.length > 0 && <AppTour steps={tourSteps} onDone={finishTour} />}
     </div>
   )
 }

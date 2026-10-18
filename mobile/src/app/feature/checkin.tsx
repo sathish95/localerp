@@ -1,15 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
-import { Check, Clock, ListChecks, Play, Square } from 'lucide-react-native';
+import { useRouter, type Href } from 'expo-router';
+import {
+  Briefcase, Check, Clock, History, ListChecks, Play, Send, Square,
+} from 'lucide-react-native';
 
-import { Badge, Button, Card, Screen, ScreenHeader, TextField } from '@/components/ui';
+import { Badge, Button, Card, Chip, EmptyState, GradientCard, MetricTile, PageHeader, Screen, TextField } from '@/components/ui';
 import { useAuth } from '@/context/AuthContext';
-import { Fonts, Radius, Spacing } from '@/constants/theme';
+import { Domains, Fonts, Radius, Spacing, alpha } from '@/constants/theme';
+import { useActiveLog, useInvalidateCheckin, useRecentCheckinLogs, useWeekCheckinLogs } from '@/hooks/queries';
+import { useMyTimesheetMonth } from '@/hooks/timesheet';
 import { useTheme } from '@/hooks/use-theme';
 import {
-  checkIn, checkOut, getActiveLog, getLinkedTasks, listProjectTasks, myActiveProjects,
-  type ActiveLog, type LinkedTask, type ProjectTask,
+  checkIn, checkOut, countWorkingDaysElapsed, DAILY_MIN_HOURS, getLinkedTasks, getWeekRange,
+  listProjectTasks, myActiveProjects, type ActiveLog, type LinkedTask, type ProjectTask,
 } from '@/lib/checkin';
+import { dateFmt } from '@/lib/supabase';
+import { SUBMITTABLE_STATUSES } from '@/lib/timesheet';
 import { STATUS_COLOR, STATUS_LABEL, TASK_STATUSES, type TaskStatus } from '@/lib/tasks';
 
 function formatElapsed(startIso: string) {
@@ -18,11 +25,37 @@ function formatElapsed(startIso: string) {
   return [h, m, sec].map((n) => String(n).padStart(2, '0')).join(':');
 }
 
+function sessionTimeRange(inIso: string, outIso: string | null) {
+  const fmt = (iso: string) => new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+  return outIso ? `${fmt(inIso)} – ${fmt(outIso)}` : `Since ${fmt(inIso)}`;
+}
+
 export default function CheckinScreen() {
   const { profile } = useAuth();
   const t = useTheme();
+  const router = useRouter();
+  const now = new Date();
+  const { data: active, isLoading: activeLoading } = useActiveLog();
+  const invalidateCheckin = useInvalidateCheckin();
+
+  const { start: weekStart, end: weekEnd } = getWeekRange(now);
+  const weekQ = useWeekCheckinLogs(weekStart, weekEnd);
+  const recentQ = useRecentCheckinLogs(10);
+  const monthQ = useMyTimesheetMonth(now.getMonth() + 1, now.getFullYear());
+
+  const hoursThisWeek = (weekQ.data ?? []).reduce((s, l) => s + (l.hours_worked ?? 0), 0);
+  const monthStatus = monthQ.data?.approval?.status ?? '';
+  const monthHours = (monthQ.data?.logs ?? []).reduce((s, l) => s + (l.hours_worked ?? 0), 0);
+  const isMonthPending = SUBMITTABLE_STATUSES.includes(monthStatus);
+  const isSaturday = now.getDay() === 6;
+
+  // "Pending hours" = shortfall against an 8h/day minimum for every
+  // working day (Mon–Sat) that's already come and gone this week.
+  const workingDaysElapsed = countWorkingDaysElapsed(weekStart, now);
+  const requiredHoursSoFar = workingDaysElapsed * DAILY_MIN_HOURS;
+  const pendingHours = Math.max(0, requiredHoursSoFar - hoursThisWeek);
+
   const [loading, setLoading] = useState(true);
-  const [active, setActive] = useState<ActiveLog | null>(null);
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
   const [selProject, setSelProject] = useState<string | null>(null);
   const [projectTasks, setProjectTasks] = useState<ProjectTask[]>([]);
@@ -35,25 +68,22 @@ export default function CheckinScreen() {
   const [statusChoices, setStatusChoices] = useState<Record<string, TaskStatus>>({});
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Projects + the tasks linked to the current session. `active` itself
+  // is owned by the shared useActiveLog() query (also read on Home), so
+  // this effect re-runs whenever a check-in/out flips it.
   async function load() {
     try {
       if (profile?.id) {
-        const [log, projs] = await Promise.all([getActiveLog(profile.id), myActiveProjects()]);
-        setActive(log); setProjects(projs);
-        if (log) {
-          const linked = await getLinkedTasks(log.id);
-          setLinkedTasks(linked);
-        } else {
-          setLinkedTasks([]);
-        }
+        setProjects(await myActiveProjects());
+        setLinkedTasks(active ? await getLinkedTasks(active.id) : []);
       }
     } finally {
       setLoading(false);
     }
   }
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- `load` is intentionally not memoized; re-run only when the user changes
-  useEffect(() => { load(); }, [profile?.id]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- re-run when the user or the active session changes
+  useEffect(() => { load(); }, [profile?.id, active?.id]);
 
   useEffect(() => {
     if (timer.current) clearInterval(timer.current);
@@ -80,7 +110,7 @@ export default function CheckinScreen() {
     try {
       await checkIn(profile.id, profile.full_name, selProject, selTasks, comment);
       setComment(''); setSelProject(null); setSelTasks([]);
-      await load();
+      await invalidateCheckin();
     } catch (e) { console.error(e); } finally { setBusy(false); }
   }
 
@@ -102,29 +132,70 @@ export default function CheckinScreen() {
         .map((l) => ({ checkinTaskId: l.id, taskId: l.task!.id, currentStatus: l.task!.status, newStatus: statusChoices[l.id] ?? l.task!.status }));
       await checkOut(active, profile.id, profile.full_name, updates);
       setCheckingOut(false);
-      await load();
+      await invalidateCheckin();
     } catch (e) { console.error(e); } finally { setBusy(false); }
   }
 
-  if (loading) return <Screen scroll={false}><View /></Screen>;
+  if (activeLoading || loading) return <Screen scroll={false}><View /></Screen>;
 
   return (
     <Screen>
-      <ScreenHeader title="Check-in" subtitle="Track your work session" right={<Clock color={t.accent} size={22} />} />
+      <PageHeader title="Check-in" subtitle="Track your work session" right={<Clock color={t.accent} size={22} />} />
 
-      <Card style={{ alignItems: 'center', paddingVertical: Spacing.xxl }}>
-        <View style={{ width: 14, height: 14, borderRadius: 7, backgroundColor: active ? t.success : t.textMuted, marginBottom: 14 }} />
-        <Text style={{ color: t.text, fontFamily: Fonts.displayExtraBold, fontSize: 40, letterSpacing: 1 }}>{active ? elapsed : '00:00:00'}</Text>
-        <Text style={{ color: t.textMuted, fontFamily: Fonts.bodyMedium, fontSize: 13, marginTop: 4 }}>
-          {active ? `Checked in${active.project?.name ? ` · ${active.project.name}` : ''}` : 'Not checked in'}
-        </Text>
+      <GradientCard colors={active ? Domains.checkin.grad : Domains.neutral.grad} style={{ marginBottom: Spacing.xs }}>
+        <View style={{ alignItems: 'center', paddingVertical: Spacing.lg }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: active ? '#4ade80' : 'rgba(255,255,255,0.6)' }} />
+            <Text style={{ color: 'rgba(255,255,255,0.9)', fontFamily: Fonts.bodyBold, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              {active ? 'Checked in' : 'Not checked in'}
+            </Text>
+          </View>
+          <Text style={{ color: '#fff', fontFamily: Fonts.displayExtraBold, fontSize: 44, letterSpacing: 1 }}>{active ? elapsed : '00:00:00'}</Text>
+          {active?.project?.name ? (
+            <Text style={{ color: 'rgba(255,255,255,0.85)', fontFamily: Fonts.bodyMedium, fontSize: 13, marginTop: 4 }}>{active.project.name}</Text>
+          ) : null}
 
-        {active ? (
-          !checkingOut && <Button title="Check Out" variant="danger" icon={<Square size={16} color="#fff" />} onPress={openCheckoutReview} style={{ marginTop: 24, minWidth: 180 }} />
-        ) : (
-          <Button title="Check In" icon={<Play size={16} color="#fff" />} onPress={handleCheckIn} loading={busy} disabled={busy} style={{ marginTop: 24, minWidth: 180 }} />
-        )}
-      </Card>
+          {active ? (
+            !checkingOut && <Button title="Check Out" variant="danger" icon={<Square size={16} color="#fff" />} onPress={openCheckoutReview} style={{ marginTop: 22, minWidth: 180 }} />
+          ) : (
+            <Button title="Check In" icon={<Play size={16} color="#fff" />} onPress={handleCheckIn} loading={busy} disabled={busy} style={{ marginTop: 22, minWidth: 180 }} />
+          )}
+        </View>
+      </GradientCard>
+
+      {/* This week at a glance */}
+      <View style={{ flexDirection: 'row', gap: Spacing.sm }}>
+        <MetricTile
+          colors={Domains.checkin.grad}
+          value={`${hoursThisWeek.toFixed(1)}h`}
+          label="Hours this week"
+          sub={`Mon–Sun · ${dateFmt(weekStart)}`}
+          icon={<Clock size={16} color="#fff" />}
+        />
+        <MetricTile
+          colors={pendingHours > 0 ? Domains.expenses.grad : Domains.approvals.grad}
+          value={pendingHours > 0 ? `${pendingHours.toFixed(1)}h` : 'On track'}
+          label="Pending hours"
+          sub={pendingHours > 0 ? `Short of ${DAILY_MIN_HOURS}h/day minimum` : `Meeting ${DAILY_MIN_HOURS}h/day so far`}
+          icon={<Send size={16} color="#fff" />}
+          onPress={() => router.push('/feature/timesheet' as Href)}
+        />
+      </View>
+
+      {/* Saturday nudge — the work week's natural "close it out" moment */}
+      {isSaturday && pendingHours > 0 ? (
+        <Pressable onPress={() => router.push('/feature/timesheet' as Href)}>
+          <Card style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: alpha(t.accent, 0.08), borderColor: alpha(t.accent, 0.3) }}>
+            <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: alpha(t.accent, 0.16), alignItems: 'center', justifyContent: 'center' }}>
+              <Send size={17} color={t.accent} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: t.text, fontFamily: Fonts.bodyBold, fontSize: 13.5 }}>It's Saturday — wrap up your timesheet</Text>
+              <Text style={{ color: t.textMuted, fontFamily: Fonts.body, fontSize: 11.5, marginTop: 1 }}>{monthHours.toFixed(1)}h logged this month, not yet submitted</Text>
+            </View>
+          </Card>
+        </Pressable>
+      ) : null}
 
       {/* Checked in: show what you're working on */}
       {active && !checkingOut && (
@@ -250,6 +321,47 @@ export default function CheckinScreen() {
           <TextField placeholder="Add a note (optional)" value={comment} onChangeText={setComment} multiline style={{ minHeight: 48 }} />
         </Card>
       )}
+
+      {/* Recent activity — past completed sessions */}
+      <View style={{ gap: Spacing.sm }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <History size={13} color={t.textMuted} />
+          <Text style={{ color: t.textMuted, fontFamily: Fonts.bodyBold, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.4 }}>Recent Activity</Text>
+        </View>
+        {recentQ.isLoading ? (
+          <View style={{ gap: Spacing.sm }}>
+            {[62, 62].map((h, i) => <View key={i} style={{ height: h, borderRadius: Radius.lg, backgroundColor: t.surfaceSoft }} />)}
+          </View>
+        ) : (recentQ.data ?? []).length === 0 ? (
+          <Card><EmptyState icon={<History color={t.accent} size={22} />} title="No past sessions yet" desc="Your completed check-ins will show up here." /></Card>
+        ) : (
+          <View style={{ gap: Spacing.sm }}>
+            {(recentQ.data ?? []).map((log: ActiveLog) => (
+              <Card key={log.id} style={{ paddingVertical: 12 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: t.text, fontFamily: Fonts.bodySemiBold, fontSize: 13 }}>{dateFmt(log.check_in)}</Text>
+                    <Text style={{ color: t.textMuted, fontFamily: Fonts.body, fontSize: 11.5, marginTop: 2 }}>{sessionTimeRange(log.check_in, log.check_out)}</Text>
+                    <View style={{ marginTop: 6 }}>
+                      <Chip
+                        label={log.project?.name ?? 'No project'}
+                        color={log.project?.name ? t.accent : t.textMuted}
+                        icon={<Briefcase size={10} color={log.project?.name ? t.accent : t.textMuted} />}
+                      />
+                    </View>
+                    {log.comment ? (
+                      <Text style={{ color: t.textSoft, fontFamily: Fonts.body, fontSize: 11.5, marginTop: 5 }} numberOfLines={1}>
+                        {log.comment}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <Text style={{ color: t.accent, fontFamily: Fonts.bodyExtraBold, fontSize: 15 }}>{(log.hours_worked ?? 0).toFixed(1)}h</Text>
+                </View>
+              </Card>
+            ))}
+          </View>
+        )}
+      </View>
     </Screen>
   );
 }

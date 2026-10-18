@@ -5,6 +5,7 @@ export type ActiveLog = {
   id: string;
   check_in: string;
   check_out: string | null;
+  hours_worked: number | null;
   project_id: string | null;
   comment: string | null;
   project?: { id: string; name: string } | null;
@@ -34,6 +35,60 @@ export async function getActiveLog(employeeId: string): Promise<ActiveLog | null
     .limit(1);
   if (error) throw error;
   return (data?.[0] as ActiveLog) ?? null;
+}
+
+// Past (completed) sessions, most recent first — the active/in-progress
+// session is shown separately at the top of the screen, so this excludes it
+// via the check_out-not-null filter rather than an id exclusion.
+export async function listRecentLogs(employeeId: string, limit = 10): Promise<ActiveLog[]> {
+  const { data, error } = await supabase
+    .from('time_logs')
+    .select('*, project:projects(id,name)')
+    .eq('employee_id', employeeId)
+    .not('check_out', 'is', null)
+    .order('check_in', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []) as unknown as ActiveLog[];
+}
+
+// Monday..Sunday boundaries for "this week" — a plain date-range query
+// against time_logs directly (not scoped to a single calendar month) so a
+// week spanning a month boundary is still counted correctly.
+export function getWeekRange(d = new Date()): { start: string; end: string } {
+  const day = d.getDay(); // 0=Sun..6=Sat
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+  const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate() + diffToMonday);
+  const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
+  const iso = (x: Date) => x.toISOString().split('T')[0];
+  return { start: iso(monday), end: iso(sunday) };
+}
+
+// Mon–Sat is the working week (Sunday off) — matches the Saturday
+// submit-timesheet nudge assuming Saturday is itself a work day.
+export const DAILY_MIN_HOURS = 8;
+
+// Working days from Monday of the week through `today`, inclusive —
+// i.e. how many days' worth of the 8h minimum have come due so far.
+export function countWorkingDaysElapsed(weekStartDate: string, today = new Date()): number {
+  const start = new Date(`${weekStartDate}T00:00:00`);
+  const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  let count = 0;
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    if (d.getDay() !== 0) count++;
+  }
+  return count;
+}
+
+export async function getWeekLogs(employeeId: string, startDate: string, endDate: string): Promise<{ work_date: string; hours_worked: number | null }[]> {
+  const { data, error } = await supabase
+    .from('time_logs')
+    .select('work_date, hours_worked')
+    .eq('employee_id', employeeId)
+    .gte('work_date', startDate)
+    .lte('work_date', endDate);
+  if (error) throw error;
+  return data ?? [];
 }
 
 export async function myActiveProjects(): Promise<{ id: string; name: string }[]> {

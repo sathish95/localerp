@@ -1,22 +1,52 @@
-import { useState, useEffect, useMemo, Fragment } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { supabase, rupee, dateFmt } from '../lib/supabase'
+import * as LucideIconsIndex from 'lucide-react'
+import { supabase, rupee, rupeeFull, dateFmt } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useTabVisibility } from '../context/TabVisibilityContext'
+import { useWorkspace } from '../context/WorkspaceContext'
+import {
+  listIndustryProfiles, listBusinessTypes, listOperatingModels,
+  updateWorkspaceProfile, listWorkspaceOperatingModels, setWorkspaceOperatingModels, isModuleInWorkspace,
+} from '../lib/workspace'
+import { recommendModuleKeys } from '../lib/workspaceRecommendation'
+import { DASHBOARD_WIDGETS } from '../lib/workspaceDashboardWidgets'
+import { listAllWorkTypeConfigs, createWorkTypeConfig, updateWorkTypeConfig } from '../lib/workItems'
+import { listTaskTemplates, createTaskTemplate, updateTaskTemplate, deleteTaskTemplate, CHECKLIST_TYPES } from '../lib/taskTemplates'
+import { TASK_FIELD_CATALOG, listTaskFieldRules, fieldRulesToMap, saveTaskFieldRules } from '../lib/taskFieldRules'
+import { getTaskDetailViewStyle, setTaskDetailViewStyle } from '../lib/taskViewSettings'
+import { listFlows, ensureFlow, saveFlowSteps, distinctStatusesInUse, remapTaskStatuses } from '../lib/departmentStatusFlows'
 import { listRoles, createRole, updateRole, deleteRole, colorForRole } from '../lib/roles'
-import { getModules, setModuleEnabled, getModuleRoleVisibility, setModuleRoleVisibility } from '../lib/modules'
+import { getModules, setModuleEnabled, getModuleRoleVisibility, setModuleRoleVisibility, setModuleRoleVisibilityBulk } from '../lib/modules'
 import { getLLMSettings, saveLLMSettings } from '../lib/llmSettings'
 import { getDocumentSettings, saveDocumentSettings } from '../lib/documentSettings'
 import { listTemplates, createTemplate, updateTemplate, setActive, archiveTemplate, deleteTemplate } from '../lib/documentTemplates'
-import { PROPOSAL_CATEGORIES } from '../lib/proposals'
+import {
+  PROPOSAL_CATEGORIES, listAllProposalCategories, getBudgetCategoryMap,
+  upsertBudgetCategoryMapping, deleteBudgetCategoryMapping, listBudgetCategories, addBudgetCategory,
+} from '../lib/proposals'
 import { MODULES, MODULE_SECTIONS } from '../config/modules'
-import { Alert, Modal, Confirm, Loader, Empty, SearchBox } from '../components/ui'
+import { Alert, Modal, Confirm, Loader, Empty, SearchBox, Toggle } from '../components/ui'
 import {
   Settings, GitBranch, DollarSign, Bell, Tag, FileText, Sparkles, TrendingUp, Megaphone,
   Save, Plus, Trash2, Edit2, Check, X, Users, Eye, EyeOff, Shield, ChevronDown, ChevronRight, ChevronUp, Building2,
-  CreditCard, Clock, CheckCircle2, LayoutTemplate, ArrowUp, ArrowDown, Puzzle, Lock, Unlock, Key,
+  CreditCard, Clock, CheckCircle2, LayoutTemplate, ArrowUp, ArrowDown, Puzzle, Lock, Unlock, Key, Smartphone, Compass, MapPin,
+  Layers, ClipboardList, Sliders, ListChecks, Mail, MailCheck,
 } from 'lucide-react'
 import { listInvites, createInvite, revokeInvite } from '../lib/orgInvites'
+import EmailSettingsTab from '../components/settings/EmailSettingsTab'
+import OutlookSettings from '../components/outlook/OutlookSettings'
+import EmailIntelligenceSettings from '../components/ei/EmailIntelligenceSettings'
+import { sendInviteEmail, isValidEmail } from '../lib/email'
+import { listDepartments, createDepartment, updateDepartment, deleteDepartment } from '../lib/onboarding'
+import { listLocations, createLocation, updateLocation, deleteLocation } from '../lib/locations'
+import { listTeams, createTeam, updateTeam, deleteTeam, addTeamMember, removeTeamMember } from '../lib/teams'
+import { listShiftPatterns, createShiftPattern, listShiftAssignments, assignShift } from '../lib/shifts'
+import {
+  listAllSlides, createSlide, updateSlide, deleteSlide, reorderSlide,
+  listAllTourSteps, createTourStep, updateTourStep, deleteTourStep, reorderTourStep,
+} from '../lib/appWalkthrough'
+import { WEB_TOUR_TARGETS } from '../lib/appTourTargets'
 import { listPlans, myUpgradeRequests, requestUpgrade } from '../lib/billing'
 import { listBundles, myBundleSubscriptions, myBundleRequests, requestBundleChange, orgBundleMonthlyTotal } from '../lib/billingBundles'
 import { listPermissions, listRolePermissions, setRolePermission } from '../lib/permissions'
@@ -35,6 +65,11 @@ import {
   getConfigFlag, setConfigFlag,
 } from '../lib/salesAdmin'
 import { AI_CAPABILITY_REGISTRY, getEnabledCapabilities, setCapabilityEnabled } from '../lib/aiCapabilities'
+import {
+  getMobileCapableKeys, getMobileModuleConfig, setMobileModuleConfig,
+  getAllocationEnforcement, previewAllocationImpact, backfillAllocations, setAllocationEnforcement,
+  effectiveModulesFor, REASON_LABEL as MOBILE_REASON_LABEL,
+} from '../lib/mobileApp'
 
 // ── Roles & Modules (Admin Feature) ──
 // Company-wide module enablement (a real kill switch, applies to every
@@ -44,11 +79,34 @@ import { AI_CAPABILITY_REGISTRY, getEnabledCapabilities, setCapabilityEnabled } 
 function RolesModulesTab() {
   const { profile } = useAuth()
   const { refresh } = useTabVisibility()
+  const navigate = useNavigate()
   const [roles, setRoles] = useState([])
   const [modules, setModulesState] = useState([])
   const [visibility, setVisibility] = useState([])
   const [loading, setLoading] = useState(true)
-  const [openSection, setOpenSection] = useState(MODULE_SECTIONS[0])
+  const [openSections, setOpenSections] = useState(() => new Set([MODULE_SECTIONS[0]]))
+  const [modQuery, setModQuery] = useState('')
+
+  // Cost calculator — reuses STEP124's per-seat bundle prices. A module's
+  // price is its parent bundle's monthly per-seat price split evenly
+  // across every module in that bundle; modules in no bundle are free.
+  const [bundles, setBundles] = useState([])
+  const [activeBundleKeys, setActiveBundleKeys] = useState(new Set())
+  const [seatCount, setSeatCount] = useState(0)
+  const [billingBusy, setBillingBusy] = useState(false)
+  const [billingMsg, setBillingMsg] = useState('')
+
+  const [selectedMods, setSelectedMods] = useState(() => new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
+
+  // "Manage Access" modal — pick every module a single role can see in one
+  // pass (checkboxes, no network call per click) and persist the whole
+  // picklist in one bulk upsert on Save, instead of the per-cell chip
+  // toggle's one-write-per-click.
+  const [accessRole, setAccessRole] = useState(null)
+  const [accessDraft, setAccessDraft] = useState({})
+  const [accessQuery, setAccessQuery] = useState('')
+  const [savingAccess, setSavingAccess] = useState(false)
 
   const [showRoleModal, setShowRoleModal] = useState(false)
   const [editingRole, setEditingRole] = useState(null)
@@ -62,8 +120,18 @@ function RolesModulesTab() {
 
   async function load() {
     setLoading(true)
-    const [r, m, v] = await Promise.all([listRoles(), getModules(profile.organization_id), getModuleRoleVisibility(profile.organization_id)])
+    const [r, m, v, b, subs, seats] = await Promise.all([
+      listRoles(),
+      getModules(profile.organization_id),
+      getModuleRoleVisibility(profile.organization_id),
+      listBundles().catch(() => []),
+      myBundleSubscriptions(profile.organization_id).catch(() => []),
+      supabase.from('profiles').select('id', { count: 'exact', head: true })
+        .eq('organization_id', profile.organization_id).eq('is_active', true),
+    ])
     setRoles(r); setModulesState(m); setVisibility(v)
+    setBundles(b); setActiveBundleKeys(new Set(subs.map(s => s.bundle_key)))
+    setSeatCount(seats.count ?? 0)
     setLoading(false)
   }
 
@@ -77,6 +145,80 @@ function RolesModulesTab() {
     visibility.forEach(v => { (m[v.module_key] ||= {})[v.role] = v.visible })
     return m
   }, [visibility])
+
+  // Sections + per-section module list, filtered by the search box. A
+  // module missing from the DB table is treated as enabled (matches
+  // isTabVisible()'s "default visible unless a row says otherwise").
+  const sectionsData = useMemo(() => {
+    const q = modQuery.trim().toLowerCase()
+    return MODULE_SECTIONS.map(section => {
+      const mods = MODULES.filter(m => m.section === section)
+      const shown = q
+        ? mods.filter(m => m.label.toLowerCase().includes(q) || m.key.toLowerCase().includes(q))
+        : mods
+      const onCount = mods.filter(m => (moduleByKey[m.key]?.enabled ?? true)).length
+      return { section, mods, shown, onCount }
+    }).filter(s => s.shown.length > 0)
+  }, [moduleByKey, modQuery])
+  const totalMods = MODULES.length
+  const totalOn = useMemo(
+    () => MODULES.filter(m => (moduleByKey[m.key]?.enabled ?? true)).length,
+    [moduleByKey],
+  )
+
+  // ── Cost calculator ──
+  const isEnterprise = profile?.org?.plan_key === 'enterprise'
+  // {moduleKey: {bundleKey, bundleName, unitMonthly}} — bundle price / module count.
+  const priceByModule = useMemo(() => {
+    const map = {}
+    bundles.forEach(b => {
+      const keys = b.module_keys || []
+      if (!keys.length) return
+      const unit = Number(b.price_per_seat_monthly || 0) / keys.length
+      keys.forEach(k => { map[k] = { bundleKey: b.key, bundleName: b.name, unitMonthly: unit } })
+    })
+    return map
+  }, [bundles])
+  const enabledSet = useMemo(
+    () => new Set(MODULES.filter(m => (moduleByKey[m.key]?.enabled ?? true)).map(m => m.key)),
+    [moduleByKey],
+  )
+  const estPerSeatMonthly = useMemo(
+    () => [...enabledSet].reduce((s, k) => s + (priceByModule[k]?.unitMonthly || 0), 0),
+    [enabledSet, priceByModule],
+  )
+  const estTotalMonthly = estPerSeatMonthly * (seatCount || 0)
+  const sectionSeatCost = section =>
+    MODULES.filter(m => m.section === section && enabledSet.has(m.key))
+      .reduce((s, m) => s + (priceByModule[m.key]?.unitMonthly || 0), 0)
+
+  // Bundles the current enable-selection implies but the org hasn't
+  // subscribed to (needs activation), and subscribed bundles that no
+  // longer have a single enabled module (candidates for deactivation).
+  const neededBundles = useMemo(
+    () => bundles.filter(b => !isEnterprise && !activeBundleKeys.has(b.key) && (b.module_keys || []).some(k => enabledSet.has(k))),
+    [bundles, activeBundleKeys, enabledSet, isEnterprise],
+  )
+  const staleBundles = useMemo(
+    () => bundles.filter(b => activeBundleKeys.has(b.key) && !(b.module_keys || []).some(k => enabledSet.has(k))),
+    [bundles, activeBundleKeys, enabledSet],
+  )
+
+  async function requestBillingUpdate() {
+    setBillingBusy(true); setBillingMsg('')
+    const out = []
+    for (const b of neededBundles) {
+      try { await requestBundleChange(b.key, 'activate', 'Requested from Module Enablement'); out.push(`✓ ${b.name} — activation requested`) }
+      catch (e) { out.push(`⚠ ${b.name} — ${e.message}`) }
+    }
+    for (const b of staleBundles) {
+      try { await requestBundleChange(b.key, 'deactivate', 'Requested from Module Enablement'); out.push(`✓ ${b.name} — deactivation requested`) }
+      catch (e) { out.push(`⚠ ${b.name} — ${e.message}`) }
+    }
+    setBillingMsg(out.join('\n'))
+    setBillingBusy(false)
+    load()
+  }
 
   async function toggleEnabled(mod) {
     try {
@@ -96,6 +238,80 @@ function RolesModulesTab() {
       return [...prev, { module_key: moduleKey, role: roleKey, visible: next }]
     })
     refresh()
+  }
+
+  function toggleSection(section) {
+    setOpenSections(prev => {
+      const next = new Set(prev)
+      next.has(section) ? next.delete(section) : next.add(section)
+      return next
+    })
+  }
+
+  // Bulk enable/disable every module in a section (skips the protected
+  // 'settings' module). Writes sequentially — a section is a dozen rows
+  // at most — then patches local state in one pass and refreshes the nav.
+  async function setSectionEnabled(section, enabled) {
+    const targets = MODULES.filter(m => m.section === section && m.key !== 'settings')
+    try {
+      for (const t of targets) {
+        if ((moduleByKey[t.key]?.enabled ?? true) === enabled) continue
+        await setModuleEnabled(t.key, enabled, profile.id, profile.organization_id)
+      }
+      const keys = new Set(targets.map(t => t.key))
+      setModulesState(prev => prev.map(m => (keys.has(m.key) ? { ...m, enabled } : m)))
+      refresh()
+    } catch (e) { alert(e.message) }
+  }
+
+  function toggleModSelected(key) {
+    setSelectedMods(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
+  function clearModSelection() { setSelectedMods(new Set()) }
+
+  // Free-form multi-select bulk enable/disable — unlike setSectionEnabled
+  // above (a whole section at once), this applies to whatever mix of
+  // individual modules the admin has checked, across any number of
+  // sections. Same sequential-write + single local-state-patch pattern.
+  async function applyBulkEnabled(enabled) {
+    const targets = [...selectedMods].filter(k => k !== 'settings')
+    setBulkBusy(true)
+    try {
+      for (const key of targets) {
+        if ((moduleByKey[key]?.enabled ?? true) === enabled) continue
+        await setModuleEnabled(key, enabled, profile.id, profile.organization_id)
+      }
+      setModulesState(prev => prev.map(m => (selectedMods.has(m.key) ? { ...m, enabled } : m)))
+      clearModSelection()
+      refresh()
+    } catch (e) { alert(e.message) }
+    finally { setBulkBusy(false) }
+  }
+
+  function openAccessModal(role) {
+    const draft = {}
+    MODULES.forEach(m => { draft[m.key] = visMap[m.key]?.[role.role_key] !== false })
+    setAccessDraft(draft); setAccessQuery(''); setAccessRole(role)
+  }
+
+  async function saveAccess() {
+    if (!accessRole) return
+    setSavingAccess(true)
+    try {
+      const rows = MODULES.map(m => ({ module_key: m.key, visible: accessDraft[m.key] !== false }))
+      await setModuleRoleVisibilityBulk(profile.organization_id, accessRole.role_key, rows)
+      setVisibility(prev => {
+        const others = prev.filter(v => v.role !== accessRole.role_key)
+        return [...others, ...rows.map(r => ({ organization_id: profile.organization_id, module_key: r.module_key, role: accessRole.role_key, visible: r.visible }))]
+      })
+      setAccessRole(null)
+      refresh()
+    } catch (e) { alert(e.message) }
+    finally { setSavingAccess(false) }
   }
 
   function openNewRole() { setEditingRole(null); setRoleForm({ role_key: '', label: '', color: '' }); setRoleErr(''); setShowRoleModal(true) }
@@ -137,6 +353,9 @@ function RolesModulesTab() {
               <div key={r.role_key} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px 6px 12px', borderRadius: 999, background: `${color}12`, border: `1.5px solid ${color}30` }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color }}>{r.label}</span>
                 {r.is_system && <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase' }}>built-in</span>}
+                {!['admin', 'ceo'].includes(r.role_key) && (
+                  <button className="btn btn-ghost btn-sm btn-icon" style={{ width: 22, height: 22, minHeight: 0 }} title="Manage which modules this role can access" onClick={() => openAccessModal(r)}><Sliders size={11} /></button>
+                )}
                 <button className="btn btn-ghost btn-sm btn-icon" style={{ width: 22, height: 22, minHeight: 0 }} onClick={() => openEditRole(r)}><Edit2 size={11} /></button>
                 {!r.is_system && <button className="btn btn-ghost btn-sm btn-icon" style={{ width: 22, height: 22, minHeight: 0, color: '#ef4444' }} onClick={() => { setDeleteErr(''); setDeleteConfirm(r) }}><Trash2 size={11} /></button>}
               </div>
@@ -147,55 +366,215 @@ function RolesModulesTab() {
 
       {/* ── Module Enablement ── */}
       <div>
-        <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Module Enablement</h3>
-        <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 16 }}>
-          "Enabled" is a company-wide kill switch — off means off for everyone, including Admin/CEO. Per-role checkboxes control nav/page visibility within an enabled module; Admin/CEO always see enabled modules regardless of these checkboxes.
-        </p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {MODULE_SECTIONS.map(section => {
-            const sectionModules = MODULES.filter(m => m.section === section)
-            const isOpen = openSection === section
-            return (
-              <div key={section} style={{ border: '1.5px solid var(--border)', borderRadius: 14, overflow: 'hidden' }}>
-                <button onClick={() => setOpenSection(isOpen ? null : section)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px', background: 'var(--surface)', border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 13, textAlign: 'left' }}>
-                  {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />} {section} <span style={{ color: 'var(--ink-muted)', fontWeight: 500 }}>({sectionModules.length})</span>
-                </button>
-                {isOpen && (
-                  <div style={{ overflowX: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 480 + gridRoles.length * 90 }}>
-                      <thead><tr style={{ background: 'var(--surface)' }}>
-                        <th style={{ padding: '8px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase' }}>Module</th>
-                        <th style={{ padding: '8px 12px', textAlign: 'center', fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase' }}>Enabled</th>
-                        {gridRoles.map(r => <th key={r.role_key} style={{ padding: '8px 12px', textAlign: 'center', fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)' }}>{r.label}</th>)}
-                      </tr></thead>
-                      <tbody>
-                        {sectionModules.map(sm => {
-                          const mod = moduleByKey[sm.key] || { key: sm.key, label: sm.label, enabled: true }
-                          return (
-                            <tr key={sm.key} style={{ borderTop: '1px solid var(--border)', opacity: mod.enabled ? 1 : 0.5 }}>
-                              <td style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600 }}>{sm.label}</td>
-                              <td style={{ padding: '8px 12px', textAlign: 'center' }}>
-                                <input type="checkbox" checked={mod.enabled} onChange={() => toggleEnabled(mod)} style={{ width: 16, height: 16, accentColor: '#10b981', cursor: 'pointer' }} />
-                              </td>
-                              {gridRoles.map(r => (
-                                <td key={r.role_key} style={{ padding: '8px 12px', textAlign: 'center' }}>
-                                  <input type="checkbox" disabled={!mod.enabled} checked={visMap[sm.key]?.[r.role_key] !== false}
-                                    onChange={() => toggleVisible(sm.key, r.role_key)}
-                                    style={{ width: 16, height: 16, accentColor: 'var(--c1)', cursor: mod.enabled ? 'pointer' : 'not-allowed' }} />
-                                </td>
-                              ))}
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            )
-          })}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+          <div>
+            <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Module Enablement</h3>
+            <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', maxWidth: 640 }}>
+              "Enabled" is a company-wide kill switch — off means off for everyone, including Admin/CEO. The role chips control nav/page visibility within an enabled module; Admin/CEO always see enabled modules regardless.
+            </p>
+          </div>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-muted)', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 999, padding: '5px 12px', whiteSpace: 'nowrap' }}>
+            {totalOn} / {totalMods} enabled
+          </span>
         </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+          <div style={{ maxWidth: 320, flex: '1 1 260px' }}>
+            <SearchBox value={modQuery} onChange={setModQuery} placeholder="Search modules..." />
+          </div>
+          {selectedMods.size > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '6px 10px', borderRadius: 10, background: 'var(--surface-2, rgba(99,102,241,.06))', border: '1px solid var(--border)' }}>
+              <span style={{ fontSize: 12.5, fontWeight: 700 }}>{selectedMods.size} selected</span>
+              <button className="btn btn-primary btn-sm" disabled={bulkBusy} onClick={() => applyBulkEnabled(true)}>Enable</button>
+              <button className="btn btn-outline btn-sm" disabled={bulkBusy} onClick={() => applyBulkEnabled(false)}>Disable</button>
+              <button className="btn btn-ghost btn-sm" disabled={bulkBusy} onClick={clearModSelection}>Clear</button>
+            </div>
+          )}
+        </div>
+
+        {/* Cost estimate — per-seat bundle price split across each bundle's modules */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '4px 14px', marginBottom: 12, padding: '10px 14px', borderRadius: 10, background: 'var(--surface-2, rgba(99,102,241,.06))', border: '1px solid var(--border)' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700, fontSize: 13 }}>
+            <DollarSign size={15} style={{ color: 'var(--c1)' }} /> Estimated cost
+          </span>
+          {isEnterprise ? (
+            <span style={{ fontSize: 12.5, color: 'var(--ink-muted)' }}>Enterprise plan — every module included.</span>
+          ) : (
+            <>
+              <span style={{ fontWeight: 800, fontSize: 14 }}>
+                {rupeeFull(estPerSeatMonthly)}<span style={{ fontWeight: 600, fontSize: 11.5, color: 'var(--ink-muted)' }}> /seat/mo</span>
+              </span>
+              <span style={{ color: 'var(--ink-muted)' }}>·</span>
+              <span style={{ fontWeight: 800, fontSize: 14 }}>
+                {rupee(estTotalMonthly)}<span style={{ fontWeight: 600, fontSize: 11.5, color: 'var(--ink-muted)' }}> /mo · {seatCount} active seat{seatCount === 1 ? '' : 's'}</span>
+              </span>
+              <span style={{ flexBasis: '100%', fontSize: 11, color: 'var(--ink-muted)' }}>Each add-on bundle's per-seat price is split evenly across its modules; modules in no bundle are free. Billing activates whole bundles, so the actual invoice charges a bundle's full price once any of its modules is on.</span>
+            </>
+          )}
+        </div>
+
+        {!isEnterprise && (neededBundles.length > 0 || staleBundles.length > 0) && (
+          <div style={{ marginBottom: 14 }}>
+            <Alert type="warning" message={
+              'This selection ' +
+              (neededBundles.length ? `needs ${neededBundles.map(b => b.name).join(', ')} activated` : '') +
+              (neededBundles.length && staleBundles.length ? '; ' : '') +
+              (staleBundles.length ? `${staleBundles.map(b => b.name).join(', ')} has no enabled module left` : '') +
+              '. Billing changes are actioned by the platform team.'
+            } />
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+              <button className="btn btn-primary btn-sm" disabled={billingBusy} onClick={requestBillingUpdate}>
+                {billingBusy ? 'Requesting…' : 'Request billing update'}
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => navigate('/settings?tab=billing')}>Manage in Billing</button>
+            </div>
+            {billingMsg && <pre style={{ marginTop: 8, fontSize: 11.5, color: 'var(--ink-muted)', whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>{billingMsg}</pre>}
+          </div>
+        )}
+
+        {sectionsData.length === 0 ? (
+          <Empty icon={<Puzzle size={40} />} title="No modules match" desc={`Nothing matches "${modQuery.trim()}".`} />
+        ) : (
+          <div>
+            {sectionsData.map(({ section, mods, shown, onCount }) => {
+              const isOpen = modQuery.trim() ? true : openSections.has(section)
+              return (
+                <div key={section} className="mod-section">
+                  <div className="mod-section-head">
+                    <button type="button" onClick={() => toggleSection(section)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0, background: 'none', border: 'none', font: 'inherit', textAlign: 'left', cursor: 'pointer' }}>
+                      {isOpen ? <ChevronDown size={14} className="mod-caret" /> : <ChevronRight size={14} className="mod-caret" />}
+                      <span className="mod-section-name">{section}</span>
+                      <span className="mod-section-count">{onCount}/{mods.length} on</span>
+                      {!isEnterprise && sectionSeatCost(section) > 0 && (
+                        <span className="mod-section-count" style={{ color: 'var(--c1)', borderColor: 'var(--c1)' }}>
+                          {rupeeFull(sectionSeatCost(section))}/seat/mo
+                        </span>
+                      )}
+                    </button>
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0, alignItems: 'center' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: 'var(--ink-muted)', fontWeight: 600, cursor: 'pointer', marginRight: 4 }}>
+                        <input type="checkbox"
+                          checked={shown.filter(m => m.key !== 'settings').every(m => selectedMods.has(m.key)) && shown.some(m => m.key !== 'settings')}
+                          onChange={e => {
+                            const keys = shown.filter(m => m.key !== 'settings').map(m => m.key)
+                            setSelectedMods(prev => {
+                              const next = new Set(prev)
+                              keys.forEach(k => (e.target.checked ? next.add(k) : next.delete(k)))
+                              return next
+                            })
+                          }}
+                          style={{ accentColor: 'var(--c1)', width: 14, height: 14, cursor: 'pointer' }}/>
+                        Select
+                      </label>
+                      <button className="btn btn-ghost btn-sm" disabled={onCount === mods.length} onClick={() => setSectionEnabled(section, true)}>Enable all</button>
+                      <button className="btn btn-ghost btn-sm" disabled={onCount === 0} onClick={() => setSectionEnabled(section, false)}>Disable all</button>
+                    </div>
+                  </div>
+                  {isOpen && shown.map(sm => {
+                    const mod = moduleByKey[sm.key] || { key: sm.key, label: sm.label, enabled: true }
+                    const isProtected = sm.key === 'settings'
+                    return (
+                      <div key={sm.key} className="mod-row" style={{ opacity: mod.enabled ? 1 : 0.6 }}>
+                        <div className="mod-row-main">
+                          {!isProtected && (
+                            <input type="checkbox" checked={selectedMods.has(sm.key)} onChange={() => toggleModSelected(sm.key)}
+                              style={{ accentColor: 'var(--c1)', width: 15, height: 15, cursor: 'pointer', flexShrink: 0 }}/>
+                          )}
+                          <Toggle checked={mod.enabled} disabled={isProtected}
+                            onChange={() => toggleEnabled(mod)} label={mod.enabled ? 'Enabled' : 'Disabled'} />
+                          <div style={{ minWidth: 0 }}>
+                            <div className="mod-row-label">
+                              {sm.label}
+                              {isProtected && <Lock size={11} style={{ marginLeft: 6, opacity: 0.5, verticalAlign: '-1px' }} />}
+                            </div>
+                            <div className="mod-row-key">
+                              {sm.key}
+                              {!isEnterprise && (
+                                <span style={{ marginLeft: 8, color: priceByModule[sm.key] ? 'var(--c1)' : 'var(--ink-muted)', fontFamily: 'inherit', fontWeight: 700 }}>
+                                  {priceByModule[sm.key]
+                                    ? `${rupeeFull(priceByModule[sm.key].unitMonthly)}/seat/mo`
+                                    : 'Free'}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="mod-roles">
+                          {!mod.enabled ? (
+                            <span style={{ fontSize: 11.5, color: 'var(--ink-muted)', fontWeight: 600 }}>Disabled company-wide</span>
+                          ) : gridRoles.length === 0 ? (
+                            <span style={{ fontSize: 11.5, color: 'var(--ink-muted)' }}>Visible to everyone</span>
+                          ) : gridRoles.map(r => {
+                            const vis = visMap[sm.key]?.[r.role_key] !== false
+                            return (
+                              <button key={r.role_key} type="button"
+                                className={`chip-toggle ${vis ? 'on' : ''}`}
+                                title={vis ? `${r.label} can see this` : `Hidden from ${r.label}`}
+                                onClick={() => toggleVisible(sm.key, r.role_key)}>
+                                {vis ? <Eye size={11} /> : <EyeOff size={11} />} {r.label}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
+
+      {/* ── Manage Access modal — pick every module a role can see, save once ── */}
+      <Modal open={!!accessRole} onClose={() => setAccessRole(null)} title={accessRole ? `Manage Access — ${accessRole.label}` : ''} size="lg"
+        footer={<>
+          <button className="btn btn-ghost" onClick={() => setAccessRole(null)}>Cancel</button>
+          <button className="btn btn-primary" onClick={saveAccess} disabled={savingAccess}>
+            <Save size={13} /> {savingAccess ? 'Saving...' : 'Save'}
+          </button>
+        </>}>
+        {accessRole && (() => {
+          const q = accessQuery.trim().toLowerCase()
+          const visibleMods = q ? MODULES.filter(m => m.label.toLowerCase().includes(q) || m.key.toLowerCase().includes(q)) : MODULES
+          const onCount = Object.values(accessDraft).filter(Boolean).length
+          return (
+            <div>
+              <p style={{ color: 'var(--ink-muted)', fontSize: '0.85rem', marginBottom: 12 }}>
+                Check every module {accessRole.label} should be able to see in the sidebar. This only affects visibility for this role — it doesn't turn a module off company-wide.
+              </p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+                <div style={{ maxWidth: 280, flex: '1 1 220px' }}>
+                  <SearchBox value={accessQuery} onChange={setAccessQuery} placeholder="Search modules..." />
+                </div>
+                <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-muted)' }}>{onCount} / {MODULES.length} selected</span>
+                <button className="btn btn-ghost btn-sm" onClick={() => setAccessDraft(Object.fromEntries(MODULES.map(m => [m.key, true])))}>Select all</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => setAccessDraft(Object.fromEntries(MODULES.map(m => [m.key, false])))}>Select none</button>
+              </div>
+              <div style={{ maxHeight: 420, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 10 }}>
+                {MODULE_SECTIONS.map(section => {
+                  const mods = visibleMods.filter(m => m.section === section)
+                  if (mods.length === 0) return null
+                  return (
+                    <div key={section}>
+                      <div style={{ padding: '7px 12px', background: 'var(--surface-2, rgba(99,102,241,.06))', fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '.04em', borderBottom: '1px solid var(--border)' }}>{section}</div>
+                      {mods.map(m => (
+                        <label key={m.key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderBottom: '1px solid var(--border)', cursor: 'pointer', fontSize: 13 }}>
+                          <input type="checkbox" checked={accessDraft[m.key] !== false}
+                            onChange={e => setAccessDraft(prev => ({ ...prev, [m.key]: e.target.checked }))}
+                            style={{ accentColor: 'var(--c1)', width: 15, height: 15, cursor: 'pointer', flexShrink: 0 }}/>
+                          <span style={{ minWidth: 0 }}>{m.label} <span style={{ fontSize: 10.5, color: 'var(--ink-muted)', fontFamily: 'var(--font-mono)' }}>{m.key}</span></span>
+                        </label>
+                      ))}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })()}
+      </Modal>
 
       {/* ── Role create/edit modal ── */}
       <Modal open={showRoleModal} onClose={() => setShowRoleModal(false)} title={editingRole ? 'Edit Role' : 'New Role'} size="sm"
@@ -501,6 +880,1410 @@ function ApprovalChainTab() {
   )
 }
 
+// ── Departments ──
+function DepartmentsTab() {
+  const { profile } = useAuth()
+  const [depts, setDepts] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [form, setForm] = useState({ name: '', code: '' })
+  const [editing, setEditing] = useState(null)
+  const [editVal, setEditVal] = useState({ name: '', code: '' })
+  const [deleteConfirm, setDeleteConfirm] = useState(null)
+  const [err, setErr] = useState('')
+
+  useEffect(() => { load() }, [])
+  async function load() {
+    setLoading(true)
+    try { setDepts(await listDepartments(profile.organization_id)) } catch (e) { setErr(e.message) }
+    setLoading(false)
+  }
+
+  async function handleAdd() {
+    if (!form.name.trim()) return
+    setErr('')
+    try { await createDepartment(profile.organization_id, form.name.trim(), form.code.trim() || null); setForm({ name: '', code: '' }); await load() }
+    catch (e) { setErr(e.message) }
+  }
+  function startEdit(d) { setEditing(d.id); setEditVal({ name: d.name, code: d.code || '' }) }
+  async function handleSaveEdit(id) {
+    if (!editVal.name.trim()) return
+    setErr('')
+    try { await updateDepartment(id, editVal.name.trim(), editVal.code.trim() || null); setEditing(null); await load() }
+    catch (e) { setErr(e.message) }
+  }
+  async function confirmDelete() {
+    try { await deleteDepartment(deleteConfirm.id); setDeleteConfirm(null); await load() }
+    catch (e) { setErr(e.message); setDeleteConfirm(null) }
+  }
+
+  if (loading) return <Loader />
+
+  return (
+    <div>
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Departments</h3>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 20 }}>Add, rename or remove departments in your organization.</p>
+      {err && <Alert type="danger" message={err} />}
+      {depts.length === 0 ? (
+        <Empty message="No departments yet." />
+      ) : (
+        <table className="data-table" style={{ marginBottom: 20 }}>
+          <thead><tr><th>Name</th><th>Code</th><th></th></tr></thead>
+          <tbody>
+            {depts.map(d => (
+              <tr key={d.id}>
+                {editing === d.id ? (
+                  <>
+                    <td><input className="form-input" style={{ fontSize: 13 }} value={editVal.name} onChange={e => setEditVal(v => ({ ...v, name: e.target.value }))} autoFocus /></td>
+                    <td><input className="form-input" style={{ fontSize: 13, width: 100 }} value={editVal.code} onChange={e => setEditVal(v => ({ ...v, code: e.target.value }))} /></td>
+                    <td style={{ display: 'flex', gap: 4 }}>
+                      <button className="btn btn-ghost btn-sm btn-icon" onClick={() => handleSaveEdit(d.id)}><Check size={13} /></button>
+                      <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setEditing(null)}><X size={13} /></button>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td style={{ fontWeight: 600 }}>{d.name}</td>
+                    <td>{d.code || '—'}</td>
+                    <td style={{ display: 'flex', gap: 4 }}>
+                      <button className="btn btn-ghost btn-sm btn-icon" onClick={() => startEdit(d)}><Edit2 size={12} /></button>
+                      <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }} onClick={() => setDeleteConfirm(d)}><Trash2 size={12} /></button>
+                    </td>
+                  </>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input className="form-input" placeholder="Department name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} onKeyDown={e => e.key === 'Enter' && handleAdd()} style={{ flex: 1, maxWidth: 260 }} />
+        <input className="form-input" style={{ maxWidth: 140 }} placeholder="Code (optional)" value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value }))} onKeyDown={e => e.key === 'Enter' && handleAdd()} />
+        <button className="btn btn-primary" onClick={handleAdd}><Plus size={15} /> Add Department</button>
+      </div>
+
+      <Confirm open={!!deleteConfirm} message={`Delete the "${deleteConfirm?.name}" department? This cannot be undone.`} danger
+        onConfirm={confirmDelete} onCancel={() => setDeleteConfirm(null)} />
+    </div>
+  )
+}
+
+// ── Locations (Industry-Adaptive Platform Phase 6) ──
+function LocationsTab() {
+  const { profile } = useAuth()
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [form, setForm] = useState({ name: '', code: '', location_type: 'other', address: '' })
+  const [editing, setEditing] = useState(null)
+  const [editVal, setEditVal] = useState({})
+  const [deleteConfirm, setDeleteConfirm] = useState(null)
+  const [err, setErr] = useState('')
+
+  useEffect(() => { load() }, [])
+  async function load() {
+    setLoading(true)
+    try { setRows(await listLocations(profile.organization_id)) } catch (e) { setErr(e.message) }
+    setLoading(false)
+  }
+
+  async function handleAdd() {
+    if (!form.name.trim()) return
+    setErr('')
+    try { await createLocation(profile.organization_id, form); setForm({ name: '', code: '', location_type: 'other', address: '' }); await load() }
+    catch (e) { setErr(e.message) }
+  }
+  function startEdit(r) { setEditing(r.id); setEditVal({ name: r.name, code: r.code || '', location_type: r.location_type, address: r.address || '' }) }
+  async function handleSaveEdit(id) {
+    if (!editVal.name?.trim()) return
+    setErr('')
+    try { await updateLocation(id, editVal); setEditing(null); await load() }
+    catch (e) { setErr(e.message) }
+  }
+  async function confirmDelete() {
+    try { await deleteLocation(deleteConfirm.id); setDeleteConfirm(null); await load() }
+    catch (e) { setErr(e.message); setDeleteConfirm(null) }
+  }
+
+  if (loading) return <Loader />
+
+  return (
+    <div>
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Locations</h3>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 20 }}>Sites, plants, stores, warehouses or any place work happens — used by Work Items and (later) task assignment.</p>
+      {err && <Alert type="danger" message={err} />}
+      {rows.length === 0 ? (
+        <Empty message="No locations yet." />
+      ) : (
+        <table className="data-table" style={{ marginBottom: 20 }}>
+          <thead><tr><th>Name</th><th>Code</th><th>Type</th><th>Address</th><th></th></tr></thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.id}>
+                {editing === r.id ? (
+                  <>
+                    <td><input className="form-input" style={{ fontSize: 13 }} value={editVal.name} onChange={e => setEditVal(v => ({ ...v, name: e.target.value }))} autoFocus /></td>
+                    <td><input className="form-input" style={{ fontSize: 13, width: 90 }} value={editVal.code} onChange={e => setEditVal(v => ({ ...v, code: e.target.value }))} /></td>
+                    <td>
+                      <select className="form-select" style={{ fontSize: 13 }} value={editVal.location_type} onChange={e => setEditVal(v => ({ ...v, location_type: e.target.value }))}>
+                        {LOCATION_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </td>
+                    <td><input className="form-input" style={{ fontSize: 13 }} value={editVal.address} onChange={e => setEditVal(v => ({ ...v, address: e.target.value }))} /></td>
+                    <td style={{ display: 'flex', gap: 4 }}>
+                      <button className="btn btn-ghost btn-sm btn-icon" onClick={() => handleSaveEdit(r.id)}><Check size={13} /></button>
+                      <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setEditing(null)}><X size={13} /></button>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td style={{ fontWeight: 600 }}>{r.name}</td>
+                    <td>{r.code || '—'}</td>
+                    <td style={{ textTransform: 'capitalize' }}>{r.location_type}</td>
+                    <td style={{ color: 'var(--ink-muted)' }}>{r.address || '—'}</td>
+                    <td style={{ display: 'flex', gap: 4 }}>
+                      <button className="btn btn-ghost btn-sm btn-icon" onClick={() => startEdit(r)}><Edit2 size={12} /></button>
+                      <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }} onClick={() => setDeleteConfirm(r)}><Trash2 size={12} /></button>
+                    </td>
+                  </>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <input className="form-input" placeholder="Location name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} style={{ flex: 1, minWidth: 180, maxWidth: 260 }} />
+        <input className="form-input" style={{ maxWidth: 110 }} placeholder="Code (optional)" value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value }))} />
+        <select className="form-select" style={{ maxWidth: 160 }} value={form.location_type} onChange={e => setForm(f => ({ ...f, location_type: e.target.value }))}>
+          {LOCATION_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <input className="form-input" placeholder="Address (optional)" value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} style={{ flex: 1, minWidth: 180 }} />
+        <button className="btn btn-primary" onClick={handleAdd}><Plus size={15} /> Add Location</button>
+      </div>
+
+      <Confirm open={!!deleteConfirm} message={`Delete the "${deleteConfirm?.name}" location? This cannot be undone.`} danger
+        onConfirm={confirmDelete} onCancel={() => setDeleteConfirm(null)} />
+    </div>
+  )
+}
+const LOCATION_TYPES = ['office','branch','site','plant','store','warehouse','hospital','farm','customer_location','other']
+
+// ── Teams (Industry-Adaptive Platform Phase 6) ──
+function TeamsTab() {
+  const { profile } = useAuth()
+  const [rows, setRows] = useState([])
+  const [people, setPeople] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [form, setForm] = useState({ name: '', lead_id: '' })
+  const [editing, setEditing] = useState(null)
+  const [editVal, setEditVal] = useState({})
+  const [deleteConfirm, setDeleteConfirm] = useState(null)
+  const [expanded, setExpanded] = useState(null)
+  const [addMemberId, setAddMemberId] = useState('')
+  const [err, setErr] = useState('')
+
+  useEffect(() => { load() }, [])
+  async function load() {
+    setLoading(true)
+    try {
+      const [t, p] = await Promise.all([
+        listTeams(profile.organization_id),
+        supabase.from('profiles').select('id, full_name').eq('organization_id', profile.organization_id).order('full_name'),
+      ])
+      setRows(t); setPeople(p.data || [])
+    } catch (e) { setErr(e.message) }
+    setLoading(false)
+  }
+
+  async function handleAdd() {
+    if (!form.name.trim()) return
+    setErr('')
+    try { await createTeam(profile.organization_id, form); setForm({ name: '', lead_id: '' }); await load() }
+    catch (e) { setErr(e.message) }
+  }
+  function startEdit(r) { setEditing(r.id); setEditVal({ name: r.name, lead_id: r.lead_id || '' }) }
+  async function handleSaveEdit(id) {
+    if (!editVal.name?.trim()) return
+    setErr('')
+    try { await updateTeam(id, editVal); setEditing(null); await load() }
+    catch (e) { setErr(e.message) }
+  }
+  async function confirmDelete() {
+    try { await deleteTeam(deleteConfirm.id); setDeleteConfirm(null); await load() }
+    catch (e) { setErr(e.message); setDeleteConfirm(null) }
+  }
+  async function handleAddMember(teamId) {
+    if (!addMemberId) return
+    try { await addTeamMember(teamId, addMemberId); setAddMemberId(''); await load() }
+    catch (e) { setErr(e.message) }
+  }
+
+  if (loading) return <Loader />
+
+  return (
+    <div>
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Teams</h3>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 20 }}>Crews, squads or working groups — independent of Departments, though a team can optionally sit under one later.</p>
+      {err && <Alert type="danger" message={err} />}
+      {rows.length === 0 ? <Empty message="No teams yet." /> : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
+          {rows.map(r => (
+            <div key={r.id} className="card" style={{ padding: 14 }}>
+              {editing === r.id ? (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input className="form-input" style={{ fontSize: 13, flex: 1 }} value={editVal.name} onChange={e => setEditVal(v => ({ ...v, name: e.target.value }))} autoFocus />
+                  <select className="form-select" style={{ fontSize: 13, maxWidth: 180 }} value={editVal.lead_id} onChange={e => setEditVal(v => ({ ...v, lead_id: e.target.value }))}>
+                    <option value="">No lead</option>
+                    {people.map(p => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+                  </select>
+                  <button className="btn btn-ghost btn-sm btn-icon" onClick={() => handleSaveEdit(r.id)}><Check size={13} /></button>
+                  <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setEditing(null)}><X size={13} /></button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 700 }}>{r.name}</div>
+                    <div style={{ fontSize: 12, color: 'var(--ink-muted)' }}>
+                      {r.lead?.full_name ? `Lead: ${r.lead.full_name} · ` : ''}{r.members?.length || 0} member{r.members?.length === 1 ? '' : 's'}
+                    </div>
+                  </div>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setExpanded(expanded === r.id ? null : r.id)}>{expanded === r.id ? 'Hide' : 'Manage'}</button>
+                  <button className="btn btn-ghost btn-sm btn-icon" onClick={() => startEdit(r)}><Edit2 size={12} /></button>
+                  <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }} onClick={() => setDeleteConfirm(r)}><Trash2 size={12} /></button>
+                </div>
+              )}
+              {expanded === r.id && (
+                <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                  {(r.members || []).map(m => (
+                    <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 13 }}>
+                      <span style={{ flex: 1 }}>{m.person?.full_name}</span>
+                      <span style={{ color: 'var(--ink-muted)', fontSize: 11 }}>{m.role}</span>
+                      <button className="btn btn-ghost btn-sm btn-icon" onClick={() => removeTeamMember(m.id).then(load)}><X size={12} /></button>
+                    </div>
+                  ))}
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <select className="form-select" style={{ fontSize: 13, flex: 1 }} value={addMemberId} onChange={e => setAddMemberId(e.target.value)}>
+                      <option value="">Add member…</option>
+                      {people.filter(p => !(r.members || []).some(m => m.person_id === p.id)).map(p => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+                    </select>
+                    <button className="btn btn-ghost btn-sm" onClick={() => handleAddMember(r.id)}>Add</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input className="form-input" placeholder="Team name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} style={{ flex: 1, maxWidth: 260 }} />
+        <select className="form-select" style={{ maxWidth: 180 }} value={form.lead_id} onChange={e => setForm(f => ({ ...f, lead_id: e.target.value }))}>
+          <option value="">No lead</option>
+          {people.map(p => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+        </select>
+        <button className="btn btn-primary" onClick={handleAdd}><Plus size={15} /> Add Team</button>
+      </div>
+
+      <Confirm open={!!deleteConfirm} message={`Delete the "${deleteConfirm?.name}" team? This cannot be undone.`} danger
+        onConfirm={confirmDelete} onCancel={() => setDeleteConfirm(null)} />
+    </div>
+  )
+}
+
+// ── Shifts (Industry-Adaptive Platform Phase 6) ──
+function ShiftsTab() {
+  const { profile } = useAuth()
+  const [patterns, setPatterns] = useState([])
+  const [assignments, setAssignments] = useState([])
+  const [people, setPeople] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [form, setForm] = useState({ name: '', pattern_type: 'fixed', start_time: '09:00', end_time: '18:00' })
+  const [assignForm, setAssignForm] = useState({ person_id: '', shift_pattern_id: '', effective_from: new Date().toISOString().slice(0, 10) })
+  const [err, setErr] = useState('')
+
+  useEffect(() => { load() }, [])
+  async function load() {
+    setLoading(true)
+    try {
+      const [pat, asn, ppl] = await Promise.all([
+        listShiftPatterns(profile.organization_id),
+        listShiftAssignments(profile.organization_id),
+        supabase.from('profiles').select('id, full_name').eq('organization_id', profile.organization_id).order('full_name'),
+      ])
+      setPatterns(pat); setAssignments(asn); setPeople(ppl.data || [])
+    } catch (e) { setErr(e.message) }
+    setLoading(false)
+  }
+
+  async function handleAddPattern() {
+    if (!form.name.trim()) return
+    setErr('')
+    try { await createShiftPattern(profile.organization_id, form); setForm({ name: '', pattern_type: 'fixed', start_time: '09:00', end_time: '18:00' }); await load() }
+    catch (e) { setErr(e.message) }
+  }
+  async function handleAssign() {
+    if (!assignForm.person_id || !assignForm.shift_pattern_id) return
+    setErr('')
+    try { await assignShift(profile.organization_id, assignForm.person_id, assignForm.shift_pattern_id, assignForm.effective_from); await load() }
+    catch (e) { setErr(e.message) }
+  }
+
+  if (loading) return <Loader />
+
+  return (
+    <div>
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Shifts</h3>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 20 }}>Define shift patterns and assign people to them. Shown as context on My Work — never gates check-in.</p>
+      {err && <Alert type="danger" message={err} />}
+
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Shift Patterns</div>
+      {patterns.length === 0 ? <Empty message="No shift patterns yet." /> : (
+        <table className="data-table" style={{ marginBottom: 16 }}>
+          <thead><tr><th>Name</th><th>Type</th><th>Start</th><th>End</th></tr></thead>
+          <tbody>{patterns.map(p => (
+            <tr key={p.id}><td style={{ fontWeight: 600 }}>{p.name}</td><td style={{ textTransform: 'capitalize' }}>{p.pattern_type}</td><td>{p.start_time || '—'}</td><td>{p.end_time || '—'}</td></tr>
+          ))}</tbody>
+        </table>
+      )}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 28 }}>
+        <input className="form-input" placeholder="Pattern name (e.g. Day Shift)" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} style={{ flex: 1, minWidth: 180, maxWidth: 220 }} />
+        <select className="form-select" style={{ maxWidth: 140 }} value={form.pattern_type} onChange={e => setForm(f => ({ ...f, pattern_type: e.target.value }))}>
+          {['fixed','flexible','rotational','night','split'].map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <input type="time" className="form-input" style={{ maxWidth: 120 }} value={form.start_time} onChange={e => setForm(f => ({ ...f, start_time: e.target.value }))} />
+        <input type="time" className="form-input" style={{ maxWidth: 120 }} value={form.end_time} onChange={e => setForm(f => ({ ...f, end_time: e.target.value }))} />
+        <button className="btn btn-primary" onClick={handleAddPattern}><Plus size={15} /> Add Pattern</button>
+      </div>
+
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Assignments</div>
+      {assignments.length === 0 ? <Empty message="No one is assigned to a shift yet." /> : (
+        <table className="data-table" style={{ marginBottom: 16 }}>
+          <thead><tr><th>Person</th><th>Shift</th><th>From</th><th>To</th></tr></thead>
+          <tbody>{assignments.map(a => (
+            <tr key={a.id}><td>{a.person?.full_name}</td><td>{a.shift?.name}</td><td>{dateFmt(a.effective_from)}</td><td>{a.effective_to ? dateFmt(a.effective_to) : 'Ongoing'}</td></tr>
+          ))}</tbody>
+        </table>
+      )}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <select className="form-select" style={{ maxWidth: 180 }} value={assignForm.person_id} onChange={e => setAssignForm(f => ({ ...f, person_id: e.target.value }))}>
+          <option value="">Select person…</option>
+          {people.map(p => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+        </select>
+        <select className="form-select" style={{ maxWidth: 180 }} value={assignForm.shift_pattern_id} onChange={e => setAssignForm(f => ({ ...f, shift_pattern_id: e.target.value }))}>
+          <option value="">Select shift…</option>
+          {patterns.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <input type="date" className="form-input" style={{ maxWidth: 160 }} value={assignForm.effective_from} onChange={e => setAssignForm(f => ({ ...f, effective_from: e.target.value }))} />
+        <button className="btn btn-primary" onClick={handleAssign}>Assign</button>
+      </div>
+    </div>
+  )
+}
+
+// ── Work Types (Industry-Adaptive Platform Phase 8) ──
+// Admin CRUD over work_type_configs (STEP182) — the org-scoped lookup
+// WorkItemsPage.jsx's type picker/filter reads from. Deactivate rather
+// than hard-delete: work_items.work_type_key is a soft ref by key, so a
+// deleted row would just silently orphan any existing work items still
+// carrying that key with no way to look its label back up.
+function WorkTypesTab() {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [form, setForm] = useState({ key: '', name: '' })
+  const [editing, setEditing] = useState(null)
+  const [editVal, setEditVal] = useState({ name: '' })
+  const [err, setErr] = useState('')
+
+  useEffect(() => { load() }, [])
+  async function load() {
+    setLoading(true)
+    try { setRows(await listAllWorkTypeConfigs()) } catch (e) { setErr(e.message) }
+    setLoading(false)
+  }
+
+  async function handleAdd() {
+    if (!form.key.trim() || !form.name.trim()) return
+    setErr('')
+    try { await createWorkTypeConfig(form.key.trim().toLowerCase().replace(/\s+/g, '_'), form.name.trim()); setForm({ key: '', name: '' }); await load() }
+    catch (e) { setErr(e.message) }
+  }
+  function startEdit(r) { setEditing(r.id); setEditVal({ name: r.name }) }
+  async function handleSaveEdit(id) {
+    if (!editVal.name.trim()) return
+    setErr('')
+    try { await updateWorkTypeConfig(id, { name: editVal.name.trim() }); setEditing(null); await load() }
+    catch (e) { setErr(e.message) }
+  }
+  async function toggleActive(r) {
+    try { await updateWorkTypeConfig(r.id, { active: !r.active }); await load() } catch (e) { setErr(e.message) }
+  }
+
+  if (loading) return <Loader />
+
+  return (
+    <div>
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Work Types</h3>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 20 }}>
+        The types available when creating a Work Order, Service Request or other non-Project work item.
+      </p>
+      {err && <Alert type="danger" message={err} />}
+      {rows.length === 0 ? <Empty message="No work types yet." /> : (
+        <table className="data-table" style={{ marginBottom: 20 }}>
+          <thead><tr><th>Name</th><th>Key</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.id} style={{ opacity: r.active ? 1 : 0.5 }}>
+                {editing === r.id ? (
+                  <>
+                    <td><input className="form-input" style={{ fontSize: 13 }} value={editVal.name} onChange={e => setEditVal({ name: e.target.value })} autoFocus /></td>
+                    <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{r.key}</td>
+                    <td>{r.active ? 'Active' : 'Inactive'}</td>
+                    <td style={{ display: 'flex', gap: 4 }}>
+                      <button className="btn btn-ghost btn-sm btn-icon" onClick={() => handleSaveEdit(r.id)}><Check size={13} /></button>
+                      <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setEditing(null)}><X size={13} /></button>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td style={{ fontWeight: 600 }}>{r.name}</td>
+                    <td style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--ink-muted)' }}>{r.key}</td>
+                    <td>{r.active ? 'Active' : 'Inactive'}</td>
+                    <td style={{ display: 'flex', gap: 4 }}>
+                      <button className="btn btn-ghost btn-sm btn-icon" onClick={() => startEdit(r)}><Edit2 size={12} /></button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => toggleActive(r)}>{r.active ? 'Deactivate' : 'Activate'}</button>
+                    </td>
+                  </>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input className="form-input" placeholder="Key (e.g. site_visit)" value={form.key} onChange={e => setForm(f => ({ ...f, key: e.target.value }))} style={{ maxWidth: 200 }} />
+        <input className="form-input" placeholder="Display name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} onKeyDown={e => e.key === 'Enter' && handleAdd()} style={{ flex: 1, maxWidth: 260 }} />
+        <button className="btn btn-primary" onClick={handleAdd}><Plus size={15} /> Add Work Type</button>
+      </div>
+    </div>
+  )
+}
+
+// ── Task Status Flows (STEP198) — master panel: each department gets its
+// own independently-configurable ordered status pipeline (Application:
+// Backlog/Todo/Analysis/...; Firmware: Backlog/POC/Pilot/Test/...), plus
+// a dedicated "Unassigned" flow for tasks with no department — every
+// department, including "none", is a real editable flow row, no
+// hardcoded fallback. Renaming a step's label/color, or reordering, is
+// always safe (status_key is untouched). REMOVING a step is the only
+// destructive edit — if any task still holds that status, Save requires
+// picking where each of those tasks should land in the new flow before
+// it commits (bulk remap + logs into task_change_log, STEP197).
+function slugifyStatusKey(label) {
+  return (label || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+}
+function StatusFlowsTab() {
+  const { profile } = useAuth()
+  const [depts, setDepts] = useState([])
+  const [flows, setFlows] = useState([])       // [{id, department_id, steps:[...]}]
+  const [selectedDept, setSelectedDept] = useState(null) // department id, or null = Unassigned
+  const [draftSteps, setDraftSteps] = useState([])
+  const [newLabel, setNewLabel] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState('')
+  const [remapNeeded, setRemapNeeded] = useState(null) // {removedKeys, mapping} while resolving a destructive save
+
+  useEffect(() => { load() }, [])
+  async function load() {
+    setLoading(true); setErr('')
+    try {
+      const [d, f] = await Promise.all([listDepartments(profile.organization_id), listFlows(profile.organization_id)])
+      setDepts(d); setFlows(f)
+    } catch (e) { setErr(e.message) }
+    setLoading(false)
+  }
+
+  const currentFlow = useMemo(
+    () => flows.find(f => (selectedDept ? f.department_id === selectedDept : f.department_id === null)),
+    [flows, selectedDept],
+  )
+  useEffect(() => { setDraftSteps(currentFlow ? currentFlow.steps.map(s => ({ ...s })) : []); setRemapNeeded(null) }, [currentFlow])
+
+  function addStep() {
+    const label = newLabel.trim()
+    if (!label) return
+    let key = slugifyStatusKey(label)
+    if (!key) return
+    // Auto-disambiguate a colliding key (e.g. adding "POC" twice) instead of silently overwriting.
+    let n = 2; const base = key
+    while (draftSteps.some(s => s.status_key === key)) { key = `${base}_${n}`; n++ }
+    setDraftSteps(prev => [...prev, { status_key: key, label, color: '#6366f1', is_closed: false, progress_pct: 0 }])
+    setNewLabel('')
+  }
+  function removeStep(key) { setDraftSteps(prev => prev.filter(s => s.status_key !== key)) }
+  function moveStep(i, dir) {
+    setDraftSteps(prev => {
+      const next = [...prev]; const j = i + dir
+      if (j < 0 || j >= next.length) return prev
+      ;[next[i], next[j]] = [next[j], next[i]]
+      return next
+    })
+  }
+  function patchStep(key, patch) { setDraftSteps(prev => prev.map(s => s.status_key === key ? { ...s, ...patch } : s)) }
+
+  async function handleSave() {
+    setErr('')
+    try {
+      const flowId = currentFlow?.id || await ensureFlow(profile.organization_id, selectedDept)
+      const removedKeys = (currentFlow?.steps || []).map(s => s.status_key).filter(k => !draftSteps.some(s => s.status_key === k))
+      if (removedKeys.length) {
+        const inUse = new Set(await distinctStatusesInUse(profile.organization_id, selectedDept))
+        const needsRemap = removedKeys.filter(k => inUse.has(k))
+        if (needsRemap.length) {
+          setRemapNeeded({ flowId, keys: needsRemap, mapping: Object.fromEntries(needsRemap.map(k => [k, draftSteps[0]?.status_key || ''])) })
+          return
+        }
+      }
+      await saveFlowSteps(flowId, profile.organization_id, draftSteps)
+      await load()
+    } catch (e) { setErr(e.message) }
+  }
+
+  async function confirmRemapAndSave() {
+    setSaving(true); setErr('')
+    try {
+      if (Object.values(remapNeeded.mapping).some(v => !v)) throw new Error('Choose a destination status for every affected task before saving.')
+      await remapTaskStatuses(profile.organization_id, selectedDept, remapNeeded.mapping, profile.id)
+      await saveFlowSteps(remapNeeded.flowId, profile.organization_id, draftSteps)
+      setRemapNeeded(null)
+      await load()
+    } catch (e) { setErr(e.message) }
+    finally { setSaving(false) }
+  }
+
+  if (loading) return <Loader />
+
+  const deptOptions = [{ id: null, name: 'Unassigned (no department)' }, ...depts]
+
+  return (
+    <div>
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Task Status Flows</h3>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 20, maxWidth: 640 }}>
+        Each department has its own ordered status pipeline for Task Management's Kanban board and status dropdowns —
+        e.g. Application might flow Backlog → Todo → Analysis, while Firmware flows Backlog → POC → Pilot → Test.
+        "Unassigned" is the flow used by tasks with no department set. The % next to each step feeds the
+        weighted project completion shown in Task Management → Reports (e.g. Todo 0%, In Progress 30%, QA 60%, Ready to Deploy 80%, Done 100%).
+      </p>
+      {err && <Alert type="danger" message={err} />}
+
+      <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <div style={{ width: 220, flexShrink: 0 }}>
+          {deptOptions.map(d => {
+            const active = (selectedDept ?? null) === (d.id ?? null)
+            const flow = flows.find(f => (d.id ? f.department_id === d.id : f.department_id === null))
+            return (
+              <button key={d.id ?? '__none'} onClick={() => setSelectedDept(d.id)}
+                style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 12px', borderRadius: 9, border: 'none', marginBottom: 3,
+                  background: active ? 'var(--surface-2)' : 'transparent', color: active ? 'var(--c1)' : 'var(--ink-soft)', fontWeight: active ? 700 : 500, fontSize: 13, cursor: 'pointer' }}>
+                {d.name}
+                <div style={{ fontSize: 10.5, color: 'var(--ink-muted)', fontWeight: 400 }}>{flow?.steps?.length ?? 0} steps</div>
+              </button>
+            )
+          })}
+        </div>
+
+        <div style={{ flex: '1 1 380px', minWidth: 320 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
+            {draftSteps.length === 0 && <div style={{ fontSize: 12.5, color: 'var(--ink-muted)', fontStyle: 'italic' }}>No steps yet — add the first one below.</div>}
+            {draftSteps.map((s, i) => (
+              <div key={s.status_key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 9, border: '1px solid var(--border)', background: 'var(--surface)' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  <button className="btn btn-ghost btn-sm btn-icon" style={{ width: 20, height: 16, minHeight: 0 }} disabled={i === 0} onClick={() => moveStep(i, -1)}><ArrowUp size={11} /></button>
+                  <button className="btn btn-ghost btn-sm btn-icon" style={{ width: 20, height: 16, minHeight: 0 }} disabled={i === draftSteps.length - 1} onClick={() => moveStep(i, 1)}><ArrowDown size={11} /></button>
+                </div>
+                <input type="color" value={s.color} onChange={e => patchStep(s.status_key, { color: e.target.value })} style={{ width: 28, height: 28, padding: 0, border: 'none', borderRadius: 6, flexShrink: 0 }} />
+                <input className="form-input" value={s.label} onChange={e => patchStep(s.status_key, { label: e.target.value })} style={{ flex: 1, fontSize: 13 }} />
+                <span style={{ fontSize: 10, color: 'var(--ink-muted)', fontFamily: 'monospace', flexShrink: 0 }}>{s.status_key}</span>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--ink-muted)', flexShrink: 0 }} title="Used to show a weighted completion % per project in Task Management → Reports">
+                  <input type="number" min={0} max={100} value={s.progress_pct ?? ''} placeholder="0"
+                    onChange={e => patchStep(s.status_key, { progress_pct: e.target.value === '' ? null : Math.max(0, Math.min(100, parseInt(e.target.value) || 0)) })}
+                    style={{ width: 46, padding: '4px 6px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 11, textAlign: 'right' }} />%
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--ink-muted)', flexShrink: 0, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={!!s.is_closed} onChange={e => patchStep(s.status_key, { is_closed: e.target.checked, progress_pct: e.target.checked ? 100 : s.progress_pct })} style={{ accentColor: 'var(--c1)' }} /> Done
+                </label>
+                <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444', flexShrink: 0 }} onClick={() => removeStep(s.status_key)}><Trash2 size={12} /></button>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            <input className="form-input" placeholder="New step name (e.g. Analysis)" value={newLabel}
+              onChange={e => setNewLabel(e.target.value)} onKeyDown={e => e.key === 'Enter' && addStep()} style={{ flex: 1 }} />
+            <button className="btn btn-outline" onClick={addStep}><Plus size={14} /> Add Step</button>
+          </div>
+
+          {remapNeeded ? (
+            <div style={{ padding: 14, borderRadius: 10, border: '1px solid #f59e0b40', background: '#f59e0b0c' }}>
+              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Some tasks are on a status you're removing</div>
+              <p style={{ fontSize: 12, color: 'var(--ink-muted)', marginBottom: 10 }}>Choose where each affected task should move to before saving.</p>
+              {remapNeeded.keys.map(k => (
+                <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontSize: 12.5, fontFamily: 'monospace', minWidth: 100 }}>{k}</span>
+                  <ChevronRight size={13} style={{ color: 'var(--ink-muted)' }} />
+                  <select className="form-select" value={remapNeeded.mapping[k] || ''} style={{ flex: 1 }}
+                    onChange={e => setRemapNeeded(r => ({ ...r, mapping: { ...r.mapping, [k]: e.target.value } }))}>
+                    <option value="">Select new status…</option>
+                    {draftSteps.map(s => <option key={s.status_key} value={s.status_key}>{s.label}</option>)}
+                  </select>
+                </div>
+              ))}
+              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                <button className="btn btn-primary btn-sm" disabled={saving} onClick={confirmRemapAndSave}>{saving ? 'Saving…' : 'Confirm & Save'}</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => setRemapNeeded(null)}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button className="btn btn-primary" onClick={handleSave}><Save size={14} /> Save Flow</button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Task Templates (Industry-Adaptive Platform Phase 8) ──
+// Closes the gap Phase 4 explicitly left open ("Task Templates picker
+// skipped ... no admin UI anywhere to create one yet"). Checklist items
+// use the exact shape MyWorkPage.jsx's completion flow already expects:
+// { id, label, type, required, value }. Applying a template happens from
+// WorkItemsPage.jsx's "+ New Task" flow (createTaskForWorkItem), not
+// TasksPage.jsx — that file's saveTask() doesn't persist `checklist` in
+// its payload at all, so wiring template-apply there would have meant
+// also extending a function three prior phases already touched; a lower
+// -risk landing spot the parent phase's own directive explicitly allowed.
+let templateItemSeq = 0
+
+function TaskTemplatesTab() {
+  const { profile } = useAuth()
+  const [templates, setTemplates] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [editing, setEditing] = useState(null) // template row being edited, or {} for new
+  const [form, setForm] = useState(null)
+  const [deleteConfirm, setDeleteConfirm] = useState(null)
+  const [err, setErr] = useState('')
+
+  useEffect(() => { load() }, [])
+  async function load() {
+    setLoading(true)
+    try { setTemplates(await listTaskTemplates()) } catch (e) { setErr(e.message) }
+    setLoading(false)
+  }
+
+  function openNew() {
+    setEditing({})
+    setForm({ name: '', taskType: '', estimatedHours: '', requiresApproval: false, checklist: [] })
+  }
+  function openEdit(t) {
+    setEditing(t)
+    setForm({ name: t.name, taskType: t.task_type || '', estimatedHours: t.estimated_hours || '', requiresApproval: t.requires_approval, checklist: (t.default_checklist || []).map(i => ({ ...i })) })
+  }
+  function addChecklistItem() {
+    templateItemSeq += 1
+    setForm(f => ({ ...f, checklist: [...f.checklist, { id: `tpl_${Date.now()}_${templateItemSeq}`, label: '', type: 'text', required: false, value: null }] }))
+  }
+  function updateChecklistItem(id, patch) {
+    setForm(f => ({ ...f, checklist: f.checklist.map(i => i.id === id ? { ...i, ...patch } : i) }))
+  }
+  function removeChecklistItem(id) {
+    setForm(f => ({ ...f, checklist: f.checklist.filter(i => i.id !== id) }))
+  }
+
+  async function handleSave() {
+    if (!form.name.trim()) return
+    setErr('')
+    try {
+      if (editing?.id) await updateTaskTemplate(editing.id, form)
+      else await createTaskTemplate(form, profile.id)
+      setEditing(null); setForm(null); await load()
+    } catch (e) { setErr(e.message) }
+  }
+  async function confirmDelete() {
+    try { await deleteTaskTemplate(deleteConfirm.id); setDeleteConfirm(null); await load() }
+    catch (e) { setErr(e.message); setDeleteConfirm(null) }
+  }
+
+  if (loading) return <Loader />
+
+  return (
+    <div>
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Task Templates</h3>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 20 }}>
+        Reusable task presets — name, type, estimated hours and a checklist. Applied from a Work Item's "+ New Task" action.
+      </p>
+      {err && <Alert type="danger" message={err} />}
+
+      {!editing && (
+        <>
+          {templates.length === 0 ? <Empty message="No task templates yet." /> : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
+              {templates.map(t => (
+                <div key={t.id} className="card" style={{ padding: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13.5 }}>{t.name}</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--ink-muted)', marginTop: 2 }}>
+                      {t.task_type ? `${t.task_type} · ` : ''}{(t.default_checklist || []).length} checklist item{(t.default_checklist || []).length === 1 ? '' : 's'}
+                      {t.requires_approval ? ' · requires approval' : ''}{t.estimated_hours ? ` · ~${t.estimated_hours}h` : ''}
+                    </div>
+                  </div>
+                  <button className="btn btn-ghost btn-sm btn-icon" onClick={() => openEdit(t)}><Edit2 size={13} /></button>
+                  <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }} onClick={() => setDeleteConfirm(t)}><Trash2 size={13} /></button>
+                </div>
+              ))}
+            </div>
+          )}
+          <button className="btn btn-primary" onClick={openNew}><Plus size={15} /> New Template</button>
+        </>
+      )}
+
+      {editing && (
+        <div className="card" style={{ padding: 18 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <input className="form-input" placeholder="Template name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} style={{ flex: 1 }} />
+              <input className="form-input" placeholder="Task type (optional)" value={form.taskType} onChange={e => setForm(f => ({ ...f, taskType: e.target.value }))} style={{ maxWidth: 180 }} />
+              <input className="form-input" type="number" placeholder="Est. hours" value={form.estimatedHours} onChange={e => setForm(f => ({ ...f, estimatedHours: e.target.value }))} style={{ maxWidth: 120 }} />
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+              <input type="checkbox" checked={form.requiresApproval} onChange={e => setForm(f => ({ ...f, requiresApproval: e.target.checked }))} />
+              Requires approval on completion
+            </label>
+          </div>
+
+          <div style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: 8 }}>Checklist</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
+            {form.checklist.map(item => (
+              <div key={item.id} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input className="form-input" placeholder="Item label" value={item.label} onChange={e => updateChecklistItem(item.id, { label: e.target.value })} style={{ flex: 1 }} />
+                <select className="form-select" value={item.type} onChange={e => updateChecklistItem(item.id, { type: e.target.value })} style={{ maxWidth: 150 }}>
+                  {CHECKLIST_TYPES.map(t => <option key={t} value={t}>{t.replace('_', ' ')}</option>)}
+                </select>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, whiteSpace: 'nowrap' }}>
+                  <input type="checkbox" checked={item.required} onChange={e => updateChecklistItem(item.id, { required: e.target.checked })} /> Required
+                </label>
+                <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }} onClick={() => removeChecklistItem(item.id)}><Trash2 size={12} /></button>
+              </div>
+            ))}
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={addChecklistItem}><Plus size={13} /> Add checklist item</button>
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+            <button className="btn btn-primary" onClick={handleSave}>Save Template</button>
+            <button className="btn btn-ghost" onClick={() => { setEditing(null); setForm(null) }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <Confirm open={!!deleteConfirm} message={`Delete the "${deleteConfirm?.name}" template? This cannot be undone.`} danger
+        onConfirm={confirmDelete} onCancel={() => setDeleteConfirm(null)} />
+    </div>
+  )
+}
+
+// ── Task Field Rules (STEP226) ──
+// Org-wide "is this field required" toggles for the Task create/edit
+// form (TasksPage.jsx's TaskForm) — every field that form exposes, with
+// two independent checkboxes each, since a field can reasonably be
+// optional on quick-create but mandatory by the time someone edits it
+// (or vice versa). Enforced client-side in TasksPage.jsx's saveTask().
+function TaskFieldRulesTab() {
+  const { profile } = useAuth()
+  const [rules, setRules] = useState({})
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [err, setErr] = useState('')
+
+  useEffect(() => { load() }, [])
+  async function load() {
+    setLoading(true)
+    try { setRules(fieldRulesToMap(await listTaskFieldRules())) } catch (e) { setErr(e.message) }
+    setLoading(false)
+  }
+  function toggle(key, field, checked) {
+    setSaved(false)
+    setRules(r => ({ ...r, [key]: { required_on_create: false, required_on_edit: false, ...r[key], [field]: checked } }))
+  }
+  async function handleSave() {
+    setSaving(true); setErr(''); setSaved(false)
+    try {
+      await saveTaskFieldRules(
+        TASK_FIELD_CATALOG.map(f => ({ field_key: f.key, ...(rules[f.key] || { required_on_create: false, required_on_edit: false }) })),
+        profile.organization_id,
+      )
+      setSaved(true)
+    } catch (e) { setErr(e.message) } finally { setSaving(false) }
+  }
+
+  if (loading) return <Loader />
+
+  return (
+    <div>
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Task Field Rules</h3>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 20 }}>
+        Choose which fields on the Task form must be filled in — separately for creating a new task and for editing an existing one. A field with neither box ticked stays optional.
+      </p>
+      {err && <Alert type="danger" message={err} />}
+      <div className="card" style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
+        <table className="data-table">
+          <thead><tr><th>Field</th><th style={{ textAlign: 'center' }}>Required on Create</th><th style={{ textAlign: 'center' }}>Required on Edit</th></tr></thead>
+          <tbody>
+            {TASK_FIELD_CATALOG.map(f => (
+              <tr key={f.key}>
+                <td style={{ fontWeight: 600 }}>{f.label}</td>
+                <td style={{ textAlign: 'center' }}>
+                  <input type="checkbox" checked={!!rules[f.key]?.required_on_create} onChange={e => toggle(f.key, 'required_on_create', e.target.checked)} />
+                </td>
+                <td style={{ textAlign: 'center' }}>
+                  <input type="checkbox" checked={!!rules[f.key]?.required_on_edit} onChange={e => toggle(f.key, 'required_on_edit', e.target.checked)} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+        {saved && <span style={{ fontSize: 12, color: '#10b981', fontWeight: 600 }}>Saved</span>}
+      </div>
+    </div>
+  )
+}
+
+// ── Task Detail View (STEP227) ──
+// Org-wide switch for how clicking a task in Task Management opens it:
+// the original centered dialog ("Default") or a right-side sliding
+// drawer ("Template 1"). Same TaskDetail content either way — only the
+// container changes (TasksPage.jsx picks Modal vs TaskDetailDrawer).
+const VIEW_STYLE_OPTIONS = [
+  { value: 'modal',  name: 'Default',    desc: 'Task opens in a centered dialog, like today.' },
+  { value: 'drawer', name: 'Template 1', desc: 'Task opens in a panel that slides in from the right edge of the screen.' },
+]
+function TaskViewSettingsTab() {
+  const { profile } = useAuth()
+  const [style, setStyle] = useState('modal')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [err, setErr] = useState('')
+
+  useEffect(() => { load() }, [])
+  async function load() {
+    setLoading(true)
+    try { setStyle(await getTaskDetailViewStyle()) } catch (e) { setErr(e.message) }
+    setLoading(false)
+  }
+  async function choose(value) {
+    if (value === style) return
+    setSaving(true); setErr(''); setSaved(false)
+    try { await setTaskDetailViewStyle(value, profile.organization_id); setStyle(value); setSaved(true) }
+    catch (e) { setErr(e.message) } finally { setSaving(false) }
+  }
+
+  if (loading) return <Loader />
+
+  return (
+    <div>
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Task Detail View</h3>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 20 }}>
+        Choose how a task opens when clicked in Task Management, for everyone in the organization.
+      </p>
+      {err && <Alert type="danger" message={err} />}
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+        {VIEW_STYLE_OPTIONS.map(opt => {
+          const active = style === opt.value
+          return (
+            <button key={opt.value} type="button" onClick={() => choose(opt.value)} disabled={saving}
+              className="card" style={{
+                width: 220, padding: 14, textAlign: 'left', cursor: saving ? 'default' : 'pointer',
+                border: active ? '2px solid var(--c1, #6366f1)' : '1px solid var(--border)',
+                background: 'var(--surface)',
+              }}>
+              {/* Tiny layout preview — a mock "screen" with the dialog either centered or docked right */}
+              <div style={{ width: '100%', height: 70, borderRadius: 8, background: 'var(--bg-3)', position: 'relative', overflow: 'hidden', marginBottom: 10 }}>
+                {opt.value === 'modal'
+                  ? <div style={{ position: 'absolute', inset: '14px 50px', borderRadius: 5, background: 'var(--surface)', border: '1px solid var(--border)' }} />
+                  : <div style={{ position: 'absolute', top: 6, bottom: 6, right: 6, width: 60, borderRadius: 5, background: 'var(--surface)', border: '1px solid var(--border)' }} />}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, fontSize: 13, marginBottom: 3 }}>
+                {opt.name}
+                {active && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--c1, #6366f1)' }}>· Active</span>}
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--ink-muted)' }}>{opt.desc}</div>
+            </button>
+          )
+        })}
+      </div>
+      {saved && <div style={{ marginTop: 14, fontSize: 12, color: '#10b981', fontWeight: 600 }}>Saved — everyone will see this the next time they open a task.</div>}
+    </div>
+  )
+}
+
+// ── Workspace Administration (Industry-Adaptive Platform Phase 8) ──
+// The path an EXISTING organization uses to voluntarily opt into
+// everything Phases 1-7 built. Phase 2's onboarding wizard only ever
+// fires for brand-new signups (handle_new_user()'s 'create' branch) —
+// until this tab existed, there was no way for an org that predates this
+// whole build to ever get a non-null industry_profile_id. Reuses the
+// exact same data-fetching (lib/workspace.js) and recommendation rule
+// table (lib/workspaceRecommendation.js) the onboarding wizard already
+// uses — no duplicated logic.
+function WorkspaceTab() {
+  const { workspace, refresh: refreshWorkspace } = useWorkspace()
+  const [industries, setIndustries] = useState([])
+  const [businessTypes, setBusinessTypes] = useState([])
+  const [operatingModels, setOperatingModels] = useState([])
+  const [selectedModelIds, setSelectedModelIds] = useState([])
+  const [industryId, setIndustryId] = useState('')
+  const [businessTypeId, setBusinessTypeId] = useState('')
+  const [enabledKeys, setEnabledKeys] = useState(new Set())
+  const [dashboardKeys, setDashboardKeys] = useState(null) // null = show everything (legacy)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [err, setErr] = useState('')
+  const [revertConfirm, setRevertConfirm] = useState(false)
+
+  useEffect(() => { load() }, [workspace?.id])
+  async function load() {
+    if (!workspace) return
+    setLoading(true)
+    try {
+      const [inds, models, links] = await Promise.all([
+        listIndustryProfiles(), listOperatingModels(), listWorkspaceOperatingModels(workspace.id),
+      ])
+      setIndustries(inds)
+      setOperatingModels(models)
+      setSelectedModelIds(links.map(l => l.operating_model_id))
+      setIndustryId(workspace.industry_profile_id || '')
+      setBusinessTypeId(workspace.business_type_id || '')
+      setEnabledKeys(new Set(MODULES.map(m => m.key).filter(k => isModuleInWorkspace(workspace, k))))
+      setDashboardKeys(workspace.dashboard_widget_keys || null)
+      if (workspace.industry_profile_id) setBusinessTypes(await listBusinessTypes(workspace.industry_profile_id))
+    } catch (e) { setErr(e.message) }
+    setLoading(false)
+  }
+
+  async function onIndustryChange(id) {
+    setIndustryId(id)
+    setBusinessTypeId('')
+    setBusinessTypes(id ? await listBusinessTypes(id) : [])
+  }
+
+  function toggleModel(id) {
+    setSelectedModelIds(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id])
+  }
+  function toggleModule(key) {
+    setEnabledKeys(prev => { const next = new Set(prev); next.has(key) ? next.delete(key) : next.add(key); return next })
+  }
+  function toggleDashboardWidget(key) {
+    setDashboardKeys(prev => {
+      const base = prev || DASHBOARD_WIDGETS.map(w => w.key) // first toggle starts from "everything on"
+      return base.includes(key) ? base.filter(k => k !== key) : [...base, key]
+    })
+  }
+
+  const industryKey = industries.find(i => i.id === industryId)?.key
+  const selectedModelKeys = operatingModels.filter(m => selectedModelIds.includes(m.id)).map(m => m.key)
+  const recommended = useMemo(() => recommendModuleKeys(industryKey, selectedModelKeys), [industryKey, selectedModelKeys])
+
+  function applyRecommendation() { setEnabledKeys(new Set(recommended)) }
+
+  async function handleSave() {
+    setSaving(true); setErr('')
+    try {
+      await updateWorkspaceProfile(workspace.id, {
+        industry_profile_id: industryId || null,
+        business_type_id: businessTypeId || null,
+        enabled_module_keys: Array.from(enabledKeys),
+        known_module_keys: MODULES.map(m => m.key),
+        dashboard_widget_keys: dashboardKeys,
+        is_legacy_default: false,
+      })
+      await setWorkspaceOperatingModels(workspace.id, selectedModelIds)
+      await refreshWorkspace()
+      setSaved(true); setTimeout(() => setSaved(false), 2500)
+    } catch (e) { setErr(e.message) }
+    setSaving(false)
+  }
+
+  async function handleRevert() {
+    setSaving(true); setErr('')
+    try {
+      // Field-for-field match of STEP180's original legacy-default seed
+      // — the same "no override" values every pre-existing org already
+      // has, so this is a genuine, complete undo, not a partial one.
+      await updateWorkspaceProfile(workspace.id, {
+        industry_profile_id: null, business_type_id: null,
+        enabled_module_keys: null, known_module_keys: null, terminology_overrides: {},
+        dashboard_widget_keys: null, is_legacy_default: true,
+      })
+      await setWorkspaceOperatingModels(workspace.id, [])
+      await refreshWorkspace()
+      setRevertConfirm(false)
+      await load()
+    } catch (e) { setErr(e.message) }
+    setSaving(false)
+  }
+
+  if (loading || !workspace) return <Loader />
+
+  const modulesBySection = new Map()
+  for (const m of MODULES) { if (!modulesBySection.has(m.section)) modulesBySection.set(m.section, []); modulesBySection.get(m.section).push(m) }
+
+  return (
+    <div>
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Workspace</h3>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 16 }}>
+        Tell us how your organization works so navigation, terminology and the dashboard can adapt — same setup new organizations see during onboarding.
+      </p>
+      {err && <Alert type="danger" message={err} />}
+      {saved && <Alert type="success" message="Workspace configuration saved." />}
+
+      <div className="card" style={{ padding: 14, marginBottom: 20, background: workspace.is_legacy_default ? 'var(--surface)' : '#f0fdf4', border: workspace.is_legacy_default ? undefined : '1px solid #86efac' }}>
+        <div style={{ fontSize: 13, fontWeight: 700 }}>
+          {workspace.is_legacy_default ? 'Not yet configured' : 'Configured workspace'}
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--ink-muted)', marginTop: 2 }}>
+          {workspace.is_legacy_default
+            ? "This organization is using the default experience — every module visible, no industry-specific terminology. Configure below to change that."
+            : `Industry: ${workspace.industry_profile?.name || '—'}${workspace.business_type?.name ? ` · ${workspace.business_type.name}` : ''}`}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20, marginBottom: 24 }}>
+        <div>
+          <label style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ink-soft)', marginBottom: 6, display: 'block' }}>Industry</label>
+          <select className="form-select" value={industryId} onChange={e => onIndustryChange(e.target.value)} style={{ maxWidth: 320 }}>
+            <option value="">Not set</option>
+            {industries.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+          </select>
+        </div>
+        {businessTypes.length > 0 && (
+          <div>
+            <label style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ink-soft)', marginBottom: 6, display: 'block' }}>Business Type</label>
+            <select className="form-select" value={businessTypeId} onChange={e => setBusinessTypeId(e.target.value)} style={{ maxWidth: 320 }}>
+              <option value="">Not set</option>
+              {businessTypes.map(bt => <option key={bt.id} value={bt.id}>{bt.name}</option>)}
+            </select>
+          </div>
+        )}
+        <div>
+          <label style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ink-soft)', marginBottom: 6, display: 'block' }}>How does your organization primarily work?</label>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {operatingModels.map(m => {
+              const on = selectedModelIds.includes(m.id)
+              return (
+                <button key={m.id} type="button" onClick={() => toggleModel(m.id)}
+                  style={{ padding: '7px 13px', borderRadius: 999, fontSize: 12.5, fontWeight: 600, cursor: 'pointer', border: on ? '1.5px solid var(--c1)' : '1.5px solid var(--border)', background: on ? 'var(--c1)11' : 'var(--surface)', color: on ? 'var(--c1)' : 'var(--ink-soft)' }}>
+                  {m.name}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+
+      {recommended.length > 0 && (
+        <div className="card" style={{ padding: 14, marginBottom: 20, background: 'var(--surface)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>Recommended for this selection</div>
+            <button className="btn btn-ghost btn-sm" onClick={applyRecommendation}>Apply Recommendation</button>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {recommended.map(key => {
+              const m = MODULES.find(x => x.key === key)
+              return <span key={key} style={{ fontSize: 11.5, fontWeight: 600, color: '#15803d', background: '#dcfce7', padding: '4px 9px', borderRadius: 999 }}>{m?.label || key}</span>
+            })}
+          </div>
+        </div>
+      )}
+
+      <div style={{ fontWeight: 700, fontSize: '0.9rem', marginBottom: 10 }}>Modules</div>
+      {[...modulesBySection.entries()].map(([section, mods]) => (
+        <div key={section} style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--ink-muted)', marginBottom: 6 }}>{section}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
+            {mods.map(m => {
+              const on = enabledKeys.has(m.key)
+              return (
+                <button key={m.key} type="button" onClick={() => toggleModule(m.key)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 9, textAlign: 'left', border: on ? '1.5px solid var(--c1)' : '1.5px solid var(--border)', background: on ? 'var(--c1)0d' : 'var(--surface)', cursor: 'pointer', fontSize: 12.5 }}>
+                  <div style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, border: on ? 'none' : '1.5px solid var(--border)', background: on ? 'var(--c1)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {on && <Check size={9} color="#fff" />}
+                  </div>
+                  {m.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+
+      <div style={{ fontWeight: 700, fontSize: '0.9rem', marginTop: 22, marginBottom: 4 }}>Dashboard Widgets</div>
+      <p style={{ fontSize: 12, color: 'var(--ink-muted)', marginBottom: 10 }}>Toggle sections on the CEO and Finance dashboards. Other role dashboards aren't configurable yet.</p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8, marginBottom: 24 }}>
+        {DASHBOARD_WIDGETS.map(w => {
+          const on = !dashboardKeys || dashboardKeys.includes(w.key)
+          return (
+            <button key={w.key} type="button" onClick={() => toggleDashboardWidget(w.key)}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 9, textAlign: 'left', border: on ? '1.5px solid var(--c1)' : '1.5px solid var(--border)', background: on ? 'var(--c1)0d' : 'var(--surface)', cursor: 'pointer', fontSize: 12.5 }}>
+              <div style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, border: on ? 'none' : '1.5px solid var(--border)', background: on ? 'var(--c1)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {on && <Check size={9} color="#fff" />}
+              </div>
+              {w.label}
+            </button>
+          )
+        })}
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+        <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Workspace'}</button>
+        {!workspace.is_legacy_default && (
+          <button className="btn btn-ghost" style={{ color: '#ef4444', marginLeft: 'auto' }} onClick={() => setRevertConfirm(true)} disabled={saving}>Revert to Legacy Default</button>
+        )}
+      </div>
+
+      <Confirm open={revertConfirm} danger
+        message="This clears the industry, business type, module selection and dashboard configuration, returning this organization to the default experience (everything visible, no adaptive terminology). Nothing is deleted — you can reconfigure again anytime."
+        onConfirm={handleRevert} onCancel={() => setRevertConfirm(false)} />
+    </div>
+  )
+}
+
+// ── Onboarding & Tour (Admin Feature) ──
+// Content for the first-run walkthrough (onboarding_slides) and the
+// guided in-app tour (tour_steps) — STEP179. Both are org-scoped: each
+// organization's admin/ceo edits their own copy, seen once per user
+// (profiles.walkthrough_seen_at / tour_seen_at), re-runnable any time
+// from the topbar compass button (web) once at least one active tour
+// step exists.
+const SLIDE_ICONS = ['Sparkles', 'ListChecks', 'CheckCircle2', 'Rocket', 'Target', 'Award', 'Compass', 'LayoutDashboard']
+
+function OnboardingTourTab() {
+  const { profile } = useAuth()
+  const [slides, setSlides] = useState([])
+  const [steps, setSteps] = useState([])
+  const [platform, setPlatform] = useState('web')
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState('')
+  const [slideForm, setSlideForm] = useState({ title: '', body: '', icon: 'Sparkles', platform: 'both' })
+  const [stepForm, setStepForm] = useState({ target_key: WEB_TOUR_TARGETS[0].key, title: '', body: '' })
+  const [editingSlide, setEditingSlide] = useState(null)
+  const [editingStep, setEditingStep] = useState(null)
+  const [deleteConfirm, setDeleteConfirm] = useState(null) // { kind: 'slide'|'step', row }
+
+  useEffect(() => { load() }, [platform])
+  async function load() {
+    setLoading(true)
+    try {
+      const [s, t] = await Promise.all([listAllSlides(profile.organization_id), listAllTourSteps(profile.organization_id, platform)])
+      setSlides(s); setSteps(t)
+    } catch (e) { setErr(e.message) }
+    setLoading(false)
+  }
+
+  async function handleAddSlide() {
+    if (!slideForm.title.trim()) return
+    setErr('')
+    try { await createSlide(profile.organization_id, slideForm); setSlideForm({ title: '', body: '', icon: 'Sparkles', platform: 'both' }); await load() }
+    catch (e) { setErr(e.message) }
+  }
+  function startEditSlide(s) { setEditingSlide(s.id); setSlideForm({ title: s.title, body: s.body || '', icon: s.icon || 'Sparkles', platform: s.platform, active: s.active }) }
+  async function saveEditSlide() {
+    if (!slideForm.title.trim()) return
+    setErr('')
+    try { await updateSlide(editingSlide, { ...slideForm, active: slideForm.active ?? true }); setEditingSlide(null); setSlideForm({ title: '', body: '', icon: 'Sparkles', platform: 'both' }); await load() }
+    catch (e) { setErr(e.message) }
+  }
+  async function toggleSlideActive(s) { try { await updateSlide(s.id, { title: s.title, body: s.body, icon: s.icon, platform: s.platform, active: !s.active }); await load() } catch (e) { setErr(e.message) } }
+  async function moveSlide(s, dir) { try { await reorderSlide(slides, s.id, dir); await load() } catch (e) { setErr(e.message) } }
+
+  async function handleAddStep() {
+    if (!stepForm.title.trim() || !stepForm.target_key) return
+    setErr('')
+    try { await createTourStep(profile.organization_id, platform, stepForm); setStepForm({ target_key: WEB_TOUR_TARGETS[0].key, title: '', body: '' }); await load() }
+    catch (e) { setErr(e.message) }
+  }
+  function startEditStep(s) { setEditingStep(s.id); setStepForm({ target_key: s.target_key, title: s.title, body: s.body || '', active: s.active }) }
+  async function saveEditStep() {
+    if (!stepForm.title.trim()) return
+    setErr('')
+    try { await updateTourStep(editingStep, { ...stepForm, active: stepForm.active ?? true }); setEditingStep(null); setStepForm({ target_key: WEB_TOUR_TARGETS[0].key, title: '', body: '' }); await load() }
+    catch (e) { setErr(e.message) }
+  }
+  async function toggleStepActive(s) { try { await updateTourStep(s.id, { target_key: s.target_key, title: s.title, body: s.body, active: !s.active }); await load() } catch (e) { setErr(e.message) } }
+  async function moveStep(s, dir) { try { await reorderTourStep(steps, s.id, dir); await load() } catch (e) { setErr(e.message) } }
+
+  async function confirmDelete() {
+    try {
+      if (deleteConfirm.kind === 'slide') await deleteSlide(deleteConfirm.row.id)
+      else await deleteTourStep(deleteConfirm.row.id)
+      setDeleteConfirm(null); await load()
+    } catch (e) { setErr(e.message); setDeleteConfirm(null) }
+  }
+
+  if (loading) return <Loader />
+
+  return (
+    <div>
+      {err && <Alert type="danger" message={err} />}
+
+      {/* ── Walkthrough slides ── */}
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Walkthrough Slides</h3>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 16 }}>
+        Shown once, right after first login. Applies per-platform — "Both" shows on web and mobile.
+      </p>
+      {slides.length === 0 ? <Empty message="No slides yet." /> : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
+          {slides.map((s, idx) => {
+            const Icon = LucideIconsIndex[s.icon] || Sparkles
+            return (
+            <div key={s.id} className="card" style={{ padding: 14, opacity: s.active ? 1 : 0.5 }}>
+              {editingSlide === s.id ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <input className="form-input" placeholder="Title" value={slideForm.title} onChange={e => setSlideForm(f => ({ ...f, title: e.target.value }))} />
+                  <textarea className="form-input" placeholder="Body" rows={2} value={slideForm.body} onChange={e => setSlideForm(f => ({ ...f, body: e.target.value }))} />
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <select className="form-input" style={{ maxWidth: 160 }} value={slideForm.icon} onChange={e => setSlideForm(f => ({ ...f, icon: e.target.value }))}>
+                      {SLIDE_ICONS.map(i => <option key={i} value={i}>{i}</option>)}
+                    </select>
+                    <select className="form-input" style={{ maxWidth: 140 }} value={slideForm.platform} onChange={e => setSlideForm(f => ({ ...f, platform: e.target.value }))}>
+                      <option value="both">Web + Mobile</option>
+                      <option value="web">Web only</option>
+                      <option value="mobile">Mobile only</option>
+                    </select>
+                    <button className="btn btn-primary btn-sm" onClick={saveEditSlide}><Check size={13} /> Save</button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setEditingSlide(null)}><X size={13} /></button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                  <span style={{ width: 34, height: 34, borderRadius: 9, background: 'linear-gradient(135deg,#6366f1,#4338ca)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <Icon size={16} color="#fff" />
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>{s.title}</div>
+                    {s.body && <div style={{ color: 'var(--ink-muted)', fontSize: '0.82rem', marginTop: 2 }}>{s.body}</div>}
+                    <span className="badge" style={{ marginTop: 6, display: 'inline-block' }}>{s.platform === 'both' ? 'Web + Mobile' : s.platform === 'web' ? 'Web only' : 'Mobile only'}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                    <button className="btn btn-ghost btn-sm btn-icon" title="Move up" disabled={idx === 0} onClick={() => moveSlide(s, 'up')}><ArrowUp size={12} /></button>
+                    <button className="btn btn-ghost btn-sm btn-icon" title="Move down" disabled={idx === slides.length - 1} onClick={() => moveSlide(s, 'down')}><ArrowDown size={12} /></button>
+                    <button className="btn btn-ghost btn-sm btn-icon" title={s.active ? 'Deactivate' : 'Activate'} onClick={() => toggleSlideActive(s)}>{s.active ? <Eye size={13} /> : <EyeOff size={13} />}</button>
+                    <button className="btn btn-ghost btn-sm btn-icon" onClick={() => startEditSlide(s)}><Edit2 size={12} /></button>
+                    <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }} onClick={() => setDeleteConfirm({ kind: 'slide', row: s })}><Trash2 size={12} /></button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )})}
+        </div>
+      )}
+      <div className="card" style={{ padding: 14, marginBottom: 32, background: 'var(--surface)' }}>
+        <div style={{ fontWeight: 700, fontSize: '0.85rem', marginBottom: 8 }}>Add a slide</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <input className="form-input" placeholder="Title" value={slideForm.title} onChange={e => setSlideForm(f => ({ ...f, title: e.target.value }))} />
+          <textarea className="form-input" placeholder="Body (optional)" rows={2} value={slideForm.body} onChange={e => setSlideForm(f => ({ ...f, body: e.target.value }))} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <select className="form-input" style={{ maxWidth: 160 }} value={slideForm.icon} onChange={e => setSlideForm(f => ({ ...f, icon: e.target.value }))}>
+              {SLIDE_ICONS.map(i => <option key={i} value={i}>{i}</option>)}
+            </select>
+            <select className="form-input" style={{ maxWidth: 140 }} value={slideForm.platform} onChange={e => setSlideForm(f => ({ ...f, platform: e.target.value }))}>
+              <option value="both">Web + Mobile</option>
+              <option value="web">Web only</option>
+              <option value="mobile">Mobile only</option>
+            </select>
+            <button className="btn btn-primary" onClick={handleAddSlide}><Plus size={15} /> Add Slide</button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Guided tour steps ── */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <h3 style={{ fontWeight: 800, fontSize: '1.05rem' }}>Guided Tour Steps</h3>
+        <div style={{ display: 'flex', gap: 4, background: 'var(--surface)', borderRadius: 8, padding: 3 }}>
+          {['web', 'mobile'].map(p => (
+            <button key={p} onClick={() => setPlatform(p)}
+              className="btn btn-sm" style={{ background: platform === p ? '#fff' : 'transparent', border: 'none', fontWeight: platform === p ? 700 : 500, boxShadow: platform === p ? '0 1px 3px rgba(0,0,0,.1)' : 'none' }}>
+              {p === 'web' ? 'Web' : 'Mobile'}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 16 }}>
+        Spotlight steps shown once automatically, and re-runnable any time from the {platform === 'web' ? 'topbar compass icon' : 'app'}. Each step points at a fixed UI anchor — pick from the list, free text isn't allowed since a typo would silently never find its target.
+      </p>
+      {steps.length === 0 ? <Empty message={`No ${platform} tour steps yet.`} /> : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
+          {steps.map((s, idx) => (
+            <div key={s.id} className="card" style={{ padding: 14, opacity: s.active ? 1 : 0.5 }}>
+              {editingStep === s.id ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {platform === 'web' ? (
+                    <select className="form-input" value={stepForm.target_key} onChange={e => setStepForm(f => ({ ...f, target_key: e.target.value }))}>
+                      {WEB_TOUR_TARGETS.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+                    </select>
+                  ) : (
+                    <input className="form-input" placeholder="Target key (see mobile app source)" value={stepForm.target_key} onChange={e => setStepForm(f => ({ ...f, target_key: e.target.value }))} />
+                  )}
+                  <input className="form-input" placeholder="Title" value={stepForm.title} onChange={e => setStepForm(f => ({ ...f, title: e.target.value }))} />
+                  <textarea className="form-input" placeholder="Body" rows={2} value={stepForm.body} onChange={e => setStepForm(f => ({ ...f, body: e.target.value }))} />
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn btn-primary btn-sm" onClick={saveEditStep}><Check size={13} /> Save</button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setEditingStep(null)}><X size={13} /></button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>{s.title}</div>
+                    {s.body && <div style={{ color: 'var(--ink-muted)', fontSize: '0.82rem', marginTop: 2 }}>{s.body}</div>}
+                    <span className="badge" style={{ marginTop: 6, display: 'inline-block', fontFamily: 'monospace' }}>{s.target_key}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                    <button className="btn btn-ghost btn-sm btn-icon" title="Move up" disabled={idx === 0} onClick={() => moveStep(s, 'up')}><ArrowUp size={12} /></button>
+                    <button className="btn btn-ghost btn-sm btn-icon" title="Move down" disabled={idx === steps.length - 1} onClick={() => moveStep(s, 'down')}><ArrowDown size={12} /></button>
+                    <button className="btn btn-ghost btn-sm btn-icon" title={s.active ? 'Deactivate' : 'Activate'} onClick={() => toggleStepActive(s)}>{s.active ? <Eye size={13} /> : <EyeOff size={13} />}</button>
+                    <button className="btn btn-ghost btn-sm btn-icon" onClick={() => startEditStep(s)}><Edit2 size={12} /></button>
+                    <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }} onClick={() => setDeleteConfirm({ kind: 'step', row: s })}><Trash2 size={12} /></button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="card" style={{ padding: 14, background: 'var(--surface)' }}>
+        <div style={{ fontWeight: 700, fontSize: '0.85rem', marginBottom: 8 }}>Add a {platform} step</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {platform === 'web' ? (
+            <select className="form-input" value={stepForm.target_key} onChange={e => setStepForm(f => ({ ...f, target_key: e.target.value }))}>
+              {WEB_TOUR_TARGETS.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+            </select>
+          ) : (
+            <input className="form-input" placeholder="Target key (see mobile app source)" value={stepForm.target_key} onChange={e => setStepForm(f => ({ ...f, target_key: e.target.value }))} />
+          )}
+          <input className="form-input" placeholder="Title" value={stepForm.title} onChange={e => setStepForm(f => ({ ...f, title: e.target.value }))} />
+          <textarea className="form-input" placeholder="Body (optional)" rows={2} value={stepForm.body} onChange={e => setStepForm(f => ({ ...f, body: e.target.value }))} />
+          <button className="btn btn-primary" onClick={handleAddStep} style={{ alignSelf: 'flex-start' }}><Plus size={15} /> Add Step</button>
+        </div>
+      </div>
+
+      <Confirm open={!!deleteConfirm} message={`Delete "${deleteConfirm?.row?.title}"? This cannot be undone.`} danger
+        onConfirm={confirmDelete} onCancel={() => setDeleteConfirm(null)} />
+    </div>
+  )
+}
+
 // ── Budget Config ──
 function BudgetConfigTab() {
   const [depts, setDepts] = useState([])
@@ -552,6 +2335,153 @@ function BudgetConfigTab() {
       </table>
       {saved && <Alert type="success" message="Budget configuration saved!" />}
       <button className="btn btn-primary" onClick={save}><Save size={15} /> Save Budgets</button>
+    </div>
+  )
+}
+
+// ── Proposal -> Planned-Budget Category Mapping ──
+// Admin control over what STEP215's "Add Cost Section" only ever set once,
+// at creation time, for a single proposal — this is the one place to view
+// and change the mapping for every category (standard 7 or custom) across
+// the whole org. Unmapped means: that category's cost just won't seed a
+// planned-budget line when a proposal is converted to a project (see
+// proposalConvert.js's `if (!budgetCategory) continue`) — not an error.
+function ProposalBudgetMappingTab() {
+  const [categories, setCategories] = useState([])
+  const [budgetCats, setBudgetCats] = useState([])
+  const [mapping, setMapping] = useState({})
+  const [loading, setLoading] = useState(true)
+  const [savingCat, setSavingCat] = useState('')
+  const [showAddCategory, setShowAddCategory] = useState(false)
+  const [showAddBudgetCat, setShowAddBudgetCat] = useState(false)
+  const [newCategory, setNewCategory] = useState({ name: '', budgetCategory: '' })
+  const [newBudgetLabel, setNewBudgetLabel] = useState('')
+  const [err, setErr] = useState('')
+
+  useEffect(() => { load() }, [])
+  async function load() {
+    setLoading(true)
+    const [cats, map, bcats] = await Promise.all([listAllProposalCategories(), getBudgetCategoryMap(), listBudgetCategories()])
+    setCategories(cats)
+    setMapping(map)
+    setBudgetCats(bcats)
+    setLoading(false)
+  }
+
+  async function setMappingFor(category, budgetCategory) {
+    setSavingCat(category)
+    try {
+      if (budgetCategory) {
+        await upsertBudgetCategoryMapping(category, budgetCategory)
+        setMapping(m => ({ ...m, [category]: budgetCategory }))
+      } else {
+        await deleteBudgetCategoryMapping(category)
+        setMapping(m => { const n = { ...m }; delete n[category]; return n })
+      }
+    } finally { setSavingCat('') }
+  }
+
+  async function submitNewCategory() {
+    const name = newCategory.name.trim()
+    if (!name) { setErr('Category name is required'); return }
+    if (categories.some(c => c.toLowerCase() === name.toLowerCase())) { setErr('That proposal category already exists'); return }
+    setErr('')
+    try {
+      // Pre-registers the mapping before any live proposal uses this
+      // category name — the next "+ Add Cost Section" on any proposal
+      // will offer it as a quick-pick (see ProposalsPage.jsx's
+      // orderedCategories/CUSTOM_CATEGORY_SUGGESTIONS).
+      if (newCategory.budgetCategory) await upsertBudgetCategoryMapping(name, newCategory.budgetCategory)
+      setCategories(c => [...c, name])
+      if (newCategory.budgetCategory) setMapping(m => ({ ...m, [name]: newCategory.budgetCategory }))
+      setNewCategory({ name: '', budgetCategory: '' }); setShowAddCategory(false)
+    } catch (e) { setErr(e.message) }
+  }
+
+  async function submitNewBudgetCategory() {
+    const label = newBudgetLabel.trim()
+    if (!label) { setErr('Label is required'); return }
+    if (budgetCats.some(b => b.label.toLowerCase() === label.toLowerCase())) { setErr('That budget category already exists'); return }
+    setErr('')
+    try {
+      const created = await addBudgetCategory(label)
+      setBudgetCats(b => [...b, created])
+      setNewBudgetLabel(''); setShowAddBudgetCat(false)
+    } catch (e) { setErr(e.message) }
+  }
+
+  if (loading) return <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--ink-muted)' }}>Loading...</div>
+
+  return (
+    <div>
+      <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Proposal Budget Mapping</h3>
+      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 20 }}>
+        Every Proposal cost category — standard and custom (from "+ Add Cost Section") — and which planned-budget bucket
+        its cost rolls up into when a proposal is converted to a project. A category left "Not mapped" simply won't seed
+        a planned-budget line on conversion. Both proposal categories and budget categories can be created here.
+      </p>
+      {err && <Alert type="danger" message={err} />}
+
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+        <button className="btn btn-outline btn-sm" onClick={() => setShowAddCategory(v => !v)}><Plus size={13} /> Add Proposal Category</button>
+        <button className="btn btn-outline btn-sm" onClick={() => setShowAddBudgetCat(v => !v)}><Plus size={13} /> Add Budget Category</button>
+      </div>
+
+      {showAddCategory && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', padding: 12, background: 'var(--surface-2, #f8fafc)', borderRadius: 10, marginBottom: 16 }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', marginBottom: 4 }}>New Proposal Category Name</label>
+            <input className="form-input" value={newCategory.name} onChange={e => setNewCategory(c => ({ ...c, name: e.target.value }))} placeholder="e.g. IoT Logger" />
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Budget Category (optional)</label>
+            <select className="form-input" style={{ minWidth: 200 }} value={newCategory.budgetCategory} onChange={e => setNewCategory(c => ({ ...c, budgetCategory: e.target.value }))}>
+              <option value="">— Not mapped —</option>
+              {budgetCats.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+          <button className="btn btn-primary btn-sm" onClick={submitNewCategory}>Add</button>
+          <button className="btn btn-outline btn-sm" onClick={() => { setShowAddCategory(false); setErr('') }}>Cancel</button>
+        </div>
+      )}
+
+      {showAddBudgetCat && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', padding: 12, background: 'var(--surface-2, #f8fafc)', borderRadius: 10, marginBottom: 16 }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', marginBottom: 4 }}>New Budget Category Label</label>
+            <input className="form-input" value={newBudgetLabel} onChange={e => setNewBudgetLabel(e.target.value)} placeholder="e.g. IoT Hardware" />
+          </div>
+          <button className="btn btn-primary btn-sm" onClick={submitNewBudgetCategory}>Add</button>
+          <button className="btn btn-outline btn-sm" onClick={() => { setShowAddBudgetCat(false); setErr('') }}>Cancel</button>
+        </div>
+      )}
+
+      <table className="data-table">
+        <thead><tr><th>Proposal Category</th><th>Type</th><th>Budget Category</th></tr></thead>
+        <tbody>
+          {categories.map(cat => {
+            const isStandard = PROPOSAL_CATEGORIES.includes(cat)
+            return (
+              <tr key={cat}>
+                <td style={{ fontWeight: 600 }}>{cat}</td>
+                <td>
+                  <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', color: isStandard ? 'var(--ink-muted)' : 'var(--c1)', border: `1px solid ${isStandard ? 'var(--border)' : 'var(--c1)'}`, borderRadius: 4, padding: '1px 6px' }}>
+                    {isStandard ? 'Standard' : 'Custom'}
+                  </span>
+                </td>
+                <td>
+                  <select className="form-input" style={{ maxWidth: 240 }} disabled={savingCat === cat}
+                    value={mapping[cat] || ''} onChange={e => setMappingFor(cat, e.target.value || null)}>
+                    <option value="">— Not mapped —</option>
+                    {budgetCats.map(o => <option key={o.value} value={o.value}>{o.label}{o.is_custom ? ' (custom)' : ''}</option>)}
+                  </select>
+                </td>
+              </tr>
+            )
+          })}
+          {categories.length === 0 && <tr><td colSpan={3} style={{ textAlign: 'center', color: 'var(--ink-muted)', padding: 20 }}>No proposal categories found yet.</td></tr>}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -1438,8 +3368,17 @@ function OrganizationTab() {
   const [form, setForm] = useState({ role: 'employee', maxUses: 1, expiresDays: 7 })
   const [err, setErr] = useState('')
   const [roles, setRoles] = useState([])
+  const [emailing, setEmailing] = useState(null) // { id, email, name, busy, sent }
 
   useEffect(() => { load() }, [])
+
+  async function emailInvite(e) {
+    e.preventDefault()
+    if (!isValidEmail(emailing.email)) { setErr('Enter a valid email address'); return }
+    setErr(''); setEmailing(x => ({ ...x, busy: true }))
+    try { await sendInviteEmail(emailing.id, emailing.email, emailing.name); setEmailing(x => ({ ...x, busy: false, sent: x.email })) }
+    catch (e2) { setErr(e2.message); setEmailing(x => ({ ...x, busy: false })) }
+  }
 
   async function load() {
     setLoading(true)
@@ -1516,7 +3455,7 @@ function OrganizationTab() {
               const expired = i.expires_at && new Date(i.expires_at) < new Date()
               const exhausted = i.max_uses && i.use_count >= i.max_uses
               const inactive = i.revoked || expired || exhausted
-              return (
+              return [
                 <tr key={i.id}>
                   <td className="td-bold" style={{ letterSpacing: '.05em', cursor: 'pointer' }} onClick={() => copyCode(i.code)} title="Click to copy">{i.code}</td>
                   <td>{i.role}</td>
@@ -1528,9 +3467,29 @@ function OrganizationTab() {
                       : exhausted ? <span style={{ color: 'var(--ink-muted)', fontWeight: 700, fontSize: 12 }}>Used up</span>
                       : <span style={{ color: '#16a34a', fontWeight: 700, fontSize: 12 }}>Active</span>}
                   </td>
-                  <td>{!inactive && <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }} onClick={() => handleRevoke(i.id)}><Trash2 size={12} /></button>}</td>
-                </tr>
-              )
+                  <td style={{ whiteSpace: 'nowrap', textAlign: 'right' }}>{!inactive && <>
+                    <button className="btn btn-ghost btn-sm" title="Email this invite" onClick={() => setEmailing(emailing?.id === i.id ? null : { id: i.id, email: '', name: '' })}><Mail size={12} /> Email</button>{' '}
+                    <button className="btn btn-ghost btn-sm btn-icon" style={{ color: '#ef4444' }} onClick={() => handleRevoke(i.id)}><Trash2 size={12} /></button>
+                  </>}</td>
+                </tr>,
+                emailing?.id === i.id && (
+                  <tr key={i.id + '-email'}><td colSpan={6} style={{ background: '#f8fafc' }}>
+                    {emailing.sent ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+                        <CheckCircle2 size={14} style={{ color: '#15803d' }} /> Invite emailed to <b>{emailing.sent}</b>.
+                        <button className="btn btn-ghost btn-sm" onClick={() => setEmailing({ id: i.id, email: '', name: '' })}>Send another</button>
+                      </div>
+                    ) : (
+                      <form onSubmit={emailInvite} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <input className="form-input" style={{ width: 240 }} type="email" autoFocus required placeholder="teammate@company.com" value={emailing.email} onChange={e => setEmailing(x => ({ ...x, email: e.target.value }))} />
+                        <input className="form-input" style={{ width: 180 }} placeholder="Name (optional)" value={emailing.name} onChange={e => setEmailing(x => ({ ...x, name: e.target.value }))} />
+                        <button className="btn btn-primary btn-sm" type="submit" disabled={emailing.busy}>{emailing.busy ? 'Sending…' : 'Send invite'}</button>
+                        <span style={{ fontSize: 12, color: 'var(--ink-muted)' }}>Needs email turned on in Settings → Email.</span>
+                      </form>
+                    )}
+                  </td></tr>
+                ),
+              ]
             })}
           </tbody></table></div>
         )}
@@ -1855,6 +3814,9 @@ function PermissionsTab() {
   const [granted, setGranted] = useState(new Set())
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
+  const [query, setQuery] = useState('')
+  const [openCats, setOpenCats] = useState(new Set())
+  const [catBusy, setCatBusy] = useState(null) // `${category}:${roleKey}` while a bulk toggle is in flight
 
   useEffect(() => { load() }, [])
 
@@ -1865,9 +3827,14 @@ function PermissionsTab() {
       setPermissions(perms)
       setRoles(roleList)
       setGranted(new Set(rolePerms.map(rp => `${rp.role_key}:${rp.permission_key}`)))
+      setOpenCats(new Set([perms[0]?.category].filter(Boolean)))
     } catch (e) { setErr(e.message) }
     finally { setLoading(false) }
   }
+
+  // Everyone except the locked role — the grid columns/counts that are
+  // actually meaningful to edit (mirrors gridRoles in RolesModulesTab).
+  const gridRoles = useMemo(() => roles.filter(r => r.role_key !== PERMISSION_LOCKED_ROLE), [roles])
 
   async function toggle(roleKey, permKey) {
     if (roleKey === PERMISSION_LOCKED_ROLE) return
@@ -1881,54 +3848,344 @@ function PermissionsTab() {
     }
   }
 
+  // Grant/revoke every permission in a category at once for one role —
+  // e.g. give `manager` all of "Performance" in one click instead of
+  // ticking each row. Writes sequentially (a category is a handful of
+  // rows at most), same pattern as setSectionEnabled() above.
+  async function toggleCategoryForRole(category, roleKey, perms) {
+    const allGranted = perms.every(p => granted.has(`${roleKey}:${p.key}`))
+    const next = !allGranted
+    setCatBusy(`${category}:${roleKey}`); setErr('')
+    try {
+      for (const p of perms) {
+        const key = `${roleKey}:${p.key}`
+        if (granted.has(key) === next) continue
+        await setRolePermission(roleKey, p.key, next)
+      }
+      setGranted(g => {
+        const s = new Set(g)
+        perms.forEach(p => { const key = `${roleKey}:${p.key}`; next ? s.add(key) : s.delete(key) })
+        return s
+      })
+    } catch (e) { setErr(e.message) }
+    finally { setCatBusy(null) }
+  }
+
+  function toggleCat(cat) {
+    setOpenCats(prev => { const next = new Set(prev); next.has(cat) ? next.delete(cat) : next.add(cat); return next })
+  }
+
   if (loading) return <Loader />
 
+  const totalGrants = gridRoles.length * permissions.length
+  const activeGrants = permissions.reduce((sum, p) => sum + gridRoles.filter(r => granted.has(`${r.role_key}:${p.key}`)).length, 0)
+
+  const q = query.trim().toLowerCase()
   const categories = [...new Set(permissions.map(p => p.category))]
+  const catsData = categories.map(cat => {
+    const perms = permissions.filter(p => p.category === cat)
+    const shown = q ? perms.filter(p => p.label.toLowerCase().includes(q) || p.key.toLowerCase().includes(q) || cat.toLowerCase().includes(q)) : perms
+    const grantedCount = perms.reduce((sum, p) => sum + gridRoles.filter(r => granted.has(`${r.role_key}:${p.key}`)).length, 0)
+    return { cat, perms, shown, grantedCount, total: perms.length * gridRoles.length }
+  }).filter(c => c.shown.length > 0)
 
   return (
     <div>
-      <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 16 }}>
-        Which roles can perform which actions, independent of the Roles &amp; Modules tab's nav visibility. Changes apply immediately, platform-wide (roles aren't per-organization).
-      </p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+        <div>
+          <h3 style={{ fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }}>Permissions</h3>
+          <p style={{ color: 'var(--ink-muted)', fontSize: '0.88rem', maxWidth: 640 }}>
+            Which roles can perform which actions, independent of the Roles &amp; Modules tab's nav visibility. Changes apply immediately, platform-wide (roles aren't per-organization).
+          </p>
+        </div>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-muted)', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 999, padding: '5px 12px', whiteSpace: 'nowrap' }}>
+          {activeGrants} / {totalGrants} grants
+        </span>
+      </div>
+
+      <div style={{ maxWidth: 320, marginBottom: 14 }}>
+        <SearchBox value={query} onChange={setQuery} placeholder="Search permissions..." />
+      </div>
+
       {err && <Alert type="error" message={err} />}
 
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Permission</th>
-              {roles.map(r => (
-                <th key={r.role_key} style={{ textAlign: 'center' }} title={r.role_key === PERMISSION_LOCKED_ROLE ? 'Always fully granted' : undefined}>
-                  {r.label} {r.role_key === PERMISSION_LOCKED_ROLE && <Lock size={11} style={{ verticalAlign: -1 }} />}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {categories.map(cat => (
-              <Fragment key={cat}>
-                <tr style={{ background: 'var(--surface)' }}>
-                  <td colSpan={roles.length + 1} style={{ fontWeight: 700, fontSize: '0.78rem', color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>{cat}</td>
-                </tr>
-                {permissions.filter(p => p.category === cat).map(p => (
-                  <tr key={p.key}>
-                    <td>{p.label}</td>
-                    {roles.map(r => {
-                      const isLocked = r.role_key === PERMISSION_LOCKED_ROLE
-                      const isChecked = isLocked || granted.has(`${r.role_key}:${p.key}`)
-                      return (
-                        <td key={r.role_key} style={{ textAlign: 'center' }}>
-                          <input type="checkbox" checked={isChecked} disabled={isLocked} onChange={() => toggle(r.role_key, p.key)} style={{ cursor: isLocked ? 'not-allowed' : 'pointer' }} />
-                        </td>
-                      )
-                    })}
-                  </tr>
+      {catsData.length === 0 ? (
+        <Empty icon={<Key size={40} />} title="No permissions match" desc={`Nothing matches "${query.trim()}".`} />
+      ) : (
+        <div>
+          {catsData.map(({ cat, shown, grantedCount, total }) => {
+            const isOpen = q ? true : openCats.has(cat)
+            return (
+              <div key={cat} className="mod-section">
+                <button type="button" className="mod-section-head" style={{ width: '100%', border: 'none', font: 'inherit', textAlign: 'left', cursor: 'pointer' }} onClick={() => toggleCat(cat)}>
+                  {isOpen ? <ChevronDown size={14} className="mod-caret" /> : <ChevronRight size={14} className="mod-caret" />}
+                  <span className="mod-section-name">{cat}</span>
+                  <span className="mod-section-count">{grantedCount}/{total} granted</span>
+                </button>
+                {isOpen && shown.map(p => (
+                  <div key={p.key} className="mod-row">
+                    <div className="mod-row-main" style={{ flexBasis: 220 }}>
+                      <div>
+                        <div className="mod-row-label">{p.label}</div>
+                        <div className="mod-row-key">{p.key}</div>
+                      </div>
+                    </div>
+                    <div className="mod-roles">
+                      {gridRoles.map(r => {
+                        const isChecked = granted.has(`${r.role_key}:${p.key}`)
+                        const color = colorForRole(r.color || r.role_key)
+                        return (
+                          <button key={r.role_key} type="button"
+                            className={`chip-toggle ${isChecked ? 'on' : ''}`}
+                            style={isChecked ? { background: color, borderColor: color } : { color }}
+                            title={isChecked ? `${r.label} has this permission — click to revoke` : `Grant to ${r.label}`}
+                            onClick={() => toggle(r.role_key, p.key)}>
+                            {isChecked ? <Check size={11} /> : <X size={11} />} {r.label}
+                          </button>
+                        )
+                      })}
+                      <span className="chip-toggle on" style={{ cursor: 'not-allowed', opacity: .6 }} title="Admin/CEO always has every permission">
+                        <Lock size={11} /> Admin
+                      </span>
+                    </div>
+                  </div>
                 ))}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
+                {isOpen && gridRoles.length > 0 && (
+                  <div className="mod-row" style={{ background: 'var(--surface)' }}>
+                    <div className="mod-row-main" style={{ flexBasis: 220 }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ink-muted)', textTransform: 'uppercase', letterSpacing: '.03em' }}>Grant all in {cat}</span>
+                    </div>
+                    <div className="mod-roles">
+                      {gridRoles.map(r => {
+                        const perms = permissions.filter(p => p.category === cat)
+                        const allGranted = perms.every(p => granted.has(`${r.role_key}:${p.key}`))
+                        const busy = catBusy === `${cat}:${r.role_key}`
+                        return (
+                          <button key={r.role_key} type="button" className="btn btn-ghost btn-sm" disabled={busy}
+                            onClick={() => toggleCategoryForRole(cat, r.role_key, perms)}>
+                            {busy ? '…' : allGranted ? `Revoke all — ${r.label}` : `Grant all — ${r.label}`}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Mobile App (STEP161/163/165) ──
+// Per-org control over which mobile-capable modules appear in the Expo
+// app, plus the "enforce per-user allocation" switch and an effective-
+// access preview. Capability (does a mobile screen exist) is code-owned
+// via mobile_module_capable_keys(); this tab only sets preferences.
+function MobileAppTab() {
+  const { profile } = useAuth()
+  const orgId = profile.organization_id
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState('')
+  const [msg, setMsg] = useState('')
+
+  const [capable, setCapable] = useState([])
+  const [cfg, setCfg] = useState([])
+  const [roles, setRoles] = useState([])
+  const [users, setUsers] = useState([])
+  const [enforce, setEnforce] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [impact, setImpact] = useState(null)
+  const [confirmEnforce, setConfirmEnforce] = useState(false)
+
+  const [pvUser, setPvUser] = useState('')
+  const [pvPlatform, setPvPlatform] = useState('mobile')
+  const [pvRows, setPvRows] = useState(null)
+  const [pvBusy, setPvBusy] = useState(false)
+
+  useEffect(() => { load() }, [])
+  async function load() {
+    setLoading(true); setErr('')
+    try {
+      const [keys, rows, r, enf, u] = await Promise.all([
+        getMobileCapableKeys(),
+        getMobileModuleConfig(orgId),
+        listRoles(),
+        getAllocationEnforcement(orgId),
+        supabase.from('profiles').select('id, full_name, role').eq('organization_id', orgId).order('full_name'),
+      ])
+      setCapable(keys); setCfg(rows); setRoles(r); setEnforce(enf); setUsers(u.data || [])
+    } catch (e) { setErr(e.message) }
+    finally { setLoading(false) }
+  }
+
+  const cfgByKey = useMemo(() => Object.fromEntries(cfg.map(c => [c.module_key, c])), [cfg])
+  const capableSet = useMemo(() => new Set(capable), [capable])
+  const sections = useMemo(
+    () => MODULE_SECTIONS
+      .map(s => ({ section: s, mods: MODULES.filter(m => m.section === s && capableSet.has(m.key)) }))
+      .filter(x => x.mods.length > 0),
+    [capableSet],
+  )
+  const roleOptions = roles.filter(r => !['admin', 'ceo'].includes(r.role_key))
+
+  function flash(m) { setMsg(m); setTimeout(() => setMsg(''), 2500) }
+
+  function patchCfg(key, fields) {
+    setCfg(prev => {
+      const i = prev.findIndex(c => c.module_key === key)
+      if (i >= 0) { const n = [...prev]; n[i] = { ...n[i], ...fields }; return n }
+      return [...prev, { organization_id: orgId, module_key: key, is_enabled: true, min_role: null, ...fields }]
+    })
+  }
+
+  async function toggleShow(key) {
+    const next = !(cfgByKey[key]?.is_enabled ?? true)
+    try { await setMobileModuleConfig(orgId, key, { is_enabled: next }, profile.id); patchCfg(key, { is_enabled: next }) }
+    catch (e) { setErr(e.message) }
+  }
+  async function setMinRole(key, min_role) {
+    try { await setMobileModuleConfig(orgId, key, { min_role: min_role || null }, profile.id); patchCfg(key, { min_role: min_role || null }) }
+    catch (e) { setErr(e.message) }
+  }
+
+  async function onEnforceToggle() {
+    setBusy(true); setErr('')
+    try {
+      if (enforce) { await setAllocationEnforcement(false); setEnforce(false); flash('Allocation enforcement turned off') }
+      else { setImpact(await previewAllocationImpact()); setConfirmEnforce(true) }
+    } catch (e) { setErr(e.message) }
+    finally { setBusy(false) }
+  }
+  async function confirmEnable() {
+    setBusy(true)
+    try {
+      await setAllocationEnforcement(true)
+      setEnforce(true); setConfirmEnforce(false); setImpact(null)
+      flash('Enforcement on — existing members were backfilled')
+    } catch (e) { setErr(e.message) }
+    finally { setBusy(false) }
+  }
+  async function runBackfill() {
+    setBusy(true)
+    try { const n = await backfillAllocations(); flash(`${n} allocation row(s) added`) }
+    catch (e) { setErr(e.message) }
+    finally { setBusy(false) }
+  }
+  async function runPreview() {
+    if (!pvUser) return
+    setPvBusy(true); setErr('')
+    try { setPvRows(await effectiveModulesFor(pvUser, pvPlatform)) }
+    catch (e) { setErr(e.message) }
+    finally { setPvBusy(false) }
+  }
+
+  if (loading) return <Loader />
+
+  const h3 = { fontWeight: 800, fontSize: '1.05rem', marginBottom: 6 }
+  const sub = { color: 'var(--ink-muted)', fontSize: '0.88rem', marginBottom: 14, maxWidth: 640 }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
+      {err && <Alert type="error" message={err} />}
+      {msg && <Alert type="success" message={msg} />}
+
+      {/* 1 — module availability on mobile */}
+      <div>
+        <h3 style={h3}>Module availability on mobile</h3>
+        <p style={sub}>Only modules that already have a mobile screen appear here. Turn one off to hide it in the app, or set a minimum role. Absence of an override = shown to everyone the web rules already allow.</p>
+        {sections.length === 0
+          ? <Empty icon={<Smartphone size={40} />} title="No mobile modules yet" desc="Nothing has a mobile screen registered." />
+          : sections.map(({ section, mods }) => (
+            <div key={section} className="mod-section">
+              <div className="mod-section-head"><span className="mod-section-name">{section}</span></div>
+              {mods.map(m => {
+                const c = cfgByKey[m.key]
+                const shown = c?.is_enabled ?? true
+                return (
+                  <div key={m.key} className="mod-row" style={{ opacity: shown ? 1 : 0.6 }}>
+                    <div className="mod-row-main">
+                      <Toggle checked={shown} onChange={() => toggleShow(m.key)} label={shown ? 'Shown' : 'Hidden'} />
+                      <div style={{ minWidth: 0 }}>
+                        <div className="mod-row-label">{m.label}</div>
+                        <div className="mod-row-key">{m.key}</div>
+                      </div>
+                    </div>
+                    <div className="mod-roles">
+                      <span style={{ fontSize: 11.5, color: 'var(--ink-muted)', fontWeight: 700 }}>Min role</span>
+                      <select className="form-input" style={{ width: 'auto', padding: '4px 8px', fontSize: 12 }}
+                        value={c?.min_role || ''} disabled={!shown}
+                        onChange={e => setMinRole(m.key, e.target.value)}>
+                        <option value="">Anyone</option>
+                        {roleOptions.map(r => <option key={r.role_key} value={r.role_key}>{r.label} &amp; above</option>)}
+                      </select>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          ))}
       </div>
+
+      {/* 2 — allocation enforcement */}
+      <div>
+        <h3 style={h3}>Per-user module allocation</h3>
+        <p style={sub}>While ON, a non-admin user is denied a paid module unless they hold a seat allocation for its bundle — on web <strong>and</strong> mobile. Admin/CEO and Enterprise plans always bypass. Turning it on backfills every active member × active bundle first, so nobody loses access.</p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', border: '1px solid var(--border)', borderRadius: 12, background: 'var(--surface)', flexWrap: 'wrap' }}>
+          <Toggle checked={enforce} disabled={busy} onChange={onEnforceToggle} label={enforce ? 'Enforcing' : 'Off'} />
+          <div style={{ flex: 1, minWidth: 180 }}>
+            <div style={{ fontWeight: 700, fontSize: 13 }}>{enforce ? 'Enforcement is ON' : 'Enforcement is OFF'}</div>
+            <div style={{ fontSize: 12, color: 'var(--ink-muted)' }}>Allocations are managed per bundle in the Billing tab.</div>
+          </div>
+          <button className="btn btn-ghost btn-sm" disabled={busy} onClick={runBackfill}>Run backfill now</button>
+        </div>
+      </div>
+
+      {/* 3 — effective-access preview */}
+      <div>
+        <h3 style={h3}>Effective access preview</h3>
+        <p style={sub}>See exactly which modules a user gets, and the reason for anything hidden.</p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+          <select className="form-input" style={{ width: 'auto' }} value={pvUser} onChange={e => { setPvUser(e.target.value); setPvRows(null) }}>
+            <option value="">Select a user…</option>
+            {users.map(u => <option key={u.id} value={u.id}>{u.full_name} · {u.role}</option>)}
+          </select>
+          <select className="form-input" style={{ width: 'auto' }} value={pvPlatform} onChange={e => { setPvPlatform(e.target.value); setPvRows(null) }}>
+            <option value="mobile">Mobile</option>
+            <option value="web">Web</option>
+          </select>
+          <button className="btn btn-primary btn-sm" disabled={!pvUser || pvBusy} onClick={runPreview}>{pvBusy ? 'Loading…' : 'Preview'}</button>
+        </div>
+        {pvRows && (
+          <div className="mod-section">
+            {pvRows.map(r => (
+              <div key={r.module_key} className="mod-row" style={{ opacity: r.allowed ? 1 : 0.6 }}>
+                <div className="mod-row-main">
+                  {r.allowed ? <Check size={15} style={{ color: 'var(--success)' }} /> : <Lock size={14} style={{ color: 'var(--ink-muted)' }} />}
+                  <div style={{ minWidth: 0 }}>
+                    <div className="mod-row-label">{r.label}</div>
+                    <div className="mod-row-key">{r.module_key} · {r.source}</div>
+                  </div>
+                </div>
+                <div className="mod-roles">
+                  <span style={{ fontSize: 11.5, fontWeight: 700, color: r.allowed ? 'var(--success)' : 'var(--ink-muted)' }}>
+                    {MOBILE_REASON_LABEL[r.reason] || r.reason}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <Confirm open={confirmEnforce} danger
+        message={impact && impact.length
+          ? `${impact.length} (user, module bundle) pair(s) have no allocation today. Enabling will BACKFILL all of them first so nobody loses access, then enforce going forward. Continue?`
+          : 'Every current member gets backfilled, then enforcement turns on. Continue?'}
+        onConfirm={confirmEnable}
+        onCancel={() => { setConfirmEnforce(false); setImpact(null) }} />
     </div>
   )
 }
@@ -1937,13 +4194,29 @@ const TABS = [
   { id: 'organization', label: 'Organization', icon: <Building2 size={15} />, group: 'general', description: "Your organization's name, branding and workspace details" },
   { id: 'roles-modules', label: 'Roles & Modules', icon: <Shield size={15} />, group: 'general', description: 'Control which modules are visible to each role, org-wide' },
   { id: 'permissions', label: 'Permissions', icon: <Key size={15} />, group: 'general', description: 'Fine-grained action permissions per role, e.g. who can approve or grant an award' },
+  { id: 'departments', label: 'Departments', icon: <Building2 size={15} />, group: 'general', description: 'Add, rename or remove departments in your organization' },
+  { id: 'locations', label: 'Locations', icon: <MapPin size={15} />, group: 'general', description: 'Sites, plants, stores, warehouses or any place work happens' },
+  { id: 'teams', label: 'Teams', icon: <Users size={15} />, group: 'general', description: 'Crews, squads or working groups, independent of departments' },
+  { id: 'shifts', label: 'Shifts', icon: <Clock size={15} />, group: 'general', description: 'Shift patterns and who is assigned to them' },
+  { id: 'workspace', label: 'Workspace', icon: <Layers size={15} />, group: 'general', description: 'Industry, business type, modules and dashboard — how this organization is configured' },
+  { id: 'task-templates', label: 'Task Templates', icon: <ClipboardList size={15} />, group: 'general', description: 'Reusable task presets with checklists, applied from Work Items' },
+  { id: 'task-field-rules', label: 'Task Field Rules', icon: <ListChecks size={15} />, group: 'general', description: 'Which fields on the Task form are required — separately for create and edit' },
+  { id: 'task-view', label: 'Task Detail View', icon: <Sliders size={15} />, group: 'general', description: 'Modal or right-side drawer — how a task opens when clicked in Task Management' },
+  { id: 'work-types', label: 'Work Types', icon: <Puzzle size={15} />, group: 'general', description: 'The types available when creating a Work Order or other non-Project work item' },
+  { id: 'status-flows', label: 'Task Status Flows', icon: <GitBranch size={15} />, group: 'general', description: 'Each department gets its own status pipeline for Task Management (e.g. Application: Backlog/Todo/Analysis; Firmware: Backlog/POC/Pilot/Test)' },
+  { id: 'onboarding-tour', label: 'Onboarding & Tour', icon: <Compass size={15} />, group: 'general', description: 'First-run walkthrough slides and the in-app guided tour, for web and mobile' },
   { id: 'billing', label: 'Billing', icon: <CreditCard size={15} />, group: 'general', description: 'Plan, seats, and à-la-carte module add-ons' },
+  { id: 'email', label: 'Email', icon: <Mail size={15} />, group: 'general', description: 'Sender name, scheduled report emails and the delivery log' },
+  { id: 'outlook-email', label: 'Outlook Email', icon: <MailCheck size={15} />, group: 'general', description: 'Turn customer emails in an Outlook mailbox into project action items (Microsoft Graph)' },
+  { id: 'mobile-app', label: 'Mobile App', icon: <Smartphone size={15} />, group: 'general', description: 'Which modules appear in the mobile app, and per-user allocation enforcement' },
   { id: 'approval', label: 'Approval Chain', icon: <GitBranch size={15} />, group: 'finance', description: 'Configure multi-step approval chains per workflow and role' },
   { id: 'budget', label: 'Budget Config', icon: <DollarSign size={15} />, group: 'finance', description: 'Department and project budget thresholds' },
+  { id: 'proposal-budget-mapping', label: 'Proposal Budget Mapping', icon: <GitBranch size={15} />, group: 'finance', description: 'Which planned-budget bucket each Proposal cost category (standard or custom) rolls up into on Convert to Project' },
   { id: 'categories', label: 'Expense Categories', icon: <Tag size={15} />, group: 'finance', description: 'Manage the expense category list' },
   { id: 'gst', label: 'GST Settings', icon: <FileText size={15} />, group: 'finance', description: 'Company GST details and tax configuration' },
   { id: 'document-templates', label: 'Document Templates', icon: <LayoutTemplate size={15} />, group: 'finance', description: 'Design PDF letterheads for invoices, GRNs, warranties and proposals' },
   { id: 'ai-keys', label: 'AI / LLM Keys', icon: <Sparkles size={15} />, group: 'ai', description: 'API keys for DeepSeek and Gemini used by Neo Task AI' },
+  { id: 'email-intelligence', label: 'Email Intelligence', icon: <MailCheck size={15} />, group: 'ai', description: 'Email categories, keywords, document types, PO/GRN/invoice matching and AI settings for incoming email — versioned, with test and rollback' },
   { id: 'ai-capabilities', label: 'AI Capabilities', icon: <Sparkles size={15} />, group: 'ai', description: 'Turn AI-powered features on or off per module' },
   { id: 'sales', label: 'Sales Config', icon: <TrendingUp size={15} />, group: 'sales', description: 'Regions, pipeline stages, assignment rules and sales roles' },
   { id: 'marketing', label: 'Marketing Config', icon: <Megaphone size={15} />, group: 'sales', description: 'Campaign budgets, lookups and marketing configuration' },
@@ -2037,8 +4310,24 @@ export default function SettingsPage() {
             {activeTab === 'permissions' && <PermissionsTab />}
             {activeTab === 'organization' && <OrganizationTab />}
             {activeTab === 'billing' && <BillingTab />}
+            {activeTab === 'mobile-app' && <MobileAppTab />}
+            {activeTab === 'email' && <EmailSettingsTab />}
+            {activeTab === 'outlook-email' && <OutlookSettings />}
+            {activeTab === 'email-intelligence' && <EmailIntelligenceSettings />}
             {activeTab === 'approval' && <ApprovalChainTab />}
+            {activeTab === 'departments' && <DepartmentsTab />}
+            {activeTab === 'locations' && <LocationsTab />}
+            {activeTab === 'teams' && <TeamsTab />}
+            {activeTab === 'shifts' && <ShiftsTab />}
+            {activeTab === 'workspace' && <WorkspaceTab />}
+            {activeTab === 'task-templates' && <TaskTemplatesTab />}
+            {activeTab === 'task-field-rules' && <TaskFieldRulesTab />}
+            {activeTab === 'task-view' && <TaskViewSettingsTab />}
+            {activeTab === 'work-types' && <WorkTypesTab />}
+            {activeTab === 'status-flows' && <StatusFlowsTab />}
+            {activeTab === 'onboarding-tour' && <OnboardingTourTab />}
             {activeTab === 'budget' && <BudgetConfigTab />}
+            {activeTab === 'proposal-budget-mapping' && <ProposalBudgetMappingTab />}
             {activeTab === 'categories' && <ExpenseCategoriesTab />}
             {activeTab === 'gst' && <GSTSettingsTab />}
             {activeTab === 'document-templates' && <DocumentTemplatesTab />}

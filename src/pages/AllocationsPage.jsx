@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext'
 import { supabase, dateFmt } from '../lib/supabase'
 import { useProjects, ProjectSelect } from '../lib/useProjects'
 import { sendNotif } from '../lib/notifications'
+import { checkAllocationConflict, submitAllocationRequest, getRemainingCapacityPct } from '../lib/allocations'
 import { Modal, Loader, Empty, Alert, StatusBadge, SearchBox } from '../components/ui'
 import { CalendarRange, Plus, Check, X, AlertTriangle } from 'lucide-react'
 
@@ -27,11 +28,21 @@ export default function AllocationsPage() {
   const [subordinates, setSubordinates] = useState([])
   const [myAllocations, setMyAllocations] = useState([])
   const [allAllocations, setAllAllocations] = useState([])
+  // Legacy hours-per-month allocations (project_resource_alloc, entered
+  // from a Project's own "Resources" tab) — a completely separate table
+  // from `allocations` above, with no % or approval workflow of its own.
+  // Included here so this page is a genuinely COMPLETE list of who's
+  // allocated where, regardless of which of this app's two allocation
+  // systems it was entered through (see ProjectsPage.jsx's Resourcing tab
+  // for the same unification).
+  const [myLegacy, setMyLegacy] = useState([])
+  const [allLegacy, setAllLegacy] = useState([])
   const [pendingApprovals, setPendingApprovals] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [form, setForm] = useState(initForm())
   const [conflict, setConflict] = useState(null)
+  const [remainingPct, setRemainingPct] = useState(null) // this employee's capacity left, company-wide — null = not yet known
   const [submitting, setSubmitting] = useState(false)
   const [rejectTarget, setRejectTarget] = useState(null)
   const [rejectReason, setRejectReason] = useState('')
@@ -42,20 +53,42 @@ export default function AllocationsPage() {
 
   async function load() {
     setLoading(true)
-    const [uR, subR, myR] = await Promise.all([
+    const [uR, subR, myR, myLegR] = await Promise.all([
       supabase.from('profiles').select('id,full_name,role,reporting_manager_id,default_weekly_capacity_hours').order('full_name'),
       supabase.from('profiles').select('id,full_name').eq('reporting_manager_id', profile.id),
       supabase.from('allocations').select('*,project:projects(name),employee:profiles!employee_id(full_name)').eq('employee_id', profile.id).order('created_at', { ascending: false }),
+      supabase.from('project_resource_alloc').select('*,project:projects(name),employee:profiles!employee_id(full_name)').eq('employee_id', profile.id).order('created_at', { ascending: false }),
     ])
     setUsers(uR.data || [])
     setSubordinates(subR.data || [])
     setMyAllocations(myR.data || [])
+    setMyLegacy(myLegR.data || [])
 
     if (isViewAll || canRequest) {
-      const { data } = await supabase.from('allocations').select('*,project:projects(name),employee:profiles!employee_id(full_name),requester:profiles!requested_by(full_name)').order('created_at', { ascending: false })
+      const [{ data }, { data: legacyData }] = await Promise.all([
+        supabase.from('allocations').select('*,project:projects(name),employee:profiles!employee_id(full_name),requester:profiles!requested_by(full_name)').order('created_at', { ascending: false }),
+        supabase.from('project_resource_alloc').select('*,project:projects(name),employee:profiles!employee_id(full_name)').order('created_at', { ascending: false }),
+      ])
       setAllAllocations(data || [])
+      setAllLegacy(legacyData || [])
     }
     setLoading(false)
+  }
+
+  // Normalizes a project_resource_alloc row into the same shape the table
+  // below renders `allocations` rows in — % is derived from that month's
+  // hours ÷ weeks-in-month ÷ the employee's weekly capacity, "Start/End"
+  // becomes the whole calendar month, and there's no approval Status (it's
+  // just tagged "Legacy").
+  function normalizeLegacy(r) {
+    const emp = users.find(u => u.id === r.employee_id)
+    const weeklyCap = emp?.default_weekly_capacity_hours || 40
+    const weeks = new Date(r.year, r.month, 0).getDate() / 7
+    const hrsWk = weeks > 0 ? (Number(r.allocated_hours) || 0) / weeks : 0
+    const percent = weeklyCap > 0 ? Math.round((hrsWk / weeklyCap) * 100) : 0
+    const monthStart = new Date(r.year, r.month - 1, 1).toISOString().slice(0, 10)
+    const monthEnd = new Date(r.year, r.month, 0).toISOString().slice(0, 10)
+    return { ...r, isLegacy: true, allocation_percent: percent, allocation_hours_per_week: Math.round(hrsWk * 10) / 10, role_on_project: null, start_date: monthStart, end_date: monthEnd, status: null, requester: null }
   }
 
   useEffect(() => {
@@ -68,34 +101,30 @@ export default function AllocationsPage() {
     })()
   }, [subordinates, myAllocations, allAllocations])
 
-  // Overlap-based over-allocation conflict check
-  async function checkConflict(employeeId, newPercent, start, end, excludeId) {
-    if (!employeeId || !start || !newPercent) return null
-    const { data } = await supabase.from('allocations')
-      .select('*,project:projects(name)')
-      .eq('employee_id', employeeId).in('status', ['requested', 'approved', 'active'])
-    const rows = (data || []).filter(a => a.id !== excludeId)
-    const reqStart = new Date(start).getTime()
-    const reqEnd = end ? new Date(end).getTime() : new Date('9999-12-31').getTime()
-    const overlapping = rows.filter(a => {
-      const exStart = new Date(a.start_date).getTime()
-      const exEnd = a.end_date ? new Date(a.end_date).getTime() : new Date('9999-12-31').getTime()
-      return exStart <= reqEnd && exEnd >= reqStart
-    })
-    const committedPct = overlapping.reduce((s, a) => s + Number(a.allocation_percent || 0), 0)
-    const projectedTotal = committedPct + Number(newPercent || 0)
-    if (projectedTotal > 100) return { overlapping, committedPct, projectedTotal }
-    return null
-  }
-
   useEffect(() => {
     (async () => {
       if (form.employee_id && form.start_date && form.allocation_percent) {
-        const c = await checkConflict(form.employee_id, form.allocation_percent, form.start_date, form.end_date)
+        const c = await checkAllocationConflict(form.employee_id, form.allocation_percent, form.start_date, form.end_date)
         setConflict(c)
       } else setConflict(null)
     })()
   }, [form.employee_id, form.start_date, form.end_date, form.allocation_percent])
+
+  // Shows (and caps the % field at) how much capacity this person actually
+  // has left, company-wide — same definition as "Still Available" on a
+  // project's Resourcing tab, so the number here always agrees with what
+  // shows up afterward. Only refetches on employee change (not on every %
+  // keystroke), then clamps the CURRENT % down if it's above what's left.
+  useEffect(() => {
+    if (!form.employee_id) { setRemainingPct(null); return }
+    let cancelled = false
+    getRemainingCapacityPct(form.employee_id).then(pct => {
+      if (cancelled) return
+      setRemainingPct(pct)
+      setForm(f => (Number(f.allocation_percent) > pct ? { ...f, allocation_percent: Math.max(0, pct) } : f))
+    })
+    return () => { cancelled = true }
+  }, [form.employee_id])
 
   async function submitRequest(e) {
     e.preventDefault()
@@ -103,26 +132,21 @@ export default function AllocationsPage() {
     setSubmitting(true)
     try {
       const employee = users.find(u => u.id === form.employee_id)
-      const hours = Math.round((Number(form.allocation_percent) / 100) * Number(employee?.default_weekly_capacity_hours || 40) * 100) / 100
-      const { error } = await supabase.from('allocations').insert({
-        employee_id: form.employee_id, project_id: form.project_id,
-        allocation_percent: form.allocation_percent, allocation_hours_per_week: hours,
-        role_on_project: form.role_on_project || null,
-        start_date: form.start_date, end_date: form.end_date || null,
-        requested_by: profile.id,
-        override_flag: !!conflict, override_justification: conflict ? form.override_justification : null,
+      await submitAllocationRequest({
+        employeeId: form.employee_id, projectId: form.project_id, percent: form.allocation_percent,
+        roleOnProject: form.role_on_project, startDate: form.start_date, endDate: form.end_date,
+        requestedBy: profile.id, weeklyCapacity: employee?.default_weekly_capacity_hours,
+        conflict, overrideJustification: form.override_justification,
+        reportingManagerId: employee?.reporting_manager_id, employeeName: employee?.full_name,
+        projectName: projects.find(p => p.id === form.project_id)?.name,
       })
-      if (error) throw error
-      if (employee?.reporting_manager_id) {
-        sendNotif(employee.reporting_manager_id, { type: 'allocation_request', title: '📋 New allocation request', body: `${employee.full_name} → ${projects.find(p => p.id === form.project_id)?.name || 'project'} (${form.allocation_percent}%)`, link: '/allocations', senderId: profile.id })
-      }
       setForm(initForm()); setConflict(null); load()
       alert(employee?.reporting_manager_id ? 'Request submitted for approval.' : 'Request saved — but this employee has no reporting manager set, so it cannot be approved until one is assigned on the Users page.')
     } catch (e) { alert(e.message) } finally { setSubmitting(false) }
   }
 
   async function approve(a) {
-    const c = await checkConflict(a.employee_id, a.allocation_percent, a.start_date, a.end_date, a.id)
+    const c = await checkAllocationConflict(a.employee_id, a.allocation_percent, a.start_date, a.end_date, a.id)
     if (c && !confirm(`This would put ${a.employee?.full_name} at ${c.projectedTotal}% allocated for overlapping dates. Approve anyway?`)) return
     await supabase.from('allocations').update({ status: 'approved', approved_by: profile.id, approved_at: new Date().toISOString(), override_flag: !!c || a.override_flag }).eq('id', a.id)
     sendNotif(a.requested_by, { type: 'allocation_approved', title: '✅ Allocation approved', body: `${a.employee?.full_name} → ${a.project?.name}`, link: '/allocations', senderId: profile.id })
@@ -136,13 +160,17 @@ export default function AllocationsPage() {
     setRejectTarget(null); setRejectReason(''); load()
   }
 
-  const source = tab === 'all' ? allAllocations : myAllocations
+  const source = tab === 'all' ? [...allAllocations, ...allLegacy.map(normalizeLegacy)] : [...myAllocations, ...myLegacy.map(normalizeLegacy)]
   const filtered = source.filter(a => !search || a.employee?.full_name?.toLowerCase().includes(search.toLowerCase()) || a.project?.name?.toLowerCase().includes(search.toLowerCase()))
-  const kpiSource = isViewAll ? allAllocations : myAllocations
+  const kpiSource = isViewAll ? [...allAllocations, ...allLegacy] : [...myAllocations, ...myLegacy]
   const kpis = {
     total: kpiSource.length,
     pending: kpiSource.filter(a => a.status === 'requested').length,
-    active: kpiSource.filter(a => ['approved', 'active'].includes(a.status)).length,
+    // Legacy rows (project_resource_alloc) have no `status` column at all
+    // and no approval workflow — they're a standing commitment the moment
+    // they exist, so they always count as "active" here, same as an
+    // approved/active row from the newer system.
+    active: kpiSource.filter(a => ['approved', 'active'].includes(a.status) || a.status === undefined).length,
     closed: kpiSource.filter(a => ['rejected', 'cancelled'].includes(a.status)).length,
   }
 
@@ -194,8 +222,10 @@ export default function AllocationsPage() {
                       <td style={{ fontFamily: 'var(--font-mono)' }}>{a.allocation_hours_per_week ?? '—'}</td>
                       <td>{a.role_on_project || '—'}</td>
                       <td>{dateFmt(a.start_date)}</td>
-                      <td>{a.end_date ? dateFmt(a.end_date) : 'Ongoing'}</td>
-                      <td><StatusBadge status={a.status} /></td>
+                      <td>{a.isLegacy ? dateFmt(a.end_date) : (a.end_date ? dateFmt(a.end_date) : 'Ongoing')}</td>
+                      <td>{a.isLegacy
+                        ? <span title="Entered via the project's own Resources tab (hours/month), not this Allocations workflow — no approval status of its own" style={{ padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700, background: '#f1f5f9', color: '#64748b' }}>Legacy (hrs)</span>
+                        : <StatusBadge status={a.status} />}</td>
                       <td>{a.requester?.full_name || '—'}</td>
                     </tr>
                   ))}
@@ -225,7 +255,12 @@ export default function AllocationsPage() {
           <div className="form-row">
             <div className="form-group">
               <label className="form-label">Allocation % *</label>
-              <input className="form-input" type="number" min={1} max={100} value={form.allocation_percent} onChange={e => setForm(f => ({ ...f, allocation_percent: e.target.value }))} required />
+              <input className="form-input" type="number" min={1} max={remainingPct != null ? Math.max(1, remainingPct) : 100} value={form.allocation_percent} onChange={e => setForm(f => ({ ...f, allocation_percent: e.target.value }))} required />
+              {remainingPct != null && (
+                <div style={{ fontSize: 11, marginTop: 3, fontWeight: 600, color: remainingPct <= 0 ? '#dc2626' : remainingPct < 20 ? '#b45309' : '#16a34a' }}>
+                  {remainingPct <= 0 ? `⚠ Fully booked (${Math.abs(remainingPct)}% over) across their other allocations` : `${remainingPct}% available — everything else they're on already uses ${100 - remainingPct}%`}
+                </div>
+              )}
             </div>
             <div className="form-group">
               <label className="form-label">Role on Project</label>

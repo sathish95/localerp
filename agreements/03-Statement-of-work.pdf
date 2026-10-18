@@ -1,0 +1,545 @@
+%PDF-1.3
+%ºß¬à
+3 0 obj
+<</Type /Page
+/Parent 1 0 R
+/Resources 2 0 R
+/MediaBox [0 0 595.2799999999999727 841.8899999999999864]
+/Contents 4 0 R
+>>
+endobj
+4 0 obj
+<<
+/Length 6265
+>>
+stream
+0.5670000000000001 w
+0 G
+BT
+/F1 8.5 Tf
+9.7749999999999986 TL
+0.392 0.455 0.545 rg
+51.0236220472441033 796.5356692913385359 Td
+(ThingsAlive Technologies) Tj
+ET
+BT
+/F1 8.5 Tf
+9.7749999999999986 TL
+0.392 0.455 0.545 rg
+402.9863779527559018 796.5356692913385359 Td
+(AGR-2026-0003  |  Statement of work) Tj
+ET
+0.89 0.91 0.94 RG
+51.0236220472441033 788.0317322834645211 m
+544.2563779527558836 788.0317322834645211 l
+S
+BT
+/F2 16 Tf
+18.3999999999999986 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 762.5199212598424765 Td
+(Statement of Work - Fleet Telematics Rollout - Phase 1) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 730.3183464566928933 Td
+(This Statement of Work \("SOW"\) dated 3 Nov 2026 is between ThingsAlive Technologies, No. 12, 3rd Floor,) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 717.2789763779527448 Td
+(Tidel Park, Rajiv Gandhi Salai, Taramani, Chennai 600113 \("Supplier"\) and Metro Logistics Pvt Ltd, 7th Floor,) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 704.2396062992125962 Td
+(Prestige Tower, Residency Road, Bengaluru 560025 \("Client"\). It is governed by the Master Service Agreement) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 691.200236220472334 Td
+(dated 1 September 2026.) Tj
+ET
+BT
+/F2 11.5 Tf
+13.2249999999999996 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 667.6726771653543437 Td
+(1. Scope) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 648.42543307086612 Td
+(Supply, install and commission GPS + CAN-bus telematics units on 250 trucks across the Bengaluru, Chennai) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 635.3860629921259715 Td
+(and Hyderabad depots, integrate fuel-level sensors, and configure the NeoX fleet dashboard with driver) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 622.346692913385823 Td
+(scorecards and geofence alerts.) Tj
+ET
+BT
+/F2 11.5 Tf
+13.2249999999999996 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 598.819133858267719 Td
+(2. Deliverables) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+56.6929133858267775 579.5718897637794953 Td
+(-) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+68.031496062992133 579.5718897637794953 Td
+(250 telematics units installed and live on the dashboard) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+56.6929133858267775 563.1309448818897181 Td
+(-) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+68.031496062992133 563.1309448818897181 Td
+(Fuel sensor integration for 120 tankers) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+56.6929133858267775 546.6899999999999409 Td
+(-) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+68.031496062992133 546.6899999999999409 Td
+(Driver behaviour scorecard and weekly report) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+56.6929133858267775 530.2490551181101637 Td
+(-) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+68.031496062992133 530.2490551181101637 Td
+(Integration with Metro's SAP via REST API) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+56.6929133858267775 513.8081102362205002 Td
+(-) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+68.031496062992133 513.8081102362205002 Td
+(Training for 15 depot supervisors and an admin handbook) Tj
+ET
+BT
+/F2 11.5 Tf
+13.2249999999999996 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 493.1151968503936587 Td
+(3. Out of scope) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 473.8679527559054918 Td
+(Vehicle electrical repairs, SIM data charges beyond 500 MB per unit per month, and changes to SAP.) Tj
+ET
+BT
+/F2 11.5 Tf
+13.2249999999999996 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 450.3403937007874447 Td
+(4. Timeline) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 431.0931496062992778 Td
+(Work starts on 3 Nov 2026 and is planned to be completed by 31 Jan 2027.) Tj
+ET
+BT
+/F2 11.5 Tf
+13.2249999999999996 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 407.5655905511812307 Td
+(5. Milestones and payment) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+56.6929133858267775 388.3183464566930638 Td
+(-) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+68.031496062992133 388.3183464566930638 Td
+(20% on signing) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+56.6929133858267775 371.8774015748033435 Td
+(-) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+68.031496062992133 371.8774015748033435 Td
+(40% on installation of 250 units \(target 15 Dec 2026\)) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+56.6929133858267775 355.4364566929136231 Td
+(-) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+68.031496062992133 355.4364566929136231 Td
+(30% on go-live and user acceptance \(target 10 Jan 2027\)) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+56.6929133858267775 338.9955118110239027 Td
+(-) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+68.031496062992133 338.9955118110239027 Td
+(10% after 30 days of stable operation) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 322.5545669291341255 Td
+(Total fees: INR 28,50,000.00 plus applicable taxes.) Tj
+ET
+BT
+/F2 11.5 Tf
+13.2249999999999996 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 299.0270078740161352 Td
+(6. Acceptance) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 279.7797637795279115 Td
+(The Client shall review each deliverable within 7 days of delivery and either accept it or list the defects in writing.) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 266.740393700787763 Td
+(A deliverable not rejected in that period is treated as accepted.) Tj
+ET
+BT
+/F2 11.5 Tf
+13.2249999999999996 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 243.2128346456697727 Td
+(7. Change requests) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 223.965590551181549 Td
+(Any change to scope, timeline or fees needs a written change request agreed by both parties.) Tj
+ET
+BT
+/F1 10 Tf
+11.5 TL
+0.059 0.09 0.165 rg
+51.0236220472441033 204.6900000000005093 Td
+(Signed electronically by the authorised representatives of both parties.) Tj
+ET
+BT
+/F1 7.5 Tf
+8.625 TL
+0.58 0.639 0.722 rg
+51.0236220472441033 22.6771653543306684 Td
+(AGR-2026-0003  SOW: Fleet telematics rollout, Phase 1) Tj
+ET
+BT
+/F1 7.5 Tf
+8.625 TL
+0.58 0.639 0.722 rg
+506.1563779527558609 22.6771653543306684 Td
+(Page 1 of 1) Tj
+ET
+endstream
+endobj
+1 0 obj
+<</Type /Pages
+/Kids [3 0 R ]
+/Count 1
+>>
+endobj
+5 0 obj
+<<
+/Type /Font
+/BaseFont /Helvetica
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+6 0 obj
+<<
+/Type /Font
+/BaseFont /Helvetica-Bold
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+7 0 obj
+<<
+/Type /Font
+/BaseFont /Helvetica-Oblique
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+8 0 obj
+<<
+/Type /Font
+/BaseFont /Helvetica-BoldOblique
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+9 0 obj
+<<
+/Type /Font
+/BaseFont /Courier
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+10 0 obj
+<<
+/Type /Font
+/BaseFont /Courier-Bold
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+11 0 obj
+<<
+/Type /Font
+/BaseFont /Courier-Oblique
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+12 0 obj
+<<
+/Type /Font
+/BaseFont /Courier-BoldOblique
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+13 0 obj
+<<
+/Type /Font
+/BaseFont /Times-Roman
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+14 0 obj
+<<
+/Type /Font
+/BaseFont /Times-Bold
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+15 0 obj
+<<
+/Type /Font
+/BaseFont /Times-Italic
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+16 0 obj
+<<
+/Type /Font
+/BaseFont /Times-BoldItalic
+/Subtype /Type1
+/Encoding /WinAnsiEncoding
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+17 0 obj
+<<
+/Type /Font
+/BaseFont /ZapfDingbats
+/Subtype /Type1
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+18 0 obj
+<<
+/Type /Font
+/BaseFont /Symbol
+/Subtype /Type1
+/FirstChar 32
+/LastChar 255
+>>
+endobj
+2 0 obj
+<<
+/ProcSet [/PDF /Text /ImageB /ImageC /ImageI]
+/Font <<
+/F1 5 0 R
+/F2 6 0 R
+/F3 7 0 R
+/F4 8 0 R
+/F5 9 0 R
+/F6 10 0 R
+/F7 11 0 R
+/F8 12 0 R
+/F9 13 0 R
+/F10 14 0 R
+/F11 15 0 R
+/F12 16 0 R
+/F13 17 0 R
+/F14 18 0 R
+>>
+/XObject <<
+>>
+>>
+endobj
+19 0 obj
+<<
+/Producer (jsPDF 2.5.2)
+/CreationDate (D:20261018082539+05'30')
+>>
+endobj
+20 0 obj
+<<
+/Type /Catalog
+/Pages 1 0 R
+/OpenAction [3 0 R /FitH null]
+/PageLayout /OneColumn
+>>
+endobj
+xref
+0 21
+0000000000 65535 f 
+0000006469 00000 n 
+0000008286 00000 n 
+0000000015 00000 n 
+0000000152 00000 n 
+0000006526 00000 n 
+0000006651 00000 n 
+0000006781 00000 n 
+0000006914 00000 n 
+0000007051 00000 n 
+0000007174 00000 n 
+0000007303 00000 n 
+0000007435 00000 n 
+0000007571 00000 n 
+0000007699 00000 n 
+0000007826 00000 n 
+0000007955 00000 n 
+0000008088 00000 n 
+0000008190 00000 n 
+0000008534 00000 n 
+0000008620 00000 n 
+trailer
+<<
+/Size 21
+/Root 20 0 R
+/Info 19 0 R
+/ID [ <9E426C462D5272C08C9D1995DDAD462B> <9E426C462D5272C08C9D1995DDAD462B> ]
+>>
+startxref
+8724
+%%EOF

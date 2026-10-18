@@ -2,7 +2,11 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { MISSING_ENV } from './lib/supabase'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { BrandingProvider } from './context/BrandingContext'
+import { MaintenanceProvider, useMaintenance } from './context/MaintenanceContext'
+import MaintenancePage from './pages/MaintenancePage'
 import { TabVisibilityProvider } from './context/TabVisibilityContext'
+import { WorkspaceProvider, useWorkspace } from './context/WorkspaceContext'
+import WorkspaceOnboardingPage from './pages/WorkspaceOnboardingPage'
 import Layout from './components/layout/Layout'
 import ModuleGate from './components/ModuleGate'
 import { Loader } from './components/ui'
@@ -11,12 +15,15 @@ import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import OrgHomePage from './pages/OrgHomePage'
 import KnowledgeBasePage from './pages/KnowledgeBasePage'
+import WikiPage from './pages/WikiPage'
+import EmbedWikiPage from './pages/EmbedWikiPage'
 import ExpensesPage from './pages/ExpensesPage'
 import ApprovalsPage from './pages/ApprovalsPage'
 import VendorsPage from './pages/VendorsPage'
 import ProjectsPage from './pages/ProjectsPage'
 import BudgetPage from './pages/BudgetPage'
 import AssetsPage from './pages/AssetsPage'
+import ROIPlanningPage from './pages/ROIPlanningPage'
 import TravelPage from './pages/TravelPage'
 import ProcurementPage from './pages/ProcurementPage'
 import InvoicesPage from './pages/InvoicesPage'
@@ -37,8 +44,15 @@ import AuthPage from './pages/AuthPage'
 import AdminContentPage from './pages/AdminContentPage'
 import ResourcePage from './pages/ResourcePage'
 import TasksPage from './pages/TasksPage'
+import WorkItemsPage from './pages/WorkItemsPage'
+import MyWorkPage from './pages/MyWorkPage'
+import TeamWorkPage from './pages/TeamWorkPage'
+import DailyStatusPage from './pages/DailyStatusPage'
+import EmailToTasksPage from './pages/EmailToTasksPage'
+import OutlookInboxPage from './pages/OutlookInboxPage'
 import NeoTaskAIPage from './pages/NeoTaskAIPage'
 import CustomersPage from './pages/CustomersPage'
+import ContactsPage from './pages/ContactsPage'
 import ProductsPage from './pages/ProductsPage'
 import BomManagementPage from './pages/BomManagementPage'
 import InventoryPage from './pages/InventoryPage'
@@ -46,14 +60,19 @@ import DevicesPage from './pages/DevicesPage'
 import SkillMatrixPage from './pages/SkillMatrixPage'
 import AllocationsPage from './pages/AllocationsPage'
 import CapacityPage from './pages/CapacityPage'
+import ActivityPlannerPage from './pages/ActivityPlannerPage'
 import RoleRatesPage from './pages/RoleRatesPage'
 import CustomerInvoicesPage from './pages/CustomerInvoicesPage'
 import DeliveryNotesPage from './pages/DeliveryNotesPage'
 import PaymentsPage from './pages/PaymentsPage'
 import AgingReportPage from './pages/AgingReportPage'
 import ProfitMarginPage from './pages/ProfitMarginPage'
+import PortfolioDashboardPage from './pages/PortfolioDashboardPage'
 import SpendAnalyzerPage from './pages/SpendAnalyzerPage'
 import WarrantyPage from './pages/WarrantyPage'
+import GoLiveSupportPage from './pages/GoLiveSupportPage'
+import GoLiveEngagementPage from './pages/GoLiveEngagementPage'
+import PublicGoLiveReportPage from './pages/PublicGoLiveReportPage'
 import DataAssistantPage from './pages/DataAssistantPage'
 import ProposalsPage from './pages/ProposalsPage'
 import LeadsPage from './pages/LeadsPage'
@@ -69,6 +88,12 @@ import SalesTimelinePage from './pages/SalesTimelinePage'
 import SalesDashboardPage from './pages/SalesDashboardPage'
 import PublicLeadFormPage from './pages/PublicLeadFormPage'
 import PublicMeetingBookingPage from './pages/PublicMeetingBookingPage'
+import PublicROIViewPage from './pages/PublicROIViewPage'
+import PublicProposalSharePage from './pages/PublicProposalSharePage'
+import PublicDailyStatusPage from './pages/PublicDailyStatusPage'
+import PublicSignPage from './pages/PublicSignPage'
+import AgreementsPage from './pages/AgreementsPage'
+import ResetPasswordPage from './pages/ResetPasswordPage'
 import CampaignsPage from './pages/CampaignsPage'
 import LandingPagesPage from './pages/LandingPagesPage'
 import ContentAssetsPage from './pages/ContentAssetsPage'
@@ -107,10 +132,45 @@ import SupportTicketsPage from './pages/SupportTicketsPage'
 import SupportTicketDetailPage from './pages/SupportTicketDetailPage'
 import SupportDeskPage from './pages/SupportDeskPage'
 import SupportDeskSettingsPage from './pages/SupportDeskSettingsPage'
+import ITHelpdeskPage from './pages/ITHelpdeskPage'
+import ITHelpdeskTicketPage from './pages/ITHelpdeskTicketPage'
+import ITHelpdeskSettingsPage from './pages/ITHelpdeskSettingsPage'
 import { NotificationProvider } from './context/NotificationContext'
+import { PresenceProvider } from './context/PresenceContext'
+
+// Industry-Adaptive Platform — Phase 2. Gates a brand-new org (created
+// via the 'create' org_mode signup branch, STEP181) into the workspace
+// onboarding wizard before it ever sees the normal app shell. Existing
+// orgs (workspace_profiles.needs_onboarding = false, seeded false by
+// STEP180/backfilled false by STEP181) never match this condition, so
+// they fall straight through to `children` exactly as before this phase
+// existed. Rendered OUTSIDE TabVisibilityProvider/Layout — the wizard is
+// its own full-screen flow, no sidebar/nav chrome.
+function WorkspaceOnboardingGate({ children }) {
+  const { workspace, loading } = useWorkspace()
+  const location = useLocation()
+
+  // Unresolved yet — hold rather than flash the normal app shell (or the
+  // wizard) before we actually know which one is correct.
+  if (loading) return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh' }}><div className="spinner" /></div>
+
+  const needsOnboarding = workspace?.needs_onboarding === true
+  if (location.pathname === '/workspace-onboarding') {
+    // Reachable only while still needed — once launched/skipped this
+    // flips false and a stale bookmark just bounces to the dashboard.
+    return needsOnboarding
+      ? <Routes><Route path="/workspace-onboarding" element={<WorkspaceOnboardingPage />} /></Routes>
+      : <Navigate to="/" replace />
+  }
+  if (needsOnboarding) {
+    return <Routes><Route path="*" element={<Navigate to="/workspace-onboarding" replace />} /></Routes>
+  }
+  return children
+}
 
 function AppRoutes() {
   const { user, profile, loading } = useAuth()
+  const { maintenanceOn } = useMaintenance()
   const location = useLocation()
   if (loading) return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh' }}><div className="spinner" /></div>
 
@@ -124,14 +184,46 @@ function AppRoutes() {
   if (location.pathname.startsWith('/book/')) {
     return <Routes><Route path="/book/:slug" element={<PublicMeetingBookingPage />} /></Routes>
   }
+  if (location.pathname.startsWith('/roi-view/')) {
+    return <Routes><Route path="/roi-view/:token" element={<PublicROIViewPage />} /></Routes>
+  }
+  if (location.pathname.startsWith('/proposal-view/')) {
+    return <Routes><Route path="/proposal-view/:token" element={<PublicProposalSharePage />} /></Routes>
+  }
+  if (location.pathname.startsWith('/golive-report/')) {
+    return <Routes><Route path="/golive-report/:token" element={<PublicGoLiveReportPage />} /></Routes>
+  }
+  if (location.pathname.startsWith('/daily-status-view/')) {
+    return <Routes><Route path="/daily-status-view/:token" element={<PublicDailyStatusPage />} /></Routes>
+  }
+  if (location.pathname.startsWith('/sign/')) {
+    return <Routes><Route path="/sign/:token" element={<PublicSignPage />} /></Routes>
+  }
+  // Password-reset link from Supabase Auth's email — must render whether or
+  // not the recovery token has already turned into a session.
+  if (location.pathname === '/reset-password') {
+    return <Routes><Route path="/reset-password" element={<ResetPasswordPage />} /></Routes>
+  }
   if (location.pathname.startsWith('/verify/')) {
     return <Routes><Route path="/verify/:certificateNumber" element={<CertificateVerifyPage />} /></Routes>
+  }
+  // Chrome-free host for the mobile app's WebView-embedded wiki editor —
+  // same PageEditor component the web app uses, no Layout/sidebar. Has no
+  // session yet on first load (the WebView starts blank); EmbedWikiPage
+  // itself waits for a postMessage handoff from the native app, calls
+  // supabase.auth.setSession(), and this component re-renders once
+  // useAuth() picks up the new session — so it must be reachable
+  // regardless of the current `user` state, same as the routes above.
+  if (location.pathname.startsWith('/embed/wiki/')) {
+    return <Routes><Route path="/embed/wiki/:pageId" element={<EmbedWikiPage />} /></Routes>
   }
 
   if (!user) return (
     <Routes>
       <Route path="/" element={<LandingPage />} />
       <Route path="/auth" element={<AuthPage />} />
+      {/* links from emails (e.g. "Please sign …") come back here after login */}
+      <Route path="/agreements" element={<Navigate to={`/auth?next=${encodeURIComponent(location.pathname + location.search)}`} replace />} />
       <Route path="*" element={<LandingPage />} />
     </Routes>
   )
@@ -164,6 +256,18 @@ function AppRoutes() {
   }
 
   const role = profile?.role || 'employee'
+
+  // Platform-wide maintenance mode (STEP204) — a platform super admin can
+  // flip this on from /super-admin. admin/ceo/hr (trusted org roles) and
+  // platform super admins are exempt so someone can always get in to turn
+  // it back off (and HR can keep working, e.g. for anything time-
+  // sensitive like leave/payroll); every other role gets the full-page
+  // block below, checked after the org-suspended/deactivated/vendor
+  // gates above but before any normal route renders.
+  if (maintenanceOn && !profile?.is_super_admin && !['admin','ceo','hr'].includes(role)) {
+    return <MaintenancePage />
+  }
+
   const isManager = ['admin','ceo','manager','department_head'].includes(role)
   const isFinance  = ['admin','ceo','finance'].includes(role)
   const isAdmin    = ['admin','ceo'].includes(role)
@@ -187,29 +291,45 @@ function AppRoutes() {
   const canViewWarranty = ['admin','ceo','manager','department_head','finance','procurement_lead','pm','cto','field_technician'].includes(role)
 
   return (
+    <WorkspaceProvider>
+    <WorkspaceOnboardingGate>
     <TabVisibilityProvider>
       <NotificationProvider>
+      <PresenceProvider>
       <Layout>
         <Routes>
           <Route path="/" element={<ModuleGate tab="dashboard" allowed={true}><DashboardPage /></ModuleGate>} />
           <Route path="/org-home" element={<ModuleGate tab="org-home" allowed={true}><OrgHomePage /></ModuleGate>} />
           <Route path="/knowledge-base" element={<ModuleGate tab="knowledge-base" allowed={true}><KnowledgeBasePage /></ModuleGate>} />
+          <Route path="/wiki" element={<ModuleGate tab="wiki" allowed={true}><WikiPage /></ModuleGate>} />
           <Route path="/expenses" element={<ModuleGate tab="expenses" allowed={true}><ExpensesPage /></ModuleGate>} />
           <Route path="/travel" element={<ModuleGate tab="travel" allowed={true}><TravelPage /></ModuleGate>} />
           <Route path="/approvals" element={<ModuleGate tab="approvals" allowed={isManager || isHR}><ApprovalsPage /></ModuleGate>} />
           <Route path="/vendors" element={<ModuleGate tab="vendors" allowed={isManager || isFinance}><VendorsPage /></ModuleGate>} />
+          <Route path="/portfolio" element={<ModuleGate tab="project-portfolio" allowed={isManager || isFinance}><PortfolioDashboardPage /></ModuleGate>} />
           <Route path="/projects" element={<ModuleGate tab="projects" allowed={true}><ProjectsPage /></ModuleGate>} />
           <Route path="/tasks" element={<ModuleGate tab="tasks" allowed={true}><TasksPage /></ModuleGate>} />
+          <Route path="/work-items" element={<ModuleGate tab="work-items" allowed={true}><WorkItemsPage /></ModuleGate>} />
+          <Route path="/my-work" element={<ModuleGate tab="my-work" allowed={true}><MyWorkPage /></ModuleGate>} />
+          <Route path="/team-work" element={<ModuleGate tab="team-work" allowed={isManager}><TeamWorkPage /></ModuleGate>} />
+          <Route path="/daily-status" element={<ModuleGate tab="daily-status" allowed={isManager}><DailyStatusPage /></ModuleGate>} />
+          <Route path="/outlook-inbox" element={<ModuleGate tab="outlook-inbox" allowed={true}><OutlookInboxPage /></ModuleGate>} />
+          <Route path="/agreements" element={<ModuleGate tab="agreements" allowed={true}><AgreementsPage /></ModuleGate>} />
+          <Route path="/email-to-tasks" element={<ModuleGate tab="email-to-tasks" allowed={isManager || isFinance}><EmailToTasksPage /></ModuleGate>} />
           <Route path="/neo-task-ai" element={<ModuleGate tab="neo-task-ai" allowed={true}><NeoTaskAIPage /></ModuleGate>} />
           <Route path="/budget" element={<ModuleGate tab="budget" allowed={true}><BudgetPage /></ModuleGate>} />
           <Route path="/assets" element={<ModuleGate tab="assets" allowed={true}><AssetsPage /></ModuleGate>} />
+          <Route path="/roi-planning" element={<ModuleGate tab="roi-planning" allowed={isManager || isFinance}><ROIPlanningPage /></ModuleGate>} />
           <Route path="/procurement" element={<ModuleGate tab="procurement" allowed={true}><ProcurementPage /></ModuleGate>} />
           <Route path="/customers" element={<ModuleGate tab="customers" allowed={isProcurementModule}><CustomersPage /></ModuleGate>} />
+          <Route path="/contacts" element={<ModuleGate tab="contacts" allowed={true}><ContactsPage /></ModuleGate>} />
           <Route path="/products" element={<ModuleGate tab="products" allowed={isProcurementModule}><ProductsPage /></ModuleGate>} />
           <Route path="/bom" element={<ModuleGate tab="bom" allowed={isProcurementModule}><BomManagementPage /></ModuleGate>} />
           <Route path="/inventory" element={<ModuleGate tab="inventory" allowed={isProcurementModule}><InventoryPage /></ModuleGate>} />
           <Route path="/devices" element={<ModuleGate tab="devices" allowed={isProcurementModule}><DevicesPage /></ModuleGate>} />
           <Route path="/warranty" element={<ModuleGate tab="warranty" allowed={canViewWarranty}><WarrantyPage /></ModuleGate>} />
+          <Route path="/golive" element={<ModuleGate tab="golive-support" allowed={true}><GoLiveSupportPage /></ModuleGate>} />
+          <Route path="/golive/:id" element={<ModuleGate tab="golive-support" allowed={true}><GoLiveEngagementPage /></ModuleGate>} />
           <Route path="/proposals" element={<ModuleGate tab="proposals" allowed={isProposalModule}><ProposalsPage /></ModuleGate>} />
           <Route path="/sales/leads" element={<ModuleGate tab="sales-leads" allowed={isSalesModule}><LeadsPage /></ModuleGate>} />
           <Route path="/sales/landing-links" element={<ModuleGate tab="sales-landing-links" allowed={isLandingLinksModule}><LandingLinksPage /></ModuleGate>} />
@@ -241,6 +361,7 @@ function AppRoutes() {
           <Route path="/skill-matrix" element={<ModuleGate tab="skill-matrix" allowed={true}><SkillMatrixPage /></ModuleGate>} />
           <Route path="/allocations" element={<ModuleGate tab="allocations" allowed={true}><AllocationsPage /></ModuleGate>} />
           <Route path="/capacity" element={<ModuleGate tab="capacity" allowed={true}><CapacityPage /></ModuleGate>} />
+          <Route path="/activity-planner" element={<ModuleGate tab="activity-planner" allowed={true}><ActivityPlannerPage /></ModuleGate>} />
           <Route path="/scenarios/dashboard" element={<ModuleGate tab="scenario-dashboard" allowed={true}><ScenarioDashboardPage /></ModuleGate>} />
           <Route path="/scenarios/my" element={<ModuleGate tab="scenario-my" allowed={true}><MyScenariosPage /></ModuleGate>} />
           <Route path="/scenarios/templates" element={<ModuleGate tab="scenario-templates" allowed={true}><ScenarioTemplatesPage /></ModuleGate>} />
@@ -273,6 +394,9 @@ function AppRoutes() {
           <Route path="/data-assistant" element={<ModuleGate tab="data-assistant" allowed={true}><DataAssistantPage /></ModuleGate>} />
           <Route path="/support" element={<ModuleGate tab="support" allowed={true}><SupportTicketsPage /></ModuleGate>} />
           <Route path="/support/:id" element={<ModuleGate tab="support" allowed={true}><SupportTicketDetailPage /></ModuleGate>} />
+          <Route path="/it-helpdesk" element={<ModuleGate tab="it-helpdesk" allowed={true}><ITHelpdeskPage /></ModuleGate>} />
+          <Route path="/it-helpdesk/settings" element={<ModuleGate tab="it-helpdesk" allowed={isAdmin}><ITHelpdeskSettingsPage /></ModuleGate>} />
+          <Route path="/it-helpdesk/:id" element={<ModuleGate tab="it-helpdesk" allowed={true}><ITHelpdeskTicketPage /></ModuleGate>} />
           <Route path="/app-monitor" element={<ModuleGate tab="app-monitor" allowed={isAdmin}><AppMonitorPage /></ModuleGate>} />
           <Route path="/llm-monitor" element={<ModuleGate tab="llm-monitor" allowed={isAdmin}><LLMMonitorPage /></ModuleGate>} />
           <Route path="/content" element={<ModuleGate tab="content" allowed={isAdmin}><AdminContentPage /></ModuleGate>} />
@@ -290,8 +414,11 @@ function AppRoutes() {
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
       </Layout>
+      </PresenceProvider>
       </NotificationProvider>
     </TabVisibilityProvider>
+    </WorkspaceOnboardingGate>
+    </WorkspaceProvider>
   )
 }
 
@@ -347,11 +474,13 @@ export default function App() {
   if (MISSING_ENV) return <SetupScreen />
   return (
     <BrandingProvider>
-      <AuthProvider>
-        <BrowserRouter>
-          <AppRoutes />
-        </BrowserRouter>
-      </AuthProvider>
+      <MaintenanceProvider>
+        <AuthProvider>
+          <BrowserRouter>
+            <AppRoutes />
+          </BrowserRouter>
+        </AuthProvider>
+      </MaintenanceProvider>
     </BrandingProvider>
   )
 }

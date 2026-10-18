@@ -8,7 +8,7 @@ import { GraduationCap, Plus, Edit2, CheckCircle2, BadgeCheck, ShieldCheck, Uplo
 const PROFICIENCY_LEVELS = ['Beginner', 'Intermediate', 'Expert', 'Master']
 const PL_COLOR = { Beginner: '#64748b', Intermediate: '#1d4ed8', Expert: '#7c3aed', Master: '#059669' }
 
-const initForm = () => ({ skill_id: '', proficiency_level: 'Beginner', years_experience: '', certified: false })
+const initForm = () => ({ skill_id: '', proficiency_level: 'Beginner', years_experience: '', certified: false, certification_name: '', certification_expiry: '' })
 
 export default function SkillMatrixPage() {
   const { profile } = useAuth()
@@ -64,6 +64,8 @@ export default function SkillMatrixPage() {
       const payload = {
         employee_id: profile.id, skill_id: form.skill_id, proficiency_level: form.proficiency_level,
         years_experience: parseFloat(form.years_experience) || 0, certified: form.certified,
+        certification_name: form.certified ? (form.certification_name.trim() || null) : null,
+        certification_expiry: form.certified ? (form.certification_expiry || null) : null,
         last_updated: new Date().toISOString(), endorsed_by: null, endorsed_at: null,
       }
       const { error } = await supabase.from('employee_skills').upsert(payload, { onConflict: 'employee_id,skill_id' })
@@ -132,12 +134,21 @@ export default function SkillMatrixPage() {
                       <div style={{ fontWeight: 700, fontSize: 14 }}>{row.skill?.skill_name}</div>
                       {row.skill?.category && <div style={{ fontSize: 10.5, color: '#94a3b8' }}>{row.skill.category}</div>}
                     </div>
-                    <button className="btn btn-ghost btn-sm btn-icon" onClick={() => { setEditing(row); setForm({ skill_id: row.skill_id, proficiency_level: row.proficiency_level, years_experience: row.years_experience || '', certified: row.certified }); setShowModal(true) }}><Edit2 size={12} /></button>
+                    <button className="btn btn-ghost btn-sm btn-icon" onClick={() => { setEditing(row); setForm({ skill_id: row.skill_id, proficiency_level: row.proficiency_level, years_experience: row.years_experience || '', certified: row.certified, certification_name: row.certification_name || '', certification_expiry: row.certification_expiry || '' }); setShowModal(true) }}><Edit2 size={12} /></button>
                   </div>
                   <span style={{ display: 'inline-block', padding: '3px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: `${c}15`, color: c, marginBottom: 8 }}>{row.proficiency_level}</span>
                   <div style={{ fontSize: 11.5, color: '#64748b', display: 'flex', flexDirection: 'column', gap: 4 }}>
                     {row.years_experience > 0 && <span>{row.years_experience} yrs experience</span>}
-                    {row.certified && <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#059669', fontWeight: 600 }}><BadgeCheck size={13} /> Certified</span>}
+                    {row.certified && (
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#059669', fontWeight: 600 }}>
+                        <BadgeCheck size={13} /> Certified{row.certification_name ? `: ${row.certification_name}` : ''}
+                        {row.certification_expiry && (
+                          <span style={{ color: new Date(row.certification_expiry) < new Date() ? '#dc2626' : '#94a3b8', fontWeight: 500 }}>
+                            {' '}(exp. {dateFmt(row.certification_expiry)})
+                          </span>
+                        )}
+                      </span>
+                    )}
                     {row.endorsed_by ? (
                       <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#15803d', fontWeight: 600 }}><ShieldCheck size={13} /> Endorsed by {row.endorser?.full_name || 'manager'}</span>
                     ) : (
@@ -193,10 +204,22 @@ export default function SkillMatrixPage() {
             <input className="form-input" type="number" min={0} step={0.5} value={form.years_experience} onChange={e => setForm(f => ({ ...f, years_experience: e.target.value }))} />
           </div>
         </div>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600, marginBottom: form.certified ? 10 : 0 }}>
           <input type="checkbox" checked={form.certified} onChange={e => setForm(f => ({ ...f, certified: e.target.checked }))} />
           Certified in this skill
         </label>
+        {form.certified && (
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">Certification name</label>
+              <input className="form-input" placeholder="e.g. AWS Certified Developer" value={form.certification_name} onChange={e => setForm(f => ({ ...f, certification_name: e.target.value }))} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Expiry date</label>
+              <input className="form-input" type="date" value={form.certification_expiry} onChange={e => setForm(f => ({ ...f, certification_expiry: e.target.value }))} />
+            </div>
+          </div>
+        )}
         {editing?.endorsed_by && <div style={{ fontSize: 11.5, color: '#b45309', marginTop: 10 }}>Saving changes will reset this skill's endorsement — it will need manager re-approval.</div>}
       </Modal>
 

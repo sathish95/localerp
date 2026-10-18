@@ -39,6 +39,16 @@ export async function setModuleRoleVisibility(moduleKey, role, visible, organiza
   if (error) throw error
 }
 
+// Bulk variant for "manage access for this role" — the per-cell toggle
+// above is one write per click; this saves an entire role's whole module
+// picklist as one upsert call instead of N. `rows` is [{module_key, visible}, ...].
+export async function setModuleRoleVisibilityBulk(organizationId, role, rows) {
+  if (!rows.length) return
+  const { error } = await supabase.from('module_role_visibility')
+    .upsert(rows.map(r => ({ organization_id: organizationId, module_key: r.module_key, role, visible: r.visible })), { onConflict: 'organization_id,module_key,role' })
+  if (error) throw error
+}
+
 // Self-healing: inserts any module.js key missing from the DB table for
 // THIS organization (enabled by default) so adding a new page later, or
 // provisioning a new org, doesn't require a manual seed step. Safe to

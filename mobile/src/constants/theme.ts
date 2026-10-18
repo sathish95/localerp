@@ -57,6 +57,32 @@ export const Colors: { light: ThemeColors; dark: ThemeColors } = {
   },
 } as const;
 
+// ── Vivid domain palette ──
+// Each functional area gets a hue + a 2-stop gradient. Used for filled
+// tiles, gradient hero cards and coloured icon chips. Works on both
+// themes (bold colour + white text); pair with alpha() for soft tints.
+export const Domains = {
+  home:      { solid: '#6366f1', grad: ['#4f46e5', '#7c3aed'] as const },
+  checkin:   { solid: '#6366f1', grad: ['#6366f1', '#8b5cf6'] as const },
+  dashboard: { solid: '#6366f1', grad: ['#6366f1', '#8b5cf6'] as const },
+  tasks:     { solid: '#6366f1', grad: ['#6366f1', '#4338ca'] as const },
+  expenses:  { solid: '#f59e0b', grad: ['#f59e0b', '#ea7c0c'] as const },
+  travel:    { solid: '#0ea5e9', grad: ['#0ea5e9', '#2563eb'] as const },
+  approvals: { solid: '#10b981', grad: ['#10b981', '#0d9488'] as const },
+  helpdesk:  { solid: '#06b6d4', grad: ['#06b6d4', '#0284c7'] as const },
+  leave:     { solid: '#a855f7', grad: ['#a855f7', '#ec4899'] as const },
+  timesheet: { solid: '#3b82f6', grad: ['#3b82f6', '#1d4ed8'] as const },
+  neutral:   { solid: '#64748b', grad: ['#64748b', '#475569'] as const },
+} as const;
+
+export type DomainKey = keyof typeof Domains;
+
+// hex + 2-digit alpha (e.g. alpha('#6366f1', 0.14))
+export function alpha(hex: string, a: number): string {
+  const v = Math.round(Math.max(0, Math.min(1, a)) * 255).toString(16).padStart(2, '0');
+  return `${hex}${v}`;
+}
+
 export const Radius = { sm: 8, md: 12, lg: 16, xl: 22, pill: 999 } as const;
 
 export const Spacing = { xs: 4, sm: 8, md: 12, lg: 16, xl: 20, xxl: 28, xxxl: 40 } as const;

@@ -1,61 +1,46 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Modal, Platform, Pressable, ScrollView, Text, View } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as ImagePicker from 'expo-image-picker';
 import { Calendar, Camera, Image as ImageIcon, Plane, Plus, Receipt, X } from 'lucide-react-native';
 
-import { Badge, Button, Card, EmptyState, Screen, ScreenHeader, TextField } from '@/components/ui';
-import { useAuth } from '@/context/AuthContext';
-import { Fonts, Radius, Spacing } from '@/constants/theme';
+import { Badge, Button, Card, EmptyState, GradientIconBadge, Screen, ScreenHeader, TextField } from '@/components/ui';
+import { alpha, Domains, Fonts, Radius, Spacing } from '@/constants/theme';
+import { useCreateExpense, useCreateTravel, useMyExpenses, useMyTravel, useProjects } from '@/hooks/queries';
 import { useTheme } from '@/hooks/use-theme';
 import { dateFmt, rupee } from '@/lib/supabase';
 import {
-  createExpense, createTravel, EXPENSE_CATEGORIES, listMyExpenses, listMyTravel, listProjects, STATUS_COLOR, STATUS_LABEL,
-  TRAVEL_MODES, type ExpenseRequest, type Project, type TravelRequest,
+  EXPENSE_CATEGORIES, STATUS_COLOR, STATUS_LABEL, TRAVEL_MODES, type Project,
 } from '@/lib/requests';
 
 type RequestType = 'expense' | 'travel';
 
-export default function RequestsScreen() {
-  const { profile } = useAuth();
+export default function ExpenseTravelScreen() {
   const t = useTheme();
   const [type, setType] = useState<RequestType>('expense');
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [expenses, setExpenses] = useState<ExpenseRequest[]>([]);
-  const [travel, setTravel] = useState<TravelRequest[]>([]);
-  const [projects, setProjects] = useState<Project[]>([]);
   const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [showTravelForm, setShowTravelForm] = useState(false);
 
-  async function load() {
-    if (!profile?.id) return;
-    try {
-      const [e, tr, p] = await Promise.all([listMyExpenses(profile.id), listMyTravel(profile.id), listProjects()]);
-      setExpenses(e); setTravel(tr); setProjects(p);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const expensesQ = useMyExpenses();
+  const travelQ = useMyTravel();
+  const projectsQ = useProjects();
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- re-run only when the user changes
-  useEffect(() => { load(); }, [profile?.id]);
+  const expenses = expensesQ.data ?? [];
+  const travel = travelQ.data ?? [];
+  const projects = projectsQ.data ?? [];
 
-  async function onRefresh() { setRefreshing(true); await load(); setRefreshing(false); }
+  const onRefresh = () => Promise.all([expensesQ.refetch(), travelQ.refetch(), projectsQ.refetch()]);
 
-  if (loading) return <Screen scroll={false}><View /></Screen>;
+  if (expensesQ.isLoading || travelQ.isLoading) return <Screen scroll={false}><View /></Screen>;
 
   return (
-    <Screen onRefresh={onRefresh} refreshing={refreshing}>
+    <Screen onRefresh={onRefresh} refreshing={expensesQ.isRefetching || travelQ.isRefetching}>
       <ScreenHeader
-        title="Requests"
-        subtitle="Expenses & travel"
+        title="Expense & Travel"
+        subtitle="Your requests and their approval status"
         right={
-          <Pressable onPress={() => (type === 'expense' ? setShowExpenseForm(true) : setShowTravelForm(true))}
-            style={{ width: 40, height: 40, borderRadius: Radius.pill, backgroundColor: t.accent, alignItems: 'center', justifyContent: 'center' }}>
-            <Plus size={20} color="#fff" />
+          <Pressable onPress={() => (type === 'expense' ? setShowExpenseForm(true) : setShowTravelForm(true))}>
+            <GradientIconBadge icon={<Plus size={20} color="#fff" />} colors={type === 'expense' ? Domains.expenses.grad : Domains.travel.grad} radius={Radius.pill} />
           </Pressable>
         }
       />
@@ -63,10 +48,11 @@ export default function RequestsScreen() {
       <View style={{ flexDirection: 'row', gap: 2, backgroundColor: t.surfaceSoft, borderWidth: 1, borderColor: t.border, borderRadius: 12, padding: 4 }}>
         {(['expense', 'travel'] as const).map((k) => {
           const active = type === k;
+          const dc = k === 'expense' ? Domains.expenses.solid : Domains.travel.solid;
           return (
             <Pressable key={k} onPress={() => setType(k)}
               style={{ flex: 1, alignItems: 'center', paddingVertical: 9, borderRadius: 9, backgroundColor: active ? t.surface : 'transparent', ...(active ? { shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 1 } : {}) }}>
-              <Text style={{ color: active ? t.accent : t.textMuted, fontFamily: Fonts.bodyBold, fontSize: 13 }}>{k === 'expense' ? 'Expenses' : 'Travel'}</Text>
+              <Text style={{ color: active ? dc : t.textMuted, fontFamily: Fonts.bodyBold, fontSize: 13 }}>{k === 'expense' ? 'Expenses' : 'Travel'}</Text>
             </Pressable>
           );
         })}
@@ -78,17 +64,20 @@ export default function RequestsScreen() {
         ) : (
           <View style={{ gap: Spacing.md }}>
             {expenses.map((e) => (
-              <Card key={e.id}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ color: t.text, fontFamily: Fonts.bodyBold, fontSize: 14 }} numberOfLines={1}>{e.title}</Text>
-                    <Text style={{ color: t.textMuted, fontFamily: Fonts.body, fontSize: 11.5, marginTop: 2 }}>{e.category} · {e.expense_number}</Text>
+              <Card key={e.id} style={{ flexDirection: 'row', gap: 12 }}>
+                <GradientIconBadge icon={<Receipt size={18} color="#fff" />} colors={Domains.expenses.grad} size={40} />
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: t.text, fontFamily: Fonts.bodyBold, fontSize: 14 }} numberOfLines={1}>{e.title}</Text>
+                      <Text style={{ color: t.textMuted, fontFamily: Fonts.body, fontSize: 11.5, marginTop: 2 }}>{e.category} · {e.expense_number}</Text>
+                    </View>
+                    <Text style={{ color: Domains.expenses.solid, fontFamily: Fonts.bodyExtraBold, fontSize: 15 }}>{rupee(e.total_amount)}</Text>
                   </View>
-                  <Text style={{ color: t.text, fontFamily: Fonts.bodyExtraBold, fontSize: 15 }}>{rupee(e.total_amount)}</Text>
-                </View>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
-                  <Badge label={STATUS_LABEL[e.status]} color={STATUS_COLOR[e.status]} />
-                  <Text style={{ color: t.textMuted, fontFamily: Fonts.body, fontSize: 11.5 }}>{dateFmt(e.expense_date)}</Text>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+                    <Badge label={STATUS_LABEL[e.status]} color={STATUS_COLOR[e.status]} />
+                    <Text style={{ color: t.textMuted, fontFamily: Fonts.body, fontSize: 11.5 }}>{dateFmt(e.expense_date)}</Text>
+                  </View>
                 </View>
               </Card>
             ))}
@@ -99,25 +88,28 @@ export default function RequestsScreen() {
       ) : (
         <View style={{ gap: Spacing.md }}>
           {travel.map((tr) => (
-            <Card key={tr.id}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ color: t.text, fontFamily: Fonts.bodyBold, fontSize: 14 }} numberOfLines={1}>{tr.from_location} → {tr.to_location}</Text>
-                  <Text style={{ color: t.textMuted, fontFamily: Fonts.body, fontSize: 11.5, marginTop: 2 }}>{tr.travel_mode} · {tr.request_number}</Text>
+            <Card key={tr.id} style={{ flexDirection: 'row', gap: 12 }}>
+              <GradientIconBadge icon={<Plane size={18} color="#fff" />} colors={Domains.travel.grad} size={40} />
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: t.text, fontFamily: Fonts.bodyBold, fontSize: 14 }} numberOfLines={1}>{tr.from_location} → {tr.to_location}</Text>
+                    <Text style={{ color: t.textMuted, fontFamily: Fonts.body, fontSize: 11.5, marginTop: 2 }}>{tr.travel_mode} · {tr.request_number}</Text>
+                  </View>
+                  {tr.estimated_cost != null && <Text style={{ color: Domains.travel.solid, fontFamily: Fonts.bodyExtraBold, fontSize: 15 }}>{rupee(tr.estimated_cost)}</Text>}
                 </View>
-                {tr.estimated_cost != null && <Text style={{ color: t.text, fontFamily: Fonts.bodyExtraBold, fontSize: 15 }}>{rupee(tr.estimated_cost)}</Text>}
-              </View>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
-                <Badge label={STATUS_LABEL[tr.status]} color={STATUS_COLOR[tr.status]} />
-                <Text style={{ color: t.textMuted, fontFamily: Fonts.body, fontSize: 11.5 }}>{dateFmt(tr.travel_date)}</Text>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+                  <Badge label={STATUS_LABEL[tr.status]} color={STATUS_COLOR[tr.status]} />
+                  <Text style={{ color: t.textMuted, fontFamily: Fonts.body, fontSize: 11.5 }}>{dateFmt(tr.travel_date)}</Text>
+                </View>
               </View>
             </Card>
           ))}
         </View>
       )}
 
-      <ExpenseFormModal visible={showExpenseForm} onClose={() => setShowExpenseForm(false)} projects={projects} onSaved={load} />
-      <TravelFormModal visible={showTravelForm} onClose={() => setShowTravelForm(false)} projects={projects} onSaved={load} />
+      <ExpenseFormModal visible={showExpenseForm} onClose={() => setShowExpenseForm(false)} projects={projects} />
+      <TravelFormModal visible={showTravelForm} onClose={() => setShowTravelForm(false)} projects={projects} />
     </Screen>
   );
 }
@@ -192,9 +184,9 @@ function FormModal({ visible, title, onClose, children, onSubmit, submitting, su
 
 /* ── Expense form ── */
 
-function ExpenseFormModal({ visible, onClose, projects, onSaved }: { visible: boolean; onClose: () => void; projects: Project[]; onSaved: () => void }) {
-  const { profile } = useAuth();
+function ExpenseFormModal({ visible, onClose, projects }: { visible: boolean; onClose: () => void; projects: Project[] }) {
   const t = useTheme();
+  const createExpense = useCreateExpense();
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState<(typeof EXPENSE_CATEGORIES)[number] | null>(null);
   const [description, setDescription] = useState('');
@@ -202,7 +194,6 @@ function ExpenseFormModal({ visible, onClose, projects, onSaved }: { visible: bo
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [receiptUri, setReceiptUri] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function reset() {
@@ -225,21 +216,18 @@ function ExpenseFormModal({ visible, onClose, projects, onSaved }: { visible: bo
   }
 
   async function submit() {
-    if (!profile) return;
     if (!title.trim() || !category || !amount || Number(amount) <= 0) { setError('Title, category and a valid amount are required.'); return; }
-    setSubmitting(true); setError(null);
+    setError(null);
     try {
-      await createExpense(profile.id, { title: title.trim(), category, description, date, amount, projectId }, receiptUri, projects);
-      reset(); onClose(); onSaved();
+      await createExpense.mutateAsync({ form: { title: title.trim(), category, description, date, amount, projectId }, receiptUri, projects });
+      reset(); onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong.');
-    } finally {
-      setSubmitting(false);
     }
   }
 
   return (
-    <FormModal visible={visible} title="New Expense" onClose={() => { onClose(); }} onSubmit={submit} submitting={submitting} submitLabel="Submit Expense">
+    <FormModal visible={visible} title="New Expense" onClose={() => { onClose(); }} onSubmit={submit} submitting={createExpense.isPending} submitLabel="Submit Expense">
       <TextField label="Title" value={title} onChangeText={setTitle} placeholder="e.g. Client dinner" />
       <View style={{ gap: 6 }}>
         <Text style={{ color: t.textSoft, fontFamily: Fonts.bodySemiBold, fontSize: 12.5 }}>Category</Text>
@@ -282,9 +270,9 @@ function ExpenseFormModal({ visible, onClose, projects, onSaved }: { visible: bo
 
 /* ── Travel form ── */
 
-function TravelFormModal({ visible, onClose, projects, onSaved }: { visible: boolean; onClose: () => void; projects: Project[]; onSaved: () => void }) {
-  const { profile } = useAuth();
+function TravelFormModal({ visible, onClose, projects }: { visible: boolean; onClose: () => void; projects: Project[] }) {
   const t = useTheme();
+  const createTravel = useCreateTravel();
   const [fromLocation, setFromLocation] = useState('');
   const [toLocation, setToLocation] = useState('');
   const [travelDate, setTravelDate] = useState('');
@@ -293,7 +281,6 @@ function TravelFormModal({ visible, onClose, projects, onSaved }: { visible: boo
   const [mode, setMode] = useState<(typeof TRAVEL_MODES)[number]>('Flight');
   const [estimatedCost, setEstimatedCost] = useState('');
   const [projectId, setProjectId] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function reset() {
@@ -302,21 +289,18 @@ function TravelFormModal({ visible, onClose, projects, onSaved }: { visible: boo
   }
 
   async function submit() {
-    if (!profile) return;
     if (!fromLocation.trim() || !toLocation.trim() || !travelDate || !purpose.trim()) { setError('From, To, travel date and purpose are required.'); return; }
-    setSubmitting(true); setError(null);
+    setError(null);
     try {
-      await createTravel(profile.id, { fromLocation: fromLocation.trim(), toLocation: toLocation.trim(), travelDate, returnDate, purpose: purpose.trim(), mode, estimatedCost, projectId }, projects);
-      reset(); onClose(); onSaved();
+      await createTravel.mutateAsync({ form: { fromLocation: fromLocation.trim(), toLocation: toLocation.trim(), travelDate, returnDate, purpose: purpose.trim(), mode, estimatedCost, projectId }, projects });
+      reset(); onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong.');
-    } finally {
-      setSubmitting(false);
     }
   }
 
   return (
-    <FormModal visible={visible} title="New Travel Request" onClose={() => { onClose(); }} onSubmit={submit} submitting={submitting} submitLabel="Submit Travel Request">
+    <FormModal visible={visible} title="New Travel Request" onClose={() => { onClose(); }} onSubmit={submit} submitting={createTravel.isPending} submitLabel="Submit Travel Request">
       <TextField label="From" value={fromLocation} onChangeText={setFromLocation} placeholder="Chennai" />
       <TextField label="To" value={toLocation} onChangeText={setToLocation} placeholder="Bengaluru" />
       <DateField label="Travel date" value={travelDate} onChange={setTravelDate} minimumDate={new Date()} />

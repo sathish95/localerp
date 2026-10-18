@@ -265,9 +265,12 @@ function FeedbackTab({ profile, cycle }) {
   const [err, setErr] = useState('')
 
   const load = useCallback(async () => {
-    setLoading(true)
-    const [o, a] = await Promise.all([listFeedbackRequestsForProvider(profile.id), getPeerFeedbackForSubject(profile.id, cycle.id)])
-    setOwed(o.filter(r => r.cycle_id === cycle.id)); setAbout(a); setLoading(false)
+    setLoading(true); setErr('')
+    try {
+      const [o, a] = await Promise.all([listFeedbackRequestsForProvider(profile.id), getPeerFeedbackForSubject(profile.id, cycle.id)])
+      setOwed(o.filter(r => r.cycle_id === cycle.id)); setAbout(a)
+    } catch (e) { setErr(e.message) } // an RPC failure must never leave the tab stuck on the loading spinner forever
+    finally { setLoading(false) }
   }, [profile.id, cycle.id])
   useEffect(() => { load() }, [load])
   useEffect(() => { supabase.from('profiles').select('id,full_name').neq('id', profile.id).order('full_name').then(({ data }) => setColleagues(data || [])) }, [profile.id])

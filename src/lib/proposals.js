@@ -1,6 +1,6 @@
 import { supabase, nextNum } from './supabase'
-import { getRateForDesignation } from './roleRates'
 import { getInventoryList } from './inventory'
+import { resolveHourlyRate } from './actualCost'
 
 // Categories that feed a resource plan (App/Firmware/Hardware-Design) vs a
 // direct line-item category — mirrors the 7 fixed categories from
@@ -36,7 +36,7 @@ export const HOURS_PER_WEEK = 40
 // Every designation with a rate on file, plus that rate — drives the
 // Resource Plan designation picker's "rate card" preview. Only rows
 // effective today are returned, matching the exact snapshot logic
-// getRateForDesignation() applies when a plan is actually saved, so the
+// resolveResourceRate() applies when a plan is actually saved, so the
 // preview never shows a number the save wouldn't also produce.
 export async function listDesignationOptions() {
   const iso = new Date().toISOString().slice(0, 10)
@@ -47,6 +47,28 @@ export async function listDesignationOptions() {
   const byDesignation = new Map()
   ;(data || []).forEach(r => byDesignation.set(r.designation, Number(r.hourly_rate) || 0))
   return [...byDesignation.entries()].map(([designation, hourly_rate]) => ({ designation, hourly_rate }))
+}
+
+// Active employees a Resource Plan line can be pinned to instead of a
+// generic designation slot — see resolveResourceRate() below for how a
+// named employee's rate is then resolved.
+export async function listEmployeeOptions() {
+  const { data, error } = await supabase.from('profiles').select('id, full_name, designation').eq('is_active', true).order('full_name')
+  if (error) throw error
+  return data || []
+}
+
+// Reuses actualCost.js's resolveHourlyRate() exactly (role_rates by
+// designation first, falling back to that employee's own resource_rates
+// row) instead of a second, easily-drifting copy of that fallback chain —
+// this file previously only ever looked up role_rates (getRateForDesignation),
+// silently pricing an employee with no role_rates entry at Rs 0.
+async function resolveResourceRate(designation, employeeId, onDate) {
+  const [{ data: roleRates }, { data: resourceRates }] = await Promise.all([
+    designation ? supabase.from('role_rates').select('*').eq('designation', designation) : Promise.resolve({ data: [] }),
+    employeeId ? supabase.from('resource_rates').select('employee_id,hourly_rate,monthly_salary').eq('employee_id', employeeId) : Promise.resolve({ data: [] }),
+  ])
+  return resolveHourlyRate({ designation, employeeId, roleRates: roleRates || [], resourceRates: resourceRates || [], onDate })
 }
 
 // Full product catalog with live on-hand/device counts — reuses
@@ -140,6 +162,98 @@ export async function createRevision(proposalId, userId, notes) {
   return data
 }
 
+/**
+ * Full standalone copy of a proposal — a brand new proposal_group_id/id,
+ * version 1, Draft, no approval history, no linked_project_id — as opposed
+ * to createRevision() which stays inside the SAME group/version chain for
+ * an already-sent proposal. Every section/line/timeline phase is recreated
+ * through the same add*() functions the editor UI uses (never a raw bulk
+ * insert), so resource-plan rates get re-resolved against CURRENT role_rates
+ * (a duplicate is a fresh quote, not a frozen historical snapshot) and every
+ * other invariant (computed_cost, subtotal_internal_cost, misc percent-of-base)
+ * is derived exactly as if a person had re-typed it all in by hand.
+ *
+ * Ordering matters: resource plans are copied for every section FIRST (so
+ * every id has a new counterpart for timeline/misc remapping), THEN hardware/
+ * software lines, THEN misc lines LAST — a percent_of_base misc line recomputes
+ * against the new proposal's live resource-plan-category total, so that total
+ * must already be fully seeded before any misc line reads it.
+ */
+export async function duplicateProposal(proposalId, userId) {
+  const [source, sections, timeline, budgetMap] = await Promise.all([
+    getProposal(proposalId), getCostSections(proposalId), listTimeline(proposalId), getBudgetCategoryMap(),
+  ])
+
+  const newProposal = await createProposal({
+    proposal_name: `${source.proposal_name} (Copy)`, customer_name: source.customer_name,
+    customer_contact: source.customer_contact, validity_until_date: source.validity_until_date,
+    overall_margin_percent: source.overall_margin_percent, currency: source.currency,
+  }, userId)
+
+  const newSections = await getCostSections(newProposal.id) // the 7 standard categories, freshly empty
+  const sectionIdByCategory = Object.fromEntries(newSections.map(s => [s.category, s.id]))
+
+  for (const s of sections) {
+    if (!sectionIdByCategory[s.category]) {
+      const created = await addCostSection(newProposal.id, s.category, budgetMap[s.category])
+      sectionIdByCategory[s.category] = created.id
+    }
+    if (s.margin_percent != null || s.notes) {
+      await updateCostSection(sectionIdByCategory[s.category], { margin_percent: s.margin_percent, notes: s.notes })
+    }
+  }
+
+  const planIdMap = {}
+  for (const s of sections) {
+    const newSectionId = sectionIdByCategory[s.category]
+    for (const r of s.resourcePlans || []) {
+      const created = await addResourcePlan({
+        proposalCostSectionId: newSectionId, designation: r.designation, employeeId: r.employee_id,
+        estimatedCount: r.estimated_count, estimatedDurationWeeks: r.estimated_duration_weeks, notes: r.notes,
+      })
+      planIdMap[r.id] = created.id
+    }
+  }
+
+  for (const s of sections) {
+    const newSectionId = sectionIdByCategory[s.category]
+    for (const h of s.hardwareLines || []) {
+      await addHardwareLine({
+        proposalCostSectionId: newSectionId, partNumber: h.part_number, description: h.description,
+        estimatedQuantity: h.estimated_quantity, manualUnitCost: h.part_number ? undefined : h.unit_cost, notes: h.notes,
+      })
+    }
+    for (const sw of s.softwareLines || []) {
+      await addSoftwareLine({
+        proposalCostSectionId: newSectionId, itemName: sw.item_name, costType: sw.cost_type,
+        unitCost: sw.unit_cost, qty: sw.qty, durationMonths: sw.duration_months, notes: sw.notes,
+      })
+    }
+  }
+
+  for (const s of sections) {
+    const newSectionId = sectionIdByCategory[s.category]
+    for (const m of s.miscLines || []) {
+      await addMiscLine({
+        proposalCostSectionId: newSectionId, itemName: m.item_name, cost: m.cost, notes: m.notes,
+        lineType: m.line_type, linkedResourcePlanId: m.linked_resource_plan_id ? planIdMap[m.linked_resource_plan_id] : null,
+        percentOfBase: m.percent_of_base,
+      })
+    }
+  }
+
+  for (const t of timeline) {
+    await addTimelinePhase({
+      proposalId: newProposal.id, phaseName: t.phase_name, startOffsetWeeks: t.start_offset_weeks,
+      durationWeeks: t.duration_weeks, linkedResourcePlanIds: (t.linked_resource_plan_ids || []).map(id => planIdMap[id]).filter(Boolean),
+      sortOrder: t.sort_order,
+    })
+  }
+
+  await computeValueSummary(newProposal.id)
+  return newProposal.id
+}
+
 /* ═══ Cost sections + their lines ═══════════════════════════ */
 
 export async function getCostSections(proposalId) {
@@ -170,32 +284,61 @@ export async function updateCostSection(id, { margin_percent, notes }) {
   if (error) throw error
 }
 
-/* ── Resource plan lines (App/Firmware/Hardware-Design) ── */
+/**
+ * Adds a custom cost section beyond the fixed 7 (STEP215) — computeValueSummary()
+ * already treats every section generically (its own margin_percent, falling
+ * back to the proposal's overall margin), so a custom section needs no
+ * changes there. `budgetCategory`, if given, upserts a proposal_budget_category_map
+ * row so this category also rolls up into a real planned-budget bucket on
+ * "Convert to Project" — proposalConvert.js already skips any category
+ * without a mapping row rather than guessing, so this is purely additive.
+ */
+export async function addCostSection(proposalId, category, budgetCategory) {
+  const { data, error } = await supabase.from('proposal_cost_sections')
+    .insert({ proposal_id: proposalId, category, is_custom: true })
+    .select().single()
+  if (error) throw error
+  if (budgetCategory) {
+    await supabase.from('proposal_budget_category_map')
+      .upsert({ proposal_category: category, budget_category: budgetCategory }, { onConflict: 'proposal_category' })
+  }
+  return data
+}
 
-export async function addResourcePlan({ proposalCostSectionId, designation, estimatedCount, estimatedDurationWeeks, notes }) {
-  const rate = await getRateForDesignation(designation, new Date())
-  const rateUsed = Number(rate?.hourly_rate) || 0
-  const computedCost = Number(estimatedCount) * Number(estimatedDurationWeeks) * HOURS_PER_WEEK * rateUsed
-  const { error } = await supabase.from('proposal_resource_plans').insert({
-    proposal_cost_section_id: proposalCostSectionId, designation,
-    estimated_count: estimatedCount, estimated_duration_weeks: estimatedDurationWeeks,
-    rate_used: rateUsed, computed_cost: computedCost, notes: notes || null,
-  })
+/** Only ever removes a custom section — the original 7 are structural, not deletable. */
+export async function deleteCostSection(id) {
+  const { error } = await supabase.from('proposal_cost_sections').delete().eq('id', id).eq('is_custom', true)
   if (error) throw error
 }
 
-export async function updateResourcePlan(id, { designation, estimatedCount, estimatedDurationWeeks, notes, refreshRate }) {
+/* ── Resource plan lines (App/Firmware/Hardware-Design) ── */
+
+export async function addResourcePlan({ proposalCostSectionId, designation, employeeId, estimatedCount, estimatedDurationWeeks, notes }) {
+  // A named employee is one specific person, not an abstract headcount slot.
+  const count = employeeId ? 1 : Number(estimatedCount)
+  const rateUsed = await resolveResourceRate(designation, employeeId, new Date())
+  const computedCost = count * Number(estimatedDurationWeeks) * HOURS_PER_WEEK * rateUsed
+  const { data, error } = await supabase.from('proposal_resource_plans').insert({
+    proposal_cost_section_id: proposalCostSectionId, designation, employee_id: employeeId || null,
+    estimated_count: count, estimated_duration_weeks: estimatedDurationWeeks,
+    rate_used: rateUsed, computed_cost: computedCost, notes: notes || null,
+  }).select().single()
+  if (error) throw error
+  return data // duplicateProposal() needs the new id to remap timeline links
+}
+
+export async function updateResourcePlan(id, { designation, employeeId, estimatedCount, estimatedDurationWeeks, notes, refreshRate }) {
+  const count = employeeId ? 1 : Number(estimatedCount)
   let rateUsed
   if (refreshRate) {
-    const rate = await getRateForDesignation(designation, new Date())
-    rateUsed = Number(rate?.hourly_rate) || 0
+    rateUsed = await resolveResourceRate(designation, employeeId, new Date())
   } else {
     const { data } = await supabase.from('proposal_resource_plans').select('rate_used').eq('id', id).single()
     rateUsed = Number(data?.rate_used) || 0
   }
-  const computedCost = Number(estimatedCount) * Number(estimatedDurationWeeks) * HOURS_PER_WEEK * rateUsed
+  const computedCost = count * Number(estimatedDurationWeeks) * HOURS_PER_WEEK * rateUsed
   const { error } = await supabase.from('proposal_resource_plans').update({
-    designation, estimated_count: estimatedCount, estimated_duration_weeks: estimatedDurationWeeks,
+    designation, employee_id: employeeId || null, estimated_count: count, estimated_duration_weeks: estimatedDurationWeeks,
     rate_used: rateUsed, computed_cost: computedCost, notes: notes || null,
   }).eq('id', id)
   if (error) throw error
@@ -273,27 +416,28 @@ export async function deleteHardwareLine(id) {
 
 /* ── Software/SaaS/Third-Party lines ── */
 
-function computeSoftwareLineCost(costType, unitCost, durationMonths) {
+function computeSoftwareLineCost(costType, unitCost, durationMonths, qty) {
   const u = Number(unitCost) || 0
   const m = Number(durationMonths) || 1
-  if (costType === 'Monthly') return u * m
-  if (costType === 'Annual') return u * Math.ceil(m / 12)
-  return u // One-time
+  const q = Number(qty) || 1
+  if (costType === 'Monthly') return u * q * m
+  if (costType === 'Annual') return u * q * Math.ceil(m / 12)
+  return u * q // One-time
 }
 
-export async function addSoftwareLine({ proposalCostSectionId, itemName, costType, unitCost, durationMonths, notes }) {
-  const computedCost = computeSoftwareLineCost(costType, unitCost, durationMonths)
+export async function addSoftwareLine({ proposalCostSectionId, itemName, costType, unitCost, qty, durationMonths, notes }) {
+  const computedCost = computeSoftwareLineCost(costType, unitCost, durationMonths, qty)
   const { error } = await supabase.from('proposal_software_lines').insert({
     proposal_cost_section_id: proposalCostSectionId, item_name: itemName, cost_type: costType || 'One-time',
-    unit_cost: unitCost, duration_months: durationMonths || 1, computed_cost: computedCost, notes: notes || null,
+    unit_cost: unitCost, qty: qty || 1, duration_months: durationMonths || 1, computed_cost: computedCost, notes: notes || null,
   })
   if (error) throw error
 }
 
-export async function updateSoftwareLine(id, { itemName, costType, unitCost, durationMonths, notes }) {
-  const computedCost = computeSoftwareLineCost(costType, unitCost, durationMonths)
+export async function updateSoftwareLine(id, { itemName, costType, unitCost, qty, durationMonths, notes }) {
+  const computedCost = computeSoftwareLineCost(costType, unitCost, durationMonths, qty)
   const { error } = await supabase.from('proposal_software_lines').update({
-    item_name: itemName, cost_type: costType, unit_cost: unitCost, duration_months: durationMonths,
+    item_name: itemName, cost_type: costType, unit_cost: unitCost, qty: qty || 1, duration_months: durationMonths,
     computed_cost: computedCost, notes: notes || null,
   }).eq('id', id)
   if (error) throw error
@@ -306,17 +450,47 @@ export async function deleteSoftwareLine(id) {
 
 /* ── Miscellaneous lines ── */
 
-export async function addMiscLine({ proposalCostSectionId, itemName, cost, notes, lineType, linkedResourcePlanId }) {
+/**
+ * Sum of internal cost across every resource-plan-priced category
+ * (Application Development, Firmware Development, Hardware Design &
+ * Production, ERP Integration) on this proposal — the "base" a
+ * percent_of_base misc line (STEP218) is calculated against, e.g.
+ * "Contingency = 10% of total engineering cost".
+ */
+export async function getResourcePlanCategoryCost(proposalId) {
+  const sections = await getCostSections(proposalId)
+  return sections
+    .filter(s => RESOURCE_PLAN_CATEGORIES.includes(s.category))
+    .reduce((sum, s) => sum + sectionInternalCost(s), 0)
+}
+
+async function resolveProposalIdForSection(proposalCostSectionId) {
+  const { data, error } = await supabase.from('proposal_cost_sections').select('proposal_id').eq('id', proposalCostSectionId).single()
+  if (error) throw error
+  return data.proposal_id
+}
+
+/** percentOfBase, if given, recomputes `cost` live against the current resource-plan-category total — never trusts a stale percentage. */
+async function resolveMiscCost({ proposalCostSectionId, cost, percentOfBase }) {
+  if (percentOfBase == null || percentOfBase === '') return { cost: Number(cost) || 0, percent_of_base: null, base_cost_snapshot: null }
+  const proposalId = await resolveProposalIdForSection(proposalCostSectionId)
+  const baseCost = await getResourcePlanCategoryCost(proposalId)
+  return { cost: round2((Number(percentOfBase) / 100) * baseCost), percent_of_base: Number(percentOfBase), base_cost_snapshot: round2(baseCost) }
+}
+
+export async function addMiscLine({ proposalCostSectionId, itemName, cost, notes, lineType, linkedResourcePlanId, percentOfBase }) {
+  const resolved = await resolveMiscCost({ proposalCostSectionId, cost, percentOfBase })
   const { error } = await supabase.from('proposal_misc_lines').insert({
-    proposal_cost_section_id: proposalCostSectionId, item_name: itemName, cost, notes: notes || null,
+    proposal_cost_section_id: proposalCostSectionId, item_name: itemName, ...resolved, notes: notes || null,
     line_type: lineType || 'Other', linked_resource_plan_id: linkedResourcePlanId || null,
   })
   if (error) throw error
 }
 
-export async function updateMiscLine(id, { itemName, cost, notes, lineType, linkedResourcePlanId }) {
+export async function updateMiscLine(id, { proposalCostSectionId, itemName, cost, notes, lineType, linkedResourcePlanId, percentOfBase }) {
+  const resolved = await resolveMiscCost({ proposalCostSectionId, cost, percentOfBase })
   const { error } = await supabase.from('proposal_misc_lines').update({
-    item_name: itemName, cost, notes: notes || null, line_type: lineType || 'Other', linked_resource_plan_id: linkedResourcePlanId || null,
+    item_name: itemName, ...resolved, notes: notes || null, line_type: lineType || 'Other', linked_resource_plan_id: linkedResourcePlanId || null,
   }).eq('id', id)
   if (error) throw error
 }
@@ -483,4 +657,82 @@ export async function getBudgetCategoryMap() {
   const { data, error } = await supabase.from('proposal_budget_category_map').select('*')
   if (error) throw error
   return Object.fromEntries((data || []).map(r => [r.proposal_category, r.budget_category]))
+}
+
+// Hardcoded fallback only — used if budget_category_catalog (STEP217) is
+// unreachable or not yet seeded for this org. listBudgetCategories() below
+// is the live, admin-extensible source of truth.
+export const BUDGET_CATEGORIES = [
+  { value: 'planned_resource_cost', label: 'Resource / Labor' },
+  { value: 'planned_hardware_cost', label: 'Hardware' },
+  { value: 'planned_software_cost', label: 'Software' },
+  { value: 'planned_erp_cost', label: 'ERP Integration' },
+  { value: 'planned_misc_cost', label: 'Miscellaneous' },
+  { value: 'planned_contingency_cost', label: 'Contingency' },
+]
+
+/** Every budget category this org has — the original 6 plus any custom ones an admin added (STEP217). */
+export async function listBudgetCategories() {
+  const { data, error } = await supabase.from('budget_category_catalog').select('*').order('is_custom').order('label')
+  if (error) throw error
+  return (data && data.length) ? data.map(r => ({ value: r.key, label: r.label, is_custom: r.is_custom })) : BUDGET_CATEGORIES
+}
+
+function slugifyBudgetCategoryKey(label) {
+  const slug = label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  return `planned_${slug}_cost`
+}
+
+/** Admin-created budget category (STEP217) — auto-derives a stable key from the label (e.g. "IoT Hardware" -> planned_iot_hardware_cost). */
+export async function addBudgetCategory(label) {
+  const trimmed = label.trim()
+  if (!trimmed) throw new Error('Label is required')
+  const key = slugifyBudgetCategoryKey(trimmed)
+  const { data, error } = await supabase.from('budget_category_catalog')
+    .insert({ key, label: trimmed, is_custom: true }).select().single()
+  if (error) throw error
+  return { value: data.key, label: data.label, is_custom: true }
+}
+
+/**
+ * Every proposal category this org currently has, whether or not it's
+ * mapped yet — the 7 standard categories, plus any custom section name
+ * (STEP215) used on ANY proposal, unioned with whatever's already in
+ * proposal_budget_category_map (a mapping can exist for a category no
+ * live proposal currently uses, e.g. one that was later renamed/removed).
+ * Drives the admin config UI (Settings -> Proposal Budget Mapping) so
+ * nothing needs re-deriving from a proposal itself to be configurable.
+ */
+export async function listAllProposalCategories() {
+  const [{ data: sectionRows, error: e1 }, { data: mapRows, error: e2 }] = await Promise.all([
+    supabase.from('proposal_cost_sections').select('category').order('category'),
+    supabase.from('proposal_budget_category_map').select('proposal_category'),
+  ])
+  if (e1) throw e1
+  if (e2) throw e2
+  const all = new Set([
+    ...PROPOSAL_CATEGORIES,
+    ...(sectionRows || []).map(r => r.category),
+    ...(mapRows || []).map(r => r.proposal_category),
+  ])
+  return [...all].sort((a, b) => {
+    const ai = PROPOSAL_CATEGORIES.indexOf(a), bi = PROPOSAL_CATEGORIES.indexOf(b)
+    if (ai !== -1 && bi !== -1) return ai - bi   // standard 7 keep their canonical order
+    if (ai !== -1) return -1
+    if (bi !== -1) return 1
+    return a.localeCompare(b)                    // custom ones alphabetically after
+  })
+}
+
+/** Admin config: set (or change) a category's budget-category mapping. */
+export async function upsertBudgetCategoryMapping(proposalCategory, budgetCategory) {
+  const { error } = await supabase.from('proposal_budget_category_map')
+    .upsert({ proposal_category: proposalCategory, budget_category: budgetCategory }, { onConflict: 'proposal_category' })
+  if (error) throw error
+}
+
+/** Admin config: unmap a category — its cost simply won't seed a planned-budget line on "Convert to Project" anymore. */
+export async function deleteBudgetCategoryMapping(proposalCategory) {
+  const { error } = await supabase.from('proposal_budget_category_map').delete().eq('proposal_category', proposalCategory)
+  if (error) throw error
 }

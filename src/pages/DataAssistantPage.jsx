@@ -1,13 +1,14 @@
 import { useState, useRef, useEffect } from 'react'
 import {
   Sparkles, Bot, RefreshCw, Send, Check, Receipt, ShoppingCart, CalendarDays, Plane,
-  AlertTriangle, Wallet, TrendingUp, FileText, Building2, Users, ChevronRight,
+  AlertTriangle, Wallet, TrendingUp, FileText, Building2, Users, ChevronRight, ClipboardList, Clock, Database,
+  Truck, Boxes, FileCheck, Package,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { LLM_MODELS, isModelUsable } from '../lib/llm'
-import { QUESTIONS } from '../lib/quickAnswers'
+import { questionsForRole, matchQuestion } from '../lib/quickAnswers'
 import { buildDataIndex, getCachedIndex } from '../lib/dataIndex'
-import { answerQuestion, getPreferredModel, setPreferredModel } from '../lib/assistant'
+import { answerQuestion, getPreferredModel, setPreferredModel, getAskMode, setAskMode } from '../lib/assistant'
 import { timeFmt } from '../lib/supabase'
 
 function fmtTime(ts) {
@@ -25,6 +26,19 @@ const ICONS = {
   'pending-invoices': FileText,
   'department-budget-health': Building2,
   'active-employees': Users,
+  'my-open-tasks': ClipboardList,
+  'my-hours-this-month': Clock,
+  'my-pending-expenses': Receipt,
+  'my-pending-travel': Plane,
+  'pending-po': ShoppingCart,
+  'pending-grn': Truck,
+  'total-payments': Wallet,
+  'active-vendors': Building2,
+  'assets-summary': Boxes,
+  'pending-warranty': AlertTriangle,
+  'open-tasks-org': ClipboardList,
+  'pending-customer-invoices': FileCheck,
+  'products-customers-devices': Package,
 }
 
 export default function DataAssistantPage() {
@@ -34,6 +48,8 @@ export default function DataAssistantPage() {
   const [busy, setBusy] = useState(false)
   const [selModel, setSelModelState] = useState(getPreferredModel())
   function setSelModel(id) { setSelModelState(id); setPreferredModel(id) }
+  const [mode, setModeState] = useState(getAskMode()) // 'llm' | 'db'
+  function setMode(m) { setModeState(m); setAskMode(m) }
   const [ollamaModel, setOllamaModel] = useState('qwen2.5-coder:7b')
   const [indexInfo, setIndexInfo] = useState(getCachedIndex())
   const [refreshing, setRefreshing] = useState(false)
@@ -99,6 +115,20 @@ export default function DataAssistantPage() {
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     pushMessage('user', text)
     setBusy(true)
+
+    if (mode === 'db') {
+      // Non-LLM mode — never calls the AI. Matches typed text against the
+      // same canned question set as the starter chips (personal + org-wide,
+      // role-gated) and answers straight from Supabase.
+      const match = matchQuestion(text, questionsForRole(profile?.role))
+      const answer = match
+        ? await match.run(profile)
+        : "I don't have a database answer for that — try one of the suggested questions, rephrase it closer to one of them, or switch to LLM mode for open-ended questions."
+      pushMessage('bot', answer)
+      setBusy(false)
+      return
+    }
+
     const botId = pushMessage('bot', '', true)
     try {
       await answerQuestion(text, profile, { modelId: selModel, ollamaModel, onToken: delta => appendToMessage(botId, delta) })
@@ -124,6 +154,31 @@ export default function DataAssistantPage() {
       </div>
 
       <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-body">
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 8 }}>ANSWER SOURCE</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => setMode('llm')} style={{
+              display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 999, cursor: 'pointer',
+              border: `2px solid ${mode === 'llm' ? 'var(--c1)' : 'var(--border)'}`,
+              background: mode === 'llm' ? 'var(--c1-soft, rgba(99,102,241,.1))' : 'var(--surface)',
+              color: mode === 'llm' ? 'var(--c1)' : 'var(--ink-soft)', fontWeight: 700, fontSize: 12.5,
+            }}><Sparkles size={13} /> LLM (AI)</button>
+            <button onClick={() => setMode('db')} style={{
+              display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 999, cursor: 'pointer',
+              border: `2px solid ${mode === 'db' ? 'var(--c1)' : 'var(--border)'}`,
+              background: mode === 'db' ? 'var(--c1-soft, rgba(99,102,241,.1))' : 'var(--surface)',
+              color: mode === 'db' ? 'var(--c1)' : 'var(--ink-soft)', fontWeight: 700, fontSize: 12.5,
+            }}><Database size={13} /> Database Only</button>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
+            {mode === 'llm'
+              ? 'Free-form questions answered by AI, grounded in a live snapshot of the company data.'
+              : 'Typed questions are matched against a fixed set of database-backed questions — no AI call is made, and anything unmatched is reported as such rather than guessed.'}
+          </div>
+        </div>
+      </div>
+
+      {mode === 'llm' && <div className="card" style={{ marginBottom: 20 }}>
         <div className="card-body">
           <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 8 }}>AI MODEL</label>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 10 }}>
@@ -167,7 +222,7 @@ export default function DataAssistantPage() {
             )}
           </div>
         </div>
-      </div>
+      </div>}
 
       <div className="card" style={{ display: 'flex', flexDirection: 'column', height: 560 }}>
         <div ref={listRef} className="askbubble-scroll" style={{ flex: 1, overflowY: 'auto', padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -177,7 +232,7 @@ export default function DataAssistantPage() {
                 Hi{profile?.full_name ? ` ${profile.full_name.split(' ')[0]}` : ''}! Pick a question below, or type anything about expenses, projects, invoices, leave, vendors, headcount and more.
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: 10 }}>
-                {QUESTIONS.map((q, i) => {
+                {questionsForRole(profile?.role).map((q, i) => {
                   const Icon = ICONS[q.id] || Sparkles
                   return (
                     <button key={q.id} disabled={busy} onClick={() => ask(q)} className="askbubble-card"
@@ -242,7 +297,7 @@ export default function DataAssistantPage() {
             value={input}
             onChange={e => { setInput(e.target.value); autoGrow(e.target) }}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
-            placeholder="Ask anything about the company's data…"
+            placeholder={mode === 'db' ? 'Ask a question (database answers only)…' : "Ask anything about the company's data…"}
             disabled={busy}
             className="form-input askbubble-textarea"
             style={{ flex: 1, minHeight: 40, maxHeight: 140, lineHeight: 1.4 }}

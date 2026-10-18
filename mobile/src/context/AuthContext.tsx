@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import type { Session, User } from '@supabase/supabase-js';
 
 import { supabase } from '@/lib/supabase';
+import { unregisterPush } from '@/lib/push';
 
 export type Profile = {
   id: string;
@@ -11,6 +12,8 @@ export type Profile = {
   is_active?: boolean;
   is_super_admin?: boolean;
   date_joined?: string | null;
+  walkthrough_seen_at?: string | null;
+  tour_seen_at?: string | null;
   dept?: { id: string; name: string; code: string } | null;
   org?: { id: string; name: string; slug: string; is_active: boolean; deleted_at: string | null } | null;
 };
@@ -81,7 +84,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  const signOut = async () => { await supabase.auth.signOut(); };
+  const signOut = async () => {
+    await unregisterPush().catch(() => {});
+    await supabase.auth.signOut();
+  };
 
   return (
     <Ctx.Provider value={{ user, profile, loading, signIn, signOut, refreshProfile: () => user && loadProfile(user) }}>

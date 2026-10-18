@@ -15,6 +15,24 @@ async function getFinanceSettings() {
 // for that designation at the overlap's start date, falling back to the
 // existing per-employee resource_rates formula when no role_rates entry exists
 // — preserving every existing call site's behavior for un-rated designations.
+// Shared rate-resolution: role_rates for the employee's designation as of
+// a given date, falling back to their own resource_rates row (hourly_rate,
+// else monthly_salary/(22×8)) when no role_rates entry exists. Exported so
+// any other forward-looking cost estimate (e.g. ProjectsPage.jsx's per-
+// project resourcing cost/availability view) uses the exact same fallback
+// chain as this to-date rollup, instead of a second, easily-drifting copy
+// that (as the Resourcing tab's old "Wk Cost Run-Rate" did) only ever
+// checked resource_rates and silently priced every role_rates-only
+// designation at ₹0.
+export function resolveHourlyRate({ designation, employeeId, roleRates, resourceRates, onDate = new Date() }) {
+  const iso = onDate.toISOString().slice(0, 10)
+  const candidates = (roleRates || []).filter(r => r.designation === designation && r.effective_from <= iso && (!r.effective_to || r.effective_to >= iso))
+  const match = candidates.sort((a, b) => b.effective_from.localeCompare(a.effective_from))[0]
+  if (match) return Number(match.hourly_rate)
+  const er = (resourceRates || []).find(r => r.employee_id === employeeId)
+  return Number(er?.hourly_rate || (er?.monthly_salary ? er.monthly_salary / (22 * 8) : 0))
+}
+
 export async function computePeopleCostForProject(projectId, periodStart, periodEnd) {
   const { data: allocs } = await supabase.from('allocations')
     .select('*,employee:profiles!employee_id(designation)')
@@ -28,16 +46,6 @@ export async function computePeopleCostForProject(projectId, periodStart, period
     designations.length ? supabase.from('role_rates').select('*').in('designation', designations) : Promise.resolve({ data: [] }),
     supabase.from('resource_rates').select('employee_id,hourly_rate,monthly_salary').in('employee_id', employeeIds),
   ])
-  const empRateMap = Object.fromEntries((empRates || []).map(r => [r.employee_id, r]))
-
-  function rateOnDate(designation, employeeId, onDate) {
-    const iso = onDate.toISOString().slice(0, 10)
-    const candidates = (roleRates || []).filter(r => r.designation === designation && r.effective_from <= iso && (!r.effective_to || r.effective_to >= iso))
-    const match = candidates.sort((a, b) => b.effective_from.localeCompare(a.effective_from))[0]
-    if (match) return Number(match.hourly_rate)
-    const er = empRateMap[employeeId]
-    return Number(er?.hourly_rate || (er?.monthly_salary ? er.monthly_salary / (22 * 8) : 0))
-  }
 
   let total = 0
   for (const a of rows) {
@@ -47,7 +55,7 @@ export async function computePeopleCostForProject(projectId, periodStart, period
     const overlapEnd = aEnd < periodEnd ? aEnd : periodEnd
     if (overlapEnd < overlapStart) continue
     const days = Math.round((overlapEnd - overlapStart) / 86400000) + 1
-    const hourlyRate = rateOnDate(a.employee?.designation, a.employee_id, overlapStart)
+    const hourlyRate = resolveHourlyRate({ designation: a.employee?.designation, employeeId: a.employee_id, roleRates, resourceRates: empRates, onDate: overlapStart })
     total += (Number(a.allocation_hours_per_week || 0) / 7) * days * hourlyRate
   }
   return Math.round(total * 100) / 100
@@ -56,13 +64,38 @@ export async function computePeopleCostForProject(projectId, periodStart, period
 // Hardware cost: recognized vendor spend (verified/matched/paid invoices) — NOT
 // PO/GRN committed spend, which already lives in budgets.committed_amount via
 // src/lib/budgetSync.js on PR approval. Mixing the two would double-count.
+// When the project has no recognized hardware invoices at all, falls back to
+// the device register (STEP246): devices assigned to the project plus the
+// sensors fitted on them, at the unit prices of the project's automatic
+// hardware lines, dated by install date (else record creation). Never both,
+// so a purchase that was also invoiced isn't counted twice.
 export async function computeHardwareCostForProject(projectId, periodStart, periodEnd) {
   const startISO = periodStart.toISOString().slice(0, 10)
   const endISO = periodEnd.toISOString().slice(0, 10)
-  const { data } = await supabase.from('invoices').select('total_amount,invoice_date,status')
+  const { data: all } = await supabase.from('invoices').select('total_amount,invoice_date,status')
     .eq('project_id', projectId).in('status', ['verified', 'matched', 'paid'])
-    .gte('invoice_date', startISO).lte('invoice_date', endISO)
-  return Math.round((data || []).reduce((s, i) => s + Number(i.total_amount || 0), 0) * 100) / 100
+  if ((all || []).length) {
+    const inPeriod = all.filter(i => i.invoice_date >= startISO && i.invoice_date <= endISO)
+    return Math.round(inPeriod.reduce((s, i) => s + Number(i.total_amount || 0), 0) * 100) / 100
+  }
+  return computeDeviceRegisterCost(projectId, startISO, endISO)
+}
+
+export async function computeDeviceRegisterCost(projectId, startISO, endISO) {
+  const { data: lines, error } = await supabase.from('project_hardware_costs').select('source_key,unit_price')
+    .eq('project_id', projectId).eq('source', 'DEVICE_REGISTER')
+  if (error || !lines?.length) return 0 // STEP246 not run, or no devices on the project
+  const unit = Object.fromEntries(lines.map(l => [l.source_key, Number(l.unit_price || 0)]))
+  const { data: devices } = await supabase.from('device_instances').select('id,part_number,installed_date,created_at').eq('project_id', projectId)
+  const ids = (devices || []).map(d => d.id)
+  const { data: sensors } = ids.length
+    ? await supabase.from('device_sensors').select('device_id,sensor_type_id,status,installed_at,created_at').in('device_id', ids).neq('status', 'REMOVED')
+    : { data: [] }
+  const inPeriod = d => { const x = String(d || '').slice(0, 10); return x && x >= startISO && x <= endISO }
+  let total = 0
+  for (const d of devices || []) if (inPeriod(d.installed_date || d.created_at)) total += unit[`device:${d.part_number}`] || 0
+  for (const s of sensors || []) if (inPeriod(s.installed_at || s.created_at)) total += unit[`sensor:${s.sensor_type_id}`] || 0
+  return Math.round(total * 100) / 100
 }
 
 async function upsertSnapshot(projectId, periodType, periodKey, peopleCost, hardwareCost, warrantyCost) {

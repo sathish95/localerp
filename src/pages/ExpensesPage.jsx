@@ -17,6 +17,7 @@ export default function ExpensesPage() {
 
   const [items,      setItems]      = useState([])
   const [projects,   setProjects]   = useState([])
+  const [myTasks,    setMyTasks]    = useState([])
   const [loading,    setLoading]    = useState(true)
   const [search,     setSearch]     = useState('')
   const [statusFilter, setStatusF]  = useState('all')
@@ -33,16 +34,26 @@ export default function ExpensesPage() {
 
   const initForm = () => ({
     title: '', amount: '', category: '', description: '',
-    date: new Date().toISOString().split('T')[0], project_id: ''
+    date: new Date().toISOString().split('T')[0], project_id: '', task_id: ''
   })
   const [form, setForm] = useState(initForm)
 
-  useEffect(() => { load(); loadProjects(); warmChains('expense').then(() => setChainVer(v => v + 1)) }, [role])
+  useEffect(() => { load(); loadProjects(); loadMyTasks(); warmChains('expense').then(() => setChainVer(v => v + 1)) }, [role])
 
   async function loadProjects() {
     const { data } = await supabase.from('projects')
       .select('id, name, code, budget, spent').order('name')
     setProjects(data || [])
+  }
+
+  // Phase 9 (Resource Modules) — optional, purely additive "Link to
+  // task" field. Independent of project_id and its budget-increment
+  // logic below, which stays keyed off project_id alone.
+  async function loadMyTasks() {
+    if (!profile?.id) return
+    const { data } = await supabase.from('project_tasks')
+      .select('id, task_name').eq('assigned_to', profile.id).neq('status', 'closed').order('task_name')
+    setMyTasks(data || [])
   }
 
   async function load() {
@@ -101,6 +112,7 @@ export default function ExpensesPage() {
         gst_amount:      0,
         total_amount:    amt,
         project_id:      form.project_id || null,
+        task_id:         form.task_id || null,
         requested_by:    profile.id,
         status:          'submitted',
         attachments:     docUrl ? [{ url: docUrl, name: file.name }] : [],
@@ -317,9 +329,17 @@ export default function ExpensesPage() {
               <option value="">No project</option>
               {projects.map(p => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}
             </select>
-            
           </div>
         </div>
+        {myTasks.length > 0 && (
+          <div className="form-group">
+            <label className="form-label">Link to Task (optional)</label>
+            <select className="form-select" value={form.task_id} onChange={e => setForm(f=>({...f,task_id:e.target.value}))}>
+              <option value="">No task</option>
+              {myTasks.map(t => <option key={t.id} value={t.id}>{t.task_name}</option>)}
+            </select>
+          </div>
+        )}
         <div className="form-group">
           <label className="form-label">Description</label>
           <textarea className="form-textarea" value={form.description} onChange={e => setForm(f=>({...f,description:e.target.value}))} placeholder="Details about this expense…" />

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { supabase, dateFmt, nextNum } from '../lib/supabase'
 import { countWorkingDays, recomputeForEmployeeRange } from '../lib/capacity'
+import { sendNotifToMany } from '../lib/notifications'
 import { Modal, StatusBadge, SearchBox, Loader, Empty, Confirm } from '../components/ui'
 import { Plus, Calendar, Clock, CheckCircle, XCircle, Eye, Trash2, Users } from 'lucide-react'
 
@@ -10,6 +11,31 @@ const LEAVE_COLORS = {
   casual:     { bg: '#dbeafe', color: '#1d4ed8', label: 'Casual Leave', icon: '🏖️' },
   personal:   { bg: '#ede9fe', color: '#6d28d9', label: 'Personal Leave', icon: '👤' },
   permission: { bg: '#fef3c7', color: '#b45309', label: 'Permission (Hours)', icon: '⏰' },
+}
+
+// Approval chain (STEP266): Tech Lead → Manager → HR → Finance → CEO. The chain
+// per request is built and enforced in SQL (leave_build_chain / leave_decide);
+// stageCanAct() below only mirrors leave_can_act() to decide which buttons to show.
+const STAGE_LABELS = { lead: 'Tech Lead', manager: 'Manager', hr: 'HR', finance: 'Finance', ceo: 'CEO' }
+const APPROVER_ROLES = ['admin','ceo','manager','department_head','hr','finance','lead']
+
+function stageCanAct(req, me, employeesById) {
+  if (req.status !== 'pending' || !req.current_stage) return false
+  if (me.role === 'admin') return true
+  if (req.employee_id === me.id && req.current_stage !== 'ceo') return false
+  switch (req.current_stage) {
+    case 'lead': {
+      if (me.role !== 'lead') return false
+      if (req.lead_approver_id) return req.lead_approver_id === me.id
+      const emp = employeesById[req.employee_id]
+      return !!emp?.department_id && emp.department_id === me.department_id
+    }
+    case 'manager': return ['manager','department_head'].includes(me.role)
+    case 'hr':      return me.role === 'hr'
+    case 'finance': return me.role === 'finance'
+    case 'ceo':     return me.role === 'ceo'
+    default:        return false
+  }
 }
 
 const STATUS_COLORS = {
@@ -37,10 +63,12 @@ export default function LeavePage() {
   const { profile } = useAuth()
   const role = profile?.role || 'employee'
   const isHR = role === 'hr' || role === 'admin' || role === 'ceo'
-  const isManager = ['admin','ceo','manager','department_head','hr'].includes(role)
+  const isManager = APPROVER_ROLES.includes(role)
   const isEmployee = !isManager || role === 'employee'
 
   const [tab, setTab] = useState(isManager && !isEmployee ? 'approvals' : 'my')
+  const [approvalView, setApprovalView] = useState('mine') // 'mine' = awaiting me, 'all'
+  const [comment, setComment] = useState('')
   const [myLeaves, setMyLeaves] = useState([])
   const [allLeaves, setAllLeaves] = useState([])
   const [policies, setPolicies] = useState([])
@@ -84,7 +112,7 @@ export default function LeavePage() {
     ]
     if (isManager) promises.push(
       supabase.from('leave_requests').select('*, employee:profiles!employee_id(full_name, role, department_id, email)').order('created_at', { ascending: false }),
-      supabase.from('profiles').select('id, full_name, role, email').order('full_name'),
+      supabase.from('profiles').select('id, full_name, role, email, department_id').order('full_name'),
     )
 
     const results = await Promise.all(promises)
@@ -130,6 +158,13 @@ export default function LeavePage() {
       }).select().single()
       if (error) throw error
       if (autoApprove) await applyBalanceAndRecompute(data)
+      else {
+        const { data: ids } = await supabase.rpc('leave_stage_approvers', { p_id: data.id })
+        await sendNotifToMany((ids || []).map(r => r?.leave_stage_approvers ?? r), {
+          type: 'leave', title: 'Leave request awaiting your approval', senderId: profile.id,
+          body: `${profile.full_name || 'An employee'} · ${data.request_number}`, link: '/leave',
+        })
+      }
       setShowCreate(false); setForm(initLeaveForm()); loadAll()
     } catch (e) { setErr(e.message) }
     finally { setSub(false) }
@@ -139,11 +174,14 @@ export default function LeavePage() {
     const isPermission = req.leave_type === 'permission'
     const days = isPermission ? null : countWorkingDays(req.from_date, req.to_date || req.from_date, holidaysSet)
 
+    // The applicant's balance — not the approver's own (`balances` state).
+    const { data: bal } = await supabase.from('leave_balances').select('*')
+      .eq('employee_id', req.employee_id).eq('fiscal_year', YEAR).maybeSingle()
     const balUpdate = {}
-    if (req.leave_type === 'sick') balUpdate.sick_used = (balances?.sick_used || 0) + (days || 0)
-    if (req.leave_type === 'casual') balUpdate.casual_used = (balances?.casual_used || 0) + (days || 0)
-    if (req.leave_type === 'personal') balUpdate.personal_used = (balances?.personal_used || 0) + (days || 0)
-    if (req.leave_type === 'permission') balUpdate.permission_hours_used = (balances?.permission_hours_used || 0) + (req.permission_hours || 0)
+    if (req.leave_type === 'sick') balUpdate.sick_used = (bal?.sick_used || 0) + (days || 0)
+    if (req.leave_type === 'casual') balUpdate.casual_used = (bal?.casual_used || 0) + (days || 0)
+    if (req.leave_type === 'personal') balUpdate.personal_used = (bal?.personal_used || 0) + (days || 0)
+    if (req.leave_type === 'permission') balUpdate.permission_hours_used = (bal?.permission_hours_used || 0) + (req.permission_hours || 0)
 
     await supabase.from('leave_balances').upsert({
       employee_id: req.employee_id, fiscal_year: YEAR, ...balUpdate
@@ -154,18 +192,15 @@ export default function LeavePage() {
     await recomputeForEmployeeRange(req.employee_id, rangeStart, rangeEnd)
   }
 
-  async function handleApprove(req, action) {
+  async function handleApprove(req, action, note = '') {
+    if (action === 'reject' && !note.trim()) return alert('Enter a reason to reject this request.')
     setSub(true)
     try {
-      const status = action === 'approve' ? 'approved' : 'rejected'
-      const { error } = await supabase.from('leave_requests').update({
-        status, approved_by: profile.id, approved_at: new Date().toISOString()
-      }).eq('id', req.id)
+      const { data, error } = await supabase.rpc('leave_decide', { p_id: req.id, p_action: action, p_comment: note || null })
       if (error) throw error
-
-      if (status === 'approved') await applyBalanceAndRecompute(req)
-
-      setShowDetail(null); loadAll()
+      // Balance + capacity only move once the final stage approves
+      if (data?.status === 'approved') await applyBalanceAndRecompute(data)
+      setShowDetail(null); setComment(''); loadAll()
     } catch (e) { alert(e.message) }
     finally { setSub(false) }
   }
@@ -209,11 +244,20 @@ export default function LeavePage() {
   }
 
   const myPolicy = policies[0]
-  const displayLeaves = tab === 'my' ? myLeaves : allLeaves.filter(l =>
+  const employeesById = Object.fromEntries(employees.map(e => [e.id, e]))
+  const canAct = req => stageCanAct(req, profile, employeesById)
+  // A Tech Lead's "All" view is their own team; other approver roles see everyone.
+  const inMyScope = req => role !== 'lead' || req.lead_approver_id === profile.id ||
+    (!!profile.department_id && employeesById[req.employee_id]?.department_id === profile.department_id)
+  const awaitingMe = allLeaves.filter(canAct)
+  const displayLeaves = tab === 'my' ? myLeaves : (approvalView === 'mine' ? awaitingMe : allLeaves.filter(inMyScope)).filter(l =>
     !search || l.employee?.full_name?.toLowerCase().includes(search.toLowerCase()) || l.request_number?.toLowerCase().includes(search.toLowerCase())
   )
 
-  const pendingCount = allLeaves.filter(l => l.status === 'pending').length
+  const pendingCount = awaitingMe.length
+  const statusLabel = req => req.status === 'pending' && req.current_stage
+    ? `Pending · ${STAGE_LABELS[req.current_stage] || req.current_stage}`
+    : req.status
 
   // Balance bar
   function BalanceBar({ label, used, total, color }) {
@@ -300,7 +344,14 @@ export default function LeavePage() {
       <div className="table-wrap">
         <div className="table-toolbar">
           {tab === 'approvals'
-            ? <SearchBox value={search} onChange={setSearch} placeholder="Search employee or request #…" />
+            ? <>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {[['mine', `Awaiting me (${awaitingMe.length})`], ['all', role === 'lead' ? 'My team' : 'All requests']].map(([k, l]) => (
+                    <button key={k} className={`btn btn-sm ${approvalView === k ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setApprovalView(k)}>{l}</button>
+                  ))}
+                </div>
+                <SearchBox value={search} onChange={setSearch} placeholder="Search employee or request #…" />
+              </>
             : <span style={{ fontWeight: 700, fontSize: 14 }}>My Leave Requests</span>
           }
           <span style={{ marginLeft: 'auto', fontSize: 12, color: '#64748b' }}>{displayLeaves.length} records</span>
@@ -315,7 +366,7 @@ export default function LeavePage() {
           </thead>
           <tbody>
             {displayLeaves.length === 0
-              ? <tr><td colSpan={8}><Empty icon="📅" title="No leave requests" desc={tab === 'my' ? 'Apply for leave using the button above' : 'No pending team requests'} /></td></tr>
+              ? <tr><td colSpan={8}><Empty icon="📅" title="No leave requests" desc={tab === 'my' ? 'Apply for leave using the button above' : approvalView === 'mine' ? 'Nothing is waiting for your approval' : 'No team requests'} /></td></tr>
               : displayLeaves.map(req => {
                 const lc = typeColors[req.leave_type] || LEAVE_COLORS.casual
                 const sc = STATUS_COLORS[req.status] || STATUS_COLORS.pending
@@ -346,17 +397,17 @@ export default function LeavePage() {
                     </td>
                     <td style={{ fontSize: 12, color: '#64748b', maxWidth: 160, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{req.reason || '—'}</td>
                     <td>
-                      <span style={{ padding: '3px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: sc.bg, color: sc.color, textTransform: 'capitalize' }}>
-                        {req.status}
+                      <span style={{ padding: '3px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700, background: sc.bg, color: sc.color, textTransform: 'capitalize', whiteSpace: 'nowrap' }}>
+                        {statusLabel(req)}
                       </span>
                     </td>
                     <td>
                       <div style={{ display: 'flex', gap: 5 }}>
-                        <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setShowDetail(req)}><Eye size={13} /></button>
-                        {isManager && req.status === 'pending' && (
+                        <button className="btn btn-ghost btn-sm btn-icon" onClick={() => { setComment(''); setShowDetail(req) }}><Eye size={13} /></button>
+                        {canAct(req) && (
                           <>
-                            <button className="btn btn-success btn-sm btn-icon" onClick={() => handleApprove(req, 'approve')} title="Approve"><CheckCircle size={13} /></button>
-                            <button className="btn btn-danger btn-sm btn-icon" onClick={() => handleApprove(req, 'reject')} title="Reject"><XCircle size={13} /></button>
+                            <button className="btn btn-success btn-sm btn-icon" disabled={submitting} onClick={() => handleApprove(req, 'approve')} title={`Approve as ${STAGE_LABELS[req.current_stage]}`}><CheckCircle size={13} /></button>
+                            <button className="btn btn-danger btn-sm btn-icon" disabled={submitting} onClick={() => { setComment(''); setShowDetail(req) }} title="Reject (reason required)"><XCircle size={13} /></button>
                           </>
                         )}
                         {req.employee_id === profile.id && req.status === 'pending' && (
@@ -510,10 +561,10 @@ export default function LeavePage() {
       {showDetail && (
         <Modal open title={`Leave — ${showDetail.request_number}`} onClose={() => setShowDetail(null)}
           footer={<>
-            {isManager && showDetail.status === 'pending' && (
+            {canAct(showDetail) && (
               <>
-                <button className="btn btn-danger" onClick={() => { handleApprove(showDetail, 'reject'); setShowDetail(null) }}>Reject</button>
-                <button className="btn btn-success" onClick={() => { handleApprove(showDetail, 'approve'); setShowDetail(null) }}>Approve</button>
+                <button className="btn btn-danger" disabled={submitting} onClick={() => handleApprove(showDetail, 'reject', comment)}>Reject</button>
+                <button className="btn btn-success" disabled={submitting} onClick={() => handleApprove(showDetail, 'approve', comment)}>Approve as {STAGE_LABELS[showDetail.current_stage]}</button>
               </>
             )}
             <button className="btn btn-ghost" onClick={() => setShowDetail(null)}>Close</button>
@@ -522,7 +573,7 @@ export default function LeavePage() {
             {[
               ['Employee', showDetail.employee?.full_name],
               ['Type', typeColors[showDetail.leave_type]?.label],
-              ['Status', showDetail.status],
+              ['Status', statusLabel(showDetail)],
               ['Reason', showDetail.reason],
               showDetail.leave_type === 'permission'
                 ? ['Duration', `${showDetail.permission_hours?.toFixed(1)} hrs (${showDetail.from_time} – ${showDetail.to_time})`]
@@ -535,10 +586,52 @@ export default function LeavePage() {
               </div>
             ))}
           </div>
+          <ApprovalTrail req={showDetail} />
+          {showDetail.rejection_reason && (
+            <div className="alert alert-danger" style={{ marginTop: 12 }}>Rejected: {showDetail.rejection_reason}</div>
+          )}
+          {canAct(showDetail) && (
+            <div className="form-group" style={{ marginTop: 14, marginBottom: 0 }}>
+              <label className="form-label">Comment (required to reject)</label>
+              <textarea className="form-textarea" value={comment} onChange={e => setComment(e.target.value)} placeholder="Optional note for approve, reason for reject…" />
+            </div>
+          )}
         </Modal>
       )}
 
       <Confirm open={!!deleteId} message="Cancel this leave request?" danger onConfirm={() => deleteLeave(deleteId)} onCancel={() => setDeleteId(null)} />
+    </div>
+  )
+}
+
+/* ─── Approval trail — each stage of the chain with who acted and when ─── */
+function ApprovalTrail({ req }) {
+  const chain = req.approval_chain || []
+  if (chain.length === 0) return null
+  const history = req.approval_history || []
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#94a3b8', marginBottom: 8 }}>Approval workflow</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {chain.map((stage, i) => {
+          const h = history.find(x => x.stage === stage)
+          const isCurrent = req.status === 'pending' && req.current_stage === stage
+          const color = h?.action === 'approve' ? '#15803d' : h?.action === 'reject' ? '#dc2626' : isCurrent ? '#b45309' : '#94a3b8'
+          const state = h?.action === 'approve' ? 'Approved' : h?.action === 'reject' ? 'Rejected' : isCurrent ? 'Awaiting' : req.status === 'pending' ? 'Waiting' : '—'
+          return (
+            <div key={stage} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 12px', borderRadius: 10, border: `1px solid ${isCurrent ? '#fcd34d' : '#e2e8f0'}`, background: isCurrent ? '#fffbeb' : '#fff' }}>
+              <div style={{ width: 22, height: 22, borderRadius: 99, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 800, color: '#fff', background: color }}>{i + 1}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 13, fontWeight: 700 }}>
+                  <span>{STAGE_LABELS[stage] || stage}</span>
+                  <span style={{ color, fontSize: 12 }}>{state}</span>
+                </div>
+                {h && <div style={{ fontSize: 11.5, color: '#64748b' }}>{h.by_name} · {dateFmt(h.at)}{h.comment ? ` — ${h.comment}` : ''}</div>}
+              </div>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
